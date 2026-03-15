@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "cli": "node cli.js",
+    "test": "node test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
