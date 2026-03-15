@@ -1,0 +1,270 @@
+import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
+
+/**
+ * Tag → emoji + label mapping for agent step tags.
+ */
+const TAG_DISPLAY = {
+  action: '🔵 `action`',
+  backend: '🟠 `backend`',
+  verify: '🟢 `verify`',
+  escalate: '🔴 `escalate`',
+};
+
+function tagLabel(tag) {
+  return TAG_DISPLAY[tag] ?? `\`${tag}\``;
+}
+
+/**
+ * Builds the Block Kit payload for a successful (non-accounting) response.
+ * Stays well under Slack's 50-block limit by capping steps and refs.
+ *
+ * @param {object} data - Parsed Claude response
+ * @returns {Array} Slack blocks array
+ */
+export function buildResponseBlocks(data) {
+  const blocks = [];
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  blocks.push({
+    type: 'header',
+    text: {
+      type: 'plain_text',
+      text: `🔌 ${data.issue_title}`,
+      emoji: true,
+    },
+  });
+
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*Integration:* \`${data.integration_type}\`    *Sources:* ${(data.sources_used ?? []).map((s) => `\`${s}\``).join('  ')}`,
+    },
+  });
+
+  blocks.push({ type: 'divider' });
+
+  // ── Section 1 — Agent Troubleshooting ───────────────────────────────────
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: '*🔧 Agent Troubleshooting*\n_Internal only — do not share with customer_',
+    },
+  });
+
+  const steps = (data.agent_steps ?? []).slice(0, 20); // guard against huge lists
+  for (const step of steps) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${step.num}.* *${step.title}*  ${tagLabel(step.tag)}\n${step.detail}`,
+      },
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // ── Section 2 — Customer Email Draft ────────────────────────────────────
+  if (data.customer_email) {
+    const email = data.customer_email;
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*✉️ Customer Email Draft*\n*Subject:* ${email.subject}`,
+      },
+    });
+
+    // Email body — use rich_text quote for easy visual separation
+    // Slack's rich_text elements don't support full block-quote of arbitrary text,
+    // so we use a section with mrkdwn > prefix lines, which renders as a quote.
+    const quotedBody = email.body
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n');
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: quotedBody,
+      },
+    });
+
+    // KB links
+    if (email.kb_links && email.kb_links.length > 0) {
+      const linkLines = email.kb_links.map((l) => `• <${l.url}|${l.label}>`).join('\n');
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*📚 KB Articles to include:*\n${linkLines}`,
+        },
+      });
+    }
+
+    // "Copy email" button — opens a modal with the full email text for easy selection
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📋 Copy Email Draft', emoji: true },
+          action_id: 'copy_email_modal',
+          style: 'primary',
+          // Pass email data as value (JSON-encoded, max 2000 chars)
+          value: JSON.stringify({
+            subject: email.subject,
+            body: email.body.slice(0, 1800), // guard against value size limit
+          }),
+        },
+      ],
+    });
+
+    blocks.push({ type: 'divider' });
+  }
+
+  // ── Sources ──────────────────────────────────────────────────────────────
+  const sourceLines = [];
+
+  const slackRefs = (data.slack_refs ?? []).slice(0, 5);
+  for (const ref of slackRefs) {
+    const resolved = ref.was_resolved ? '✅' : '⏳';
+    sourceLines.push(
+      `${resolved} *#${ref.channel}*${ref.author ? ` (${ref.author})` : ''} — ${ref.issue_summary}`,
+    );
+  }
+
+  const atlassianRefs = (data.atlassian_refs ?? []).slice(0, 5);
+  for (const ref of atlassianRefs) {
+    const icon = ref.type === 'jira' ? '🎟️' : '📄';
+    const titleLink = ref.url ? `<${ref.url}|${ref.title}>` : ref.title;
+    const statusPart = ref.status ? ` [${ref.status}]` : '';
+    sourceLines.push(`${icon} ${titleLink}${statusPart} — ${ref.summary}`);
+  }
+
+  if (sourceLines.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*📎 Sources Referenced*\n${sourceLines.join('\n')}`,
+      },
+    });
+  }
+
+  // Footer context block
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text: `_IntegrationsBot • Sources searched: ${(data.sources_used ?? []).join(', ')} • Powered by Claude_`,
+      },
+    ],
+  });
+
+  return blocks;
+}
+
+/**
+ * Builds Block Kit blocks for the accounting topic redirect.
+ */
+export function buildAccountingRedirectBlocks(query) {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*⚠️ This question is outside this team's scope.*\n\nIt looks like your question is about an *accounting integration* (e.g. QuickBooks, Sage Intacct, NetSuite, Xero, or similar). Accounting integrations are handled by a different team.\n\nPlease post your question in ${ACCOUNTING_REDIRECT_CHANNEL} and tag the accounting integrations team there. They'll be able to help you out!\n\n_Original question: "${query.slice(0, 200)}${query.length > 200 ? '…' : ''}"_`,
+      },
+    },
+    {
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: '_IntegrationsBot • Accounting integrations out of scope_' },
+      ],
+    },
+  ];
+}
+
+/**
+ * Builds a "thinking…" placeholder block shown while Claude is working.
+ */
+export function buildThinkingBlocks(query) {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*🔍 Searching knowledge sources…*\n\nLooking into: _"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_\n\nSearching Slack channels, Confluence, Jira, and KB simultaneously — this usually takes 10–20 seconds.`,
+      },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }],
+    },
+  ];
+}
+
+/**
+ * Builds an error block for unexpected failures.
+ */
+export function buildErrorBlocks(query) {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
+      },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot • Error • Please retry or escalate_' }],
+    },
+  ];
+}
+
+/**
+ * Builds the modal view shown when an agent clicks "Copy Email Draft".
+ *
+ * @param {string} subject
+ * @param {string} body
+ * @returns {object} Slack view payload
+ */
+export function buildEmailModal(subject, body) {
+  return {
+    type: 'modal',
+    title: { type: 'plain_text', text: 'Email Draft', emoji: true },
+    close: { type: 'plain_text', text: 'Close', emoji: true },
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Subject:* ${subject}`,
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'email_body_block',
+        label: { type: 'plain_text', text: 'Email Body (select all and copy)', emoji: true },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'email_body_input',
+          multiline: true,
+          initial_value: body,
+        },
+        hint: {
+          type: 'plain_text',
+          text: 'Click into the text area and use Ctrl+A / Cmd+A to select all, then copy.',
+          emoji: false,
+        },
+      },
+    ],
+  };
+}
