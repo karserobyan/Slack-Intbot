@@ -7,6 +7,7 @@ import {
   buildErrorBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
+import { getRelevantFeedback } from '../slack/feedback.js';
 
 /**
  * Strips the bot mention (<@UXXXXXXX>) from the message text.
@@ -77,10 +78,24 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     console.error('[mention] Failed to post thinking message:', err.message);
   }
 
-  // 4. Call Claude with both MCP servers
+  // 4. Look up past corrections to inject as context
+  let feedbackContext = '';
+  try {
+    const corrections = await getRelevantFeedback(query);
+    if (corrections.length > 0) {
+      const lines = corrections.map(
+        (c) => `- Query: "${c.query}" → Bot was wrong (${c.feedbackType}). Correct answer: ${c.correction}`,
+      );
+      feedbackContext = `\n\nIMPORTANT — Past corrections from agents (use these to avoid repeating mistakes):\n${lines.join('\n')}`;
+    }
+  } catch {
+    // feedback lookup failure is non-critical
+  }
+
+  // 5. Call Claude with both MCP servers
   let result;
   try {
-    result = await queryWithMcp(query);
+    result = await queryWithMcp(query + feedbackContext);
   } catch (err) {
     console.error('[mention] Claude query failed:', err.message);
 
@@ -103,10 +118,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 5. Cache the result
+  // 6. Attach original query for the feedback button, then cache
+  result._originalQuery = query;
   setCached(query, result);
 
-  // 6. If Claude itself decided it was an accounting topic (double-check via AI)
+  // 7. If Claude itself decided it was an accounting topic (double-check via AI)
   if (result.is_accounting_topic) {
     const accountingBlocks = buildAccountingRedirectBlocks(query);
     if (thinkingTs) {
@@ -127,7 +143,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 7. Update the thinking placeholder with the real response
+  // 8. Update the thinking placeholder with the real response
   const responseBlocks = buildResponseBlocks(result);
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 

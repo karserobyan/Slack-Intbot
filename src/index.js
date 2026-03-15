@@ -2,8 +2,9 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildEmailModal } from './slack/blocks.js';
+import { buildEmailModal, buildFeedbackModal } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
+import { saveFeedback, notifyFeedbackChannel } from './slack/feedback.js';
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -51,6 +52,59 @@ app.action('copy_email_modal', async ({ ack, body, client, action }) => {
     trigger_id: body.trigger_id,
     view: buildEmailModal(emailData.subject, emailData.body),
   });
+});
+
+// ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
+app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
+  await ack();
+
+  let context = { query: '', issueTitle: '', integrationType: '' };
+  try {
+    context = JSON.parse(action.value);
+  } catch {
+    // fallback to empty context
+  }
+
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: buildFeedbackModal(context),
+  });
+});
+
+// ── Feedback modal submission ────────────────────────────────────────────────
+app.view('feedback_submission', async ({ ack, body, view, client }) => {
+  await ack();
+
+  const context = JSON.parse(view.private_metadata || '{}');
+  const values = view.state.values;
+
+  const feedbackType = values.feedback_type_block?.feedback_type_select?.selected_option?.value ?? 'wrong_answer';
+  const correction = values.correction_block?.correction_input?.value ?? '';
+
+  const record = await saveFeedback({
+    query: context.query,
+    issueTitle: context.issueTitle,
+    integrationType: context.integrationType,
+    feedbackType,
+    correction,
+    agentId: body.user.id,
+    agentName: body.user.name,
+  });
+
+  app.logger.info(`[feedback] Saved ${record.id} from ${body.user.name}: ${feedbackType}`);
+
+  // Notify feedback channel if configured
+  await notifyFeedbackChannel(client, record);
+
+  // DM the agent a confirmation
+  try {
+    await client.chat.postMessage({
+      channel: body.user.id,
+      text: `✅ Thanks for the feedback! Your correction has been saved (${record.id}). The bot will use this to improve future answers.`,
+    });
+  } catch {
+    // DM may fail if bot doesn't have im:write — not critical
+  }
 });
 
 // ── Periodic cache prune (every 15 minutes) ──────────────────────────────────

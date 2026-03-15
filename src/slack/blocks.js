@@ -106,7 +106,7 @@ export function buildResponseBlocks(data) {
       });
     }
 
-    // "Copy email" button — opens a modal with the full email text for easy selection
+    // Action buttons — copy email + wrong answer feedback
     blocks.push({
       type: 'actions',
       elements: [
@@ -119,6 +119,18 @@ export function buildResponseBlocks(data) {
           value: JSON.stringify({
             subject: email.subject,
             body: email.body.slice(0, 1800), // guard against value size limit
+          }),
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+          action_id: 'wrong_answer_modal',
+          style: 'danger',
+          // Pass context so the feedback modal knows what was asked/answered
+          value: JSON.stringify({
+            query: (data._originalQuery ?? '').slice(0, 500),
+            issueTitle: data.issue_title,
+            integrationType: data.integration_type,
           }),
         },
       ],
@@ -236,6 +248,64 @@ export function buildErrorBlocks(query) {
  * @param {string} body
  * @returns {object} Slack view payload
  */
+/**
+ * Builds the modal for "Wrong Answer" feedback.
+ *
+ * @param {object} context - { query, issueTitle, integrationType }
+ * @returns {object} Slack view payload
+ */
+export function buildFeedbackModal(context) {
+  return {
+    type: 'modal',
+    callback_id: 'feedback_submission',
+    title: { type: 'plain_text', text: '👎 Report Wrong Answer', emoji: true },
+    submit: { type: 'plain_text', text: 'Submit Feedback', emoji: true },
+    close: { type: 'plain_text', text: 'Cancel', emoji: true },
+    private_metadata: JSON.stringify(context),
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Original query:*\n>${context.query || 'N/A'}\n\n*Bot answered:*\n>${context.issueTitle || 'N/A'} (${context.integrationType || 'N/A'})`,
+        },
+      },
+      { type: 'divider' },
+      {
+        type: 'input',
+        block_id: 'feedback_type_block',
+        label: { type: 'plain_text', text: 'What was wrong?', emoji: true },
+        element: {
+          type: 'static_select',
+          action_id: 'feedback_type_select',
+          placeholder: { type: 'plain_text', text: 'Select an option', emoji: true },
+          options: [
+            { text: { type: 'plain_text', text: 'Completely wrong answer', emoji: true }, value: 'wrong_answer' },
+            { text: { type: 'plain_text', text: 'Partially correct but missing key steps', emoji: true }, value: 'partially_correct' },
+            { text: { type: 'plain_text', text: 'Outdated information', emoji: true }, value: 'outdated' },
+            { text: { type: 'plain_text', text: 'Wrong integration identified', emoji: true }, value: 'wrong_integration' },
+          ],
+        },
+      },
+      {
+        type: 'input',
+        block_id: 'correction_block',
+        label: { type: 'plain_text', text: 'What is the correct answer / what should the bot have said?', emoji: true },
+        element: {
+          type: 'plain_text_input',
+          action_id: 'correction_input',
+          multiline: true,
+          placeholder: {
+            type: 'plain_text',
+            text: 'e.g. "The actual fix is to go to Settings > Integrations > ... and toggle XYZ. The bot missed the step where you need to..."',
+            emoji: false,
+          },
+        },
+      },
+    ],
+  };
+}
+
 export function buildEmailModal(subject, body) {
   return {
     type: 'modal',

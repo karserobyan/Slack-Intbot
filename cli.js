@@ -12,6 +12,7 @@ import { createInterface } from 'node:readline';
 import { isAccountingTopic, ACCOUNTING_REDIRECT_CHANNEL } from './src/utils/accounting-filter.js';
 import { queryWithMcp } from './src/claude/query.js';
 import { getCached, setCached, cacheStats } from './src/slack/cache.js';
+import { saveFeedback, getRelevantFeedback, getAllFeedback } from './src/slack/feedback.js';
 
 // ── ANSI colors ──────────────────────────────────────────────────────────────
 const BOLD = '\x1b[1m';
@@ -108,8 +109,13 @@ function formatResponse(data) {
 
   console.log(`\n${DIM}${'─'.repeat(60)}${RESET}`);
   const stats = cacheStats();
-  console.log(`${DIM}IntegrationsBot • Cache: ${stats.size}/${stats.maxEntries} entries${RESET}\n`);
+  console.log(`${DIM}IntegrationsBot • Cache: ${stats.size}/${stats.maxEntries} entries${RESET}`);
+  console.log(`${DIM}Type ${RESET}${RED}/wrong${RESET}${DIM} to flag this answer as incorrect${RESET}\n`);
 }
+
+/** Holds the last response so /wrong can reference it */
+let lastQuery = null;
+let lastResult = null;
 
 function formatAccountingRedirect(query) {
   printHeader('⚠️  Accounting Integration — Out of Scope');
@@ -132,7 +138,12 @@ console.log(`${DIM}Type a customer issue or agent question. Type "quit" to exit.
 console.log(`${DIM}Examples:${RESET}`);
 console.log(`  ${CYAN}Customer's Zapier integration shows no API access on their tenant${RESET}`);
 console.log(`  ${CYAN}Angi leads stopped syncing after tenant migration${RESET}`);
-console.log(`  ${CYAN}How do I set up QuickBooks? ${DIM}(→ accounting redirect)${RESET}`);
+console.log(`  ${CYAN}How do I set up QuickBooks? ${DIM}(-> accounting redirect)${RESET}`);
+console.log();
+console.log(`${DIM}Commands:${RESET}`);
+console.log(`  ${CYAN}/wrong${RESET}     ${DIM}— flag the last answer as incorrect and provide correction${RESET}`);
+console.log(`  ${CYAN}/feedback${RESET}   ${DIM}— view all saved feedback entries${RESET}`);
+console.log(`  ${CYAN}quit${RESET}       ${DIM}— exit${RESET}`);
 console.log();
 
 const rl = createInterface({
@@ -154,6 +165,71 @@ rl.on('line', async (input) => {
   if (query.toLowerCase() === 'quit' || query.toLowerCase() === 'exit') {
     console.log(`${DIM}Goodbye!${RESET}`);
     process.exit(0);
+  }
+
+  // ── /wrong command — flag the last response as incorrect ────────────────
+  if (query.toLowerCase() === '/wrong') {
+    if (!lastResult) {
+      console.log(`\n${RED}No previous answer to flag. Ask a question first.${RESET}\n`);
+      rl.prompt();
+      return;
+    }
+
+    console.log(`\n${BOLD}${RED}👎 Flagging as wrong:${RESET} ${lastResult.issue_title}`);
+    console.log(`${DIM}What type of problem?${RESET}`);
+    console.log(`  ${BOLD}1${RESET} — Completely wrong answer`);
+    console.log(`  ${BOLD}2${RESET} — Partially correct but missing key steps`);
+    console.log(`  ${BOLD}3${RESET} — Outdated information`);
+    console.log(`  ${BOLD}4${RESET} — Wrong integration identified`);
+
+    const feedbackTypes = ['wrong_answer', 'partially_correct', 'outdated', 'wrong_integration'];
+
+    rl.question(`\n${YELLOW}Choose (1-4):${RESET} `, (typeAnswer) => {
+      const idx = parseInt(typeAnswer, 10) - 1;
+      const feedbackType = feedbackTypes[idx] ?? 'wrong_answer';
+
+      rl.question(`${YELLOW}What is the correct answer?${RESET}\n> `, async (correction) => {
+        if (!correction.trim()) {
+          console.log(`${DIM}Feedback cancelled.${RESET}\n`);
+          rl.prompt();
+          return;
+        }
+
+        const record = await saveFeedback({
+          query: lastQuery,
+          issueTitle: lastResult.issue_title,
+          integrationType: lastResult.integration_type,
+          feedbackType,
+          correction: correction.trim(),
+          agentId: 'cli-user',
+          agentName: 'CLI Tester',
+        });
+
+        console.log(`\n${GREEN}✅ Feedback saved!${RESET} (${record.id})`);
+        console.log(`${DIM}The bot will use this correction for future similar queries.${RESET}\n`);
+        rl.prompt();
+      });
+    });
+    return;
+  }
+
+  // ── /feedback command — view all saved feedback ─────────────────────────
+  if (query.toLowerCase() === '/feedback') {
+    const all = await getAllFeedback();
+    if (all.length === 0) {
+      console.log(`\n${DIM}No feedback recorded yet. Use /wrong after a response to flag it.${RESET}\n`);
+    } else {
+      printHeader(`📝 Saved Feedback (${all.length} entries)`);
+      for (const entry of all.slice(-10)) { // show last 10
+        console.log(`\n  ${BOLD}${entry.id}${RESET} ${DIM}(${entry.timestamp})${RESET}`);
+        console.log(`  ${DIM}Query:${RESET} ${entry.query.slice(0, 80)}`);
+        console.log(`  ${DIM}Type:${RESET} ${RED}${entry.feedbackType}${RESET}`);
+        console.log(`  ${DIM}Correction:${RESET} ${GREEN}${entry.correction.slice(0, 120)}${RESET}`);
+      }
+      console.log();
+    }
+    rl.prompt();
+    return;
   }
 
   // 1. Accounting check
@@ -182,7 +258,18 @@ rl.on('line', async (input) => {
       process.stdout.write(`\r${YELLOW}${'·'.repeat(dots + 1)}${' '.repeat(3 - dots)}${RESET}`);
     }, 500);
 
-    const result = await queryWithMcp(query);
+    // Inject past corrections for context
+    let feedbackContext = '';
+    const corrections = await getRelevantFeedback(query);
+    if (corrections.length > 0) {
+      const lines = corrections.map(
+        (c) => `- Query: "${c.query}" -> Bot was wrong (${c.feedbackType}). Correct answer: ${c.correction}`,
+      );
+      feedbackContext = `\n\nIMPORTANT - Past corrections from agents:\n${lines.join('\n')}`;
+      console.log(`${DIM}(injecting ${corrections.length} past correction(s) as context)${RESET}`);
+    }
+
+    const result = await queryWithMcp(query + feedbackContext);
 
     clearInterval(spinner);
     process.stdout.write('\r    \r'); // clear spinner
@@ -191,6 +278,8 @@ rl.on('line', async (input) => {
     if (result.is_accounting_topic) {
       formatAccountingRedirect(query);
     } else {
+      lastQuery = query;
+      lastResult = result;
       setCached(query, result);
       formatResponse(result);
     }
