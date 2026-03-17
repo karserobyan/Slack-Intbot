@@ -16,6 +16,9 @@ const MAX_ENTRIES = 50;
 /** @type {Map<string, { data: object, expiresAt: number }>} */
 const store = new Map();
 
+let _hits = 0;
+let _misses = 0;
+
 /**
  * Normalises a query string into a stable cache key.
  * @param {string} query
@@ -33,11 +36,13 @@ export function cacheKey(query) {
 export function getCached(query) {
   const key = cacheKey(query);
   const entry = store.get(key);
-  if (!entry) return null;
+  if (!entry) { _misses++; return null; }
   if (Date.now() > entry.expiresAt) {
     store.delete(key);
+    _misses++;
     return null;
   }
+  _hits++;
   return entry.data;
 }
 
@@ -80,5 +85,13 @@ export function pruneExpired() {
 
 /** Returns current cache stats for debugging. */
 export function cacheStats() {
-  return { size: store.size, maxEntries: MAX_ENTRIES, ttlMs: TTL_MS };
+  const total = _hits + _misses;
+  return {
+    size: store.size,
+    maxEntries: MAX_ENTRIES,
+    ttlMs: TTL_MS,
+    hits: _hits,
+    misses: _misses,
+    hitRate: total > 0 ? `${Math.round((_hits / total) * 100)}%` : 'N/A',
+  };
 }

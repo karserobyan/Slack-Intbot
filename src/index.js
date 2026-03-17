@@ -107,8 +107,8 @@ app.view('feedback_submission', async ({ ack, body, view, client }) => {
       channel: body.user.id,
       text: `✅ Thanks for the feedback! Your correction has been saved (${record.id}). The bot will use this to improve future answers.`,
     });
-  } catch {
-    // DM may fail if bot doesn't have im:write — not critical
+  } catch (err) {
+    app.logger.warn(`[feedback] Could not DM confirmation to ${body.user.name}: ${err.message}`);
   }
 });
 
@@ -121,6 +121,20 @@ setInterval(
   },
   15 * 60 * 1000,
 );
+
+// ── Health check endpoint (HTTP mode) ────────────────────────────────────────
+app.receiver?.router?.get?.('/health', (_req, res) => {
+  const stats = cacheStats();
+  res.json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    cache: stats,
+    mcp: {
+      slack: Boolean(process.env.SLACK_MCP_TOKEN || process.env.SLACK_BOT_TOKEN),
+      atlassian: Boolean(process.env.ATLASSIAN_MCP_TOKEN),
+    },
+  });
+});
 
 // ── Start ────────────────────────────────────────────────────────────────────
 (async () => {
@@ -142,3 +156,13 @@ setInterval(
     `[startup] MCP: Slack=${hasMcpSlack ? '✅' : '❌ (set SLACK_MCP_TOKEN)'}  Atlassian=${hasMcpAtlassian ? '✅' : '❌ (set ATLASSIAN_MCP_TOKEN)'}`,
   );
 })();
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+async function shutdown(signal) {
+  app.logger.info(`[shutdown] ${signal} received — shutting down gracefully`);
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

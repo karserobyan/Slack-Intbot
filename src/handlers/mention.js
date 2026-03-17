@@ -8,6 +8,7 @@ import {
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
+import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 
 /**
  * Strips the bot mention (<@UXXXXXXX>) from the message text.
@@ -37,6 +38,17 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       channel: channelId,
       thread_ts: threadTs,
       text: "Hi! Ask me about a ServiceTitan integration issue and I'll help you troubleshoot it. For example: _\"Customer's Zapier integration isn't working — they say API access was never set up.\"_",
+    });
+    return;
+  }
+
+  // Rate limit — prevent a single user from spamming Claude calls
+  if (!checkRateLimit(userId)) {
+    const resetIn = rateLimitResetIn(userId);
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: `⏳ You're sending requests too quickly. Please wait ${resetIn}s before trying again.`,
     });
     return;
   }
@@ -83,8 +95,16 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   try {
     const corrections = await getRelevantFeedback(query);
     if (corrections.length > 0) {
+      // Sanitize corrections before injecting into the Claude prompt to prevent prompt injection.
+      // Strip markdown headers and limit length on each field.
+      const sanitize = (str) => String(str ?? '')
+        .replace(/^#+\s*/gm, '')   // remove markdown headers
+        .replace(/^\s*[-*>]+/gm, '') // remove list/quote markers at line start
+        .trim()
+        .slice(0, 300);
+
       const lines = corrections.map(
-        (c) => `- Query: "${c.query}" → Bot was wrong (${c.feedbackType}). Correct answer: ${c.correction}`,
+        (c) => `- Query: "${sanitize(c.query)}" → Bot was wrong (${c.feedbackType}). Correct answer: ${sanitize(c.correction)}`,
       );
       feedbackContext = `\n\nIMPORTANT — Past corrections from agents (use these to avoid repeating mistakes):\n${lines.join('\n')}`;
     }
@@ -169,15 +189,31 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
  * @param {import('@slack/bolt').App} app
  */
 export function registerMentionHandler(app) {
+  // Lightweight dedup — prevents double-processing if Socket Mode reconnects
+  // mid-delivery and replays an in-flight event.
+  const _inFlight = new Set();
+
   app.event('app_mention', async ({ event, client, logger }) => {
+    if (_inFlight.has(event.ts)) {
+      logger.warn(`[mention] Duplicate event ${event.ts} — skipping`);
+      return;
+    }
+    _inFlight.add(event.ts);
+
     logger.info(`[mention] ${event.user} in ${event.channel}: ${event.text?.slice(0, 80)}`);
 
-    await handleQuery({
-      rawText: event.text ?? '',
-      channelId: event.channel,
-      threadTs: event.thread_ts ?? event.ts,
-      client,
-      userId: event.user,
-    });
+    try {
+      await handleQuery({
+        rawText: event.text ?? '',
+        channelId: event.channel,
+        threadTs: event.thread_ts ?? event.ts,
+        client,
+        userId: event.user,
+      });
+    } finally {
+      // Remove after 60s — keeps the Set from growing forever while still
+      // covering Slack's retry window (well under 60s).
+      setTimeout(() => _inFlight.delete(event.ts), 60_000);
+    }
   });
 }

@@ -78,6 +78,11 @@ export async function queryWithMcp(userQuery, onToken) {
         .map((b) => b.text)
         .join('');
     }
+  } catch (err) {
+    if (err.name === 'AbortError' || controller.signal.aborted) {
+      throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — Claude with MCP tools is slow on complex queries. Try rephrasing or being more specific.`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
