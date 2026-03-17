@@ -11,8 +11,9 @@ import {
   buildErrorBlocks,
   buildEmailModal,
 } from './src/slack/blocks.js';
-import { getCached, setCached, cacheStats, pruneExpired } from './src/slack/cache.js';
+import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
+import { getRelevantFeedback } from './src/slack/feedback.js';
 
 let passed = 0;
 let failed = 0;
@@ -161,6 +162,16 @@ assert(stats.size === 1, `Cache size is 1 (got ${stats.size})`);
 pruneExpired();
 assert(getCached('Zapier API access not working') !== null, 'Prune does not remove fresh entries');
 
+// deleteCache
+setCached('delete test query', sampleJson);
+assert(getCached('delete test query') !== null, 'Entry exists before delete');
+deleteCache('delete test query');
+assert(getCached('delete test query') === null, 'deleteCache removes the entry');
+// Key normalisation applies to delete too
+setCached('normalise delete', sampleJson);
+deleteCache('  NORMALISE   DELETE  ');
+assert(getCached('normalise delete') === null, 'deleteCache normalises key');
+
 // ── 5. Accounting + Non-Accounting Response Flow Simulation ──────────────────
 console.log('\n🔹 End-to-End Flow Simulation');
 
@@ -200,6 +211,30 @@ assert(noRefs.length > 0, 'Handles empty refs without crashing');
 const longQuery = 'A'.repeat(500);
 const longThinking = buildThinkingBlocks(longQuery);
 assert(longThinking[0].text.text.length < 3100, 'Long query is truncated in thinking block');
+
+// Button value length guard — Slack's limit is 2000 chars
+const longTitleBlocks = buildResponseBlocks({
+  ...sampleJson,
+  issue_title: 'A'.repeat(200),
+  integration_type: 'B'.repeat(100),
+  _originalQuery: 'C'.repeat(600),
+});
+const actionsBlock = longTitleBlocks.find(b => b.type === 'actions');
+const wrongBtn = actionsBlock?.elements?.find(e => e.action_id === 'wrong_answer_modal');
+assert(wrongBtn !== undefined, 'wrong_answer_modal button exists even with long values');
+assert(wrongBtn.value.length <= 2000, `wrong_answer_modal value within 2000 chars (got ${wrongBtn?.value?.length})`);
+
+// ── 7. Feedback Module ───────────────────────────────────────────────────────
+console.log('\n🔹 Feedback Module');
+
+// Test: getRelevantFeedback returns an array (empty when no feedback on disk)
+const emptyFeedback = await getRelevantFeedback('zapier api access not working');
+assert(Array.isArray(emptyFeedback), 'getRelevantFeedback returns array');
+
+// Test: query with only short words (≤3 chars) — all words filtered, returns empty
+const shortWordFeedback = await getRelevantFeedback('it is ok');
+assert(Array.isArray(shortWordFeedback), 'Short-word query returns array');
+assert(shortWordFeedback.length === 0, 'Short-word query matches nothing (all words ≤3 chars filtered)');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

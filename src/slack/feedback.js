@@ -2,53 +2,72 @@
  * Feedback storage — persists "wrong answer" corrections to a local JSON file
  * and optionally posts to a Slack channel for team visibility.
  *
- * Feedback is used to improve the system prompt over time by building a
- * corrections library that Claude can reference.
+ * Design:
+ * - Write queue: all writes are serialised via a Promise chain to prevent concurrent
+ *   write races that could corrupt or lose entries. The .catch() guard prevents a
+ *   failed write from poisoning the queue for future writes.
+ * - In-memory cache: feedback array is kept in memory after first load; invalidated
+ *   on every write. Avoids a disk read on every query.
+ * - Size cap: max 500 entries; oldest are evicted to keep the file manageable.
+ * - Cache invalidation: when feedback is saved for a query, the bot's response cache
+ *   entry for that query is deleted so the next identical query goes back to Claude
+ *   with the correction injected.
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
+import { deleteCache } from './cache.js';
 
 const FEEDBACK_DIR = join(process.cwd(), 'data');
 const FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
-
-// Optional: post feedback to a Slack channel for team visibility
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL_ID || null;
+const MAX_ENTRIES = 500;
+
+// In-memory cache of the feedback array. null = not yet loaded.
+let _cache = null;
+
+// Write queue — all writes are chained onto this Promise to prevent races.
+let _writeQueue = Promise.resolve();
 
 /**
- * Loads existing feedback entries from disk.
+ * Loads feedback from disk (or returns the in-memory cache if populated).
  * @returns {Promise<Array>}
  */
 async function loadFeedback() {
+  if (_cache !== null) return _cache;
   try {
     const raw = await readFile(FEEDBACK_FILE, 'utf-8');
-    return JSON.parse(raw);
+    _cache = JSON.parse(raw);
   } catch {
-    return [];
+    _cache = [];
   }
+  return _cache;
+}
+
+/**
+ * Persists the current in-memory cache to disk.
+ * Must only be called from within the write queue.
+ */
+async function persistFeedback(entries) {
+  await mkdir(FEEDBACK_DIR, { recursive: true }); // safe to call even if dir exists
+  await writeFile(FEEDBACK_FILE, JSON.stringify(entries, null, 2));
 }
 
 /**
  * Saves a new feedback entry.
+ * Writes are serialised via the write queue to prevent concurrent write races.
  *
  * @param {object} entry
- * @param {string} entry.query - Original agent query
- * @param {string} entry.issueTitle - Bot's generated issue title
- * @param {string} entry.integrationType - Bot's detected integration type
- * @param {string} entry.feedbackType - "wrong_answer" | "partially_correct" | "outdated"
- * @param {string} entry.correction - Agent's correction / correct answer
- * @param {string} entry.agentId - Slack user ID of the agent
- * @param {string} entry.agentName - Slack display name
- * @returns {Promise<object>} The saved entry with id and timestamp
+ * @param {string} entry.query
+ * @param {string} entry.issueTitle
+ * @param {string} entry.integrationType
+ * @param {string} entry.feedbackType
+ * @param {string} entry.correction
+ * @param {string} entry.agentId
+ * @param {string} entry.agentName
+ * @returns {Promise<object>} The saved record
  */
 export async function saveFeedback(entry) {
-  if (!existsSync(FEEDBACK_DIR)) {
-    await mkdir(FEEDBACK_DIR, { recursive: true });
-  }
-
-  const feedback = await loadFeedback();
-
   const record = {
     id: `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     timestamp: new Date().toISOString(),
@@ -61,8 +80,31 @@ export async function saveFeedback(entry) {
     agentName: entry.agentName,
   };
 
-  feedback.push(record);
-  await writeFile(FEEDBACK_FILE, JSON.stringify(feedback, null, 2));
+  // Serialise the write. The .catch() on the chain prevents a failed write
+  // from permanently poisoning the queue — each write's error is handled
+  // independently so future writes still proceed.
+  _writeQueue = _writeQueue
+    .then(async () => {
+      const feedback = await loadFeedback();
+      feedback.push(record);
+
+      // Evict oldest entries if over the cap
+      if (feedback.length > MAX_ENTRIES) {
+        feedback.splice(0, feedback.length - MAX_ENTRIES);
+      }
+
+      _cache = feedback;
+      await persistFeedback(feedback);
+    })
+    .catch((err) => {
+      console.error('[feedback] Write failed, queue continues:', err.message);
+    });
+
+  await _writeQueue;
+
+  // Invalidate the bot's response cache so the next identical query
+  // goes back to Claude with this correction injected.
+  deleteCache(record.query);
 
   return record;
 }
@@ -97,24 +139,15 @@ export async function notifyFeedbackChannel(client, record) {
         },
         {
           type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Original query:*\n>${record.query}`,
-          },
+          text: { type: 'mrkdwn', text: `*Original query:*\n>${record.query}` },
         },
         {
           type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Bot said:*\n>${record.issueTitle}`,
-          },
+          text: { type: 'mrkdwn', text: `*Bot said:*\n>${record.issueTitle}` },
         },
         {
           type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `*Correction:*\n>${record.correction}`,
-          },
+          text: { type: 'mrkdwn', text: `*Correction:*\n>${record.correction}` },
         },
         {
           type: 'context',
@@ -130,7 +163,7 @@ export async function notifyFeedbackChannel(client, record) {
 }
 
 /**
- * Returns all feedback entries (for building correction context).
+ * Returns all feedback entries.
  * @returns {Promise<Array>}
  */
 export async function getAllFeedback() {
@@ -138,8 +171,12 @@ export async function getAllFeedback() {
 }
 
 /**
- * Returns recent feedback entries relevant to a query (simple keyword match).
- * Used to inject corrections into the Claude system prompt.
+ * Returns recent feedback entries relevant to a query (keyword-scored).
+ * Used to inject corrections into the Claude prompt.
+ *
+ * Scoring: each query word (>3 chars) that appears in the feedback entry's
+ * combined text earns 1 point. Longer matching words earn a bonus point,
+ * biasing toward specific technical terms over common short words.
  *
  * @param {string} query
  * @param {number} [limit=5]
@@ -150,11 +187,15 @@ export async function getRelevantFeedback(query, limit = 5) {
   if (all.length === 0) return [];
 
   const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  if (queryWords.length === 0) return [];
 
   const scored = all.map((entry) => {
     const text = `${entry.query} ${entry.integrationType} ${entry.correction}`.toLowerCase();
-    const matches = queryWords.filter((w) => text.includes(w)).length;
-    return { entry, score: matches };
+    const score = queryWords.reduce((acc, w) => {
+      if (!text.includes(w)) return acc;
+      return acc + 1 + (w.length > 6 ? 1 : 0); // bonus for longer, more specific words
+    }, 0);
+    return { entry, score };
   });
 
   return scored

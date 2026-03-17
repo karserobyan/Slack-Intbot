@@ -128,9 +128,9 @@ export function buildResponseBlocks(data) {
           style: 'danger',
           // Pass context so the feedback modal knows what was asked/answered
           value: JSON.stringify({
-            query: (data._originalQuery ?? '').slice(0, 500),
-            issueTitle: data.issue_title,
-            integrationType: data.integration_type,
+            query: (data._originalQuery ?? '').slice(0, 400),
+            issueTitle: (data.issue_title ?? '').slice(0, 100),
+            integrationType: (data.integration_type ?? '').slice(0, 50),
           }),
         },
       ],
@@ -242,13 +242,6 @@ export function buildErrorBlocks(query) {
 }
 
 /**
- * Builds the modal view shown when an agent clicks "Copy Email Draft".
- *
- * @param {string} subject
- * @param {string} body
- * @returns {object} Slack view payload
- */
-/**
  * Builds the modal for "Wrong Answer" feedback.
  *
  * @param {object} context - { query, issueTitle, integrationType }
@@ -306,6 +299,13 @@ export function buildFeedbackModal(context) {
   };
 }
 
+/**
+ * Builds the modal view shown when an agent clicks "Copy Email Draft".
+ *
+ * @param {string} subject
+ * @param {string} body
+ * @returns {object} Slack view payload
+ */
 export function buildEmailModal(subject, body) {
   return {
     type: 'modal',

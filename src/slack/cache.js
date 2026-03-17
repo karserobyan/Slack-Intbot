@@ -60,6 +60,15 @@ export function setCached(query, data) {
 }
 
 /**
+ * Removes a specific entry from the cache.
+ * Used to invalidate stale responses when feedback is submitted for a query.
+ * @param {string} query
+ */
+export function deleteCache(query) {
+  store.delete(cacheKey(query));
+}
+
+/**
  * Removes all expired entries. Can be called periodically to keep memory tidy.
  */
 export function pruneExpired() {

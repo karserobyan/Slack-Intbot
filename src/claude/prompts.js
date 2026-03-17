@@ -97,11 +97,21 @@ Reply ONLY with valid JSON. No markdown fences. No explanation text outside the 
 /**
  * Parses Claude's JSON response string into an object.
  * Strips any accidental markdown fences before parsing.
+ * Logs the raw text at debug level always, and at error level on parse failure.
  * @param {string} text
  * @returns {object}
  */
 export function parseClaudeResponse(text) {
-  // Strip markdown code fences if Claude accidentally added them
   const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  return JSON.parse(stripped);
+
+  if (process.env.LOG_LEVEL === 'debug') {
+    console.debug('[claude] Raw response (first 500 chars):', stripped.slice(0, 500));
+  }
+
+  try {
+    return JSON.parse(stripped);
+  } catch (err) {
+    console.error('[claude] JSON parse failed. Raw response was:\n', stripped);
+    throw err;
+  }
 }
