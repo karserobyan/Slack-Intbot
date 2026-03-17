@@ -45,6 +45,11 @@ assert(isAccountingTopic('Thumbtack redirect loop') === false, 'Thumbtack is NOT
 assert(isAccountingTopic('ServiceChannel photos not syncing') === false, 'ServiceChannel is NOT accounting');
 assert(isAccountingTopic('Chat-to-text widget not showing') === false, 'Chat-to-Text is NOT accounting');
 
+// False positive guard — these must NOT trigger accounting redirect
+assert(isAccountingTopic('customer has zero Angi leads syncing') === false, 'zero does not match xero');
+assert(isAccountingTopic('netsuitething not syncing') === false, 'netsuite word boundary: netsuitething must not match');
+assert(isAccountingTopic('quickbooksreader tool installed') === false, 'quickbooks word boundary: quickbooksreader must not match');
+
 // ── 2. Claude Response Parsing ───────────────────────────────────────────────
 console.log('\n🔹 Claude Response Parsing');
 

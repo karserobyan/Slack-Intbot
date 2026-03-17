@@ -3,36 +3,36 @@
  * which are out of scope for this team.
  */
 
-const ACCOUNTING_KEYWORDS = [
-  'quickbooks',
-  'quick books',
-  'sage intacct',
-  'sage intact',
-  'netsuite',
-  'net suite',
-  'xero',
-  'viewpoint vista',
-  'accounts payable',
-  'accounts receivable',
-  'gl accounts',
-  'general ledger',
-  'accounting integration',
-  'accounting sync',
-  'chart of accounts',
-  'journal entry',
-  'journal entries',
-  'qbo',          // QuickBooks Online abbreviation
-  'qbd',          // QuickBooks Desktop abbreviation
+// Each entry is a RegExp with word boundaries to prevent substring false positives.
+// e.g. "xero" must not match "zero", "netsuite" must not match "netsuitething".
+const ACCOUNTING_PATTERNS = [
+  /\bquickbooks\b/i,
+  /\bquick\s+books\b/i,
+  /\bsage\s+intacct\b/i,
+  /\bsage\s+intact\b/i,   // common misspelling
+  /\bnetsuite\b/i,
+  /\bxero\b/i,
+  /\bviewpoint\s+vista\b/i,
+  /\baccounts\s+payable\b/i,
+  /\baccounts\s+receivable\b/i,
+  /\bgl\s+accounts\b/i,
+  /\bgeneral\s+ledger\b/i,
+  /\baccounting\s+integration\b/i,
+  /\baccounting\s+sync\b/i,
+  /\bchart\s+of\s+accounts\b/i,
+  /\bjournal\s+entr(y|ies)\b/i,
+  /\bqbo\b/i,   // QuickBooks Online
+  /\bqbd\b/i,   // QuickBooks Desktop
 ];
 
 /**
- * Returns true if the query contains accounting-related keywords.
+ * Returns true if the query contains accounting-related patterns.
+ * Uses word-boundary regex matching to avoid substring false positives.
  * @param {string} text
  * @returns {boolean}
  */
 export function isAccountingTopic(text) {
-  const lower = text.toLowerCase();
-  return ACCOUNTING_KEYWORDS.some((kw) => lower.includes(kw));
+  return ACCOUNTING_PATTERNS.some((re) => re.test(text));
 }
 
 export const ACCOUNTING_REDIRECT_CHANNEL = '#ask-partner-enabled-accounting-integrations';

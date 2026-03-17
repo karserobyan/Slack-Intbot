@@ -75,7 +75,12 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
 app.view('feedback_submission', async ({ ack, body, view, client }) => {
   await ack();
 
-  const context = JSON.parse(view.private_metadata || '{}');
+  let context = {};
+  try {
+    context = JSON.parse(view.private_metadata || '{}');
+  } catch {
+    app.logger.warn('[feedback] Could not parse private_metadata — proceeding with empty context');
+  }
   const values = view.state.values;
 
   const feedbackType = values.feedback_type_block?.feedback_type_select?.selected_option?.value ?? 'wrong_answer';
