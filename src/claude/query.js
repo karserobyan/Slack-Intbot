@@ -6,7 +6,7 @@ const anthropic = new Anthropic({
 });
 
 // Configurable timeout — Claude with MCP tools can take 30-90s
-const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10);
+const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
 
 // Model is configurable so you can test with cheaper models locally
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-20250514';
