@@ -34,6 +34,7 @@ console.log('\n🔹 Accounting Filter');
 assert(isAccountingTopic('How do I connect QuickBooks?') === true, 'Detects QuickBooks');
 assert(isAccountingTopic('Sage Intacct sync is broken') === true, 'Detects Sage Intacct');
 assert(isAccountingTopic('NetSuite GL accounts not mapping') === true, 'Detects NetSuite');
+assert(isAccountingTopic('Net Suite sync is broken') === true, 'Detects Net Suite (space-separated)');
 assert(isAccountingTopic('Xero integration setup') === true, 'Detects Xero');
 assert(isAccountingTopic('Viewpoint Vista accounts payable') === true, 'Detects Viewpoint Vista');
 assert(isAccountingTopic('accounts receivable report issue') === true, 'Detects accounts receivable');

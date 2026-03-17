@@ -11,6 +11,7 @@ const ACCOUNTING_PATTERNS = [
   /\bsage\s+intacct\b/i,
   /\bsage\s+intact\b/i,   // common misspelling
   /\bnetsuite\b/i,
+  /\bnet\s+suite\b/i,
   /\bxero\b/i,
   /\bviewpoint\s+vista\b/i,
   /\baccounts\s+payable\b/i,
