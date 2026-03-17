@@ -117,7 +117,7 @@ export function buildResponseBlocks(data) {
           style: 'primary',
           // Pass email data as value (JSON-encoded, max 2000 chars)
           value: JSON.stringify({
-            subject: email.subject,
+            subject: (email.subject ?? '').slice(0, 150),
             body: email.body.slice(0, 1800), // guard against value size limit
           }),
         },

@@ -10,7 +10,7 @@
  *   "zapier api access", "rwg pending", "angi not syncing", etc.
  */
 
-const TTL_MS = parseInt(process.env.CACHE_TTL_MS ?? '3600000', 10); // 1 hour default
+const TTL_MS = parseInt(process.env.CACHE_TTL_MS ?? '3600000', 10) || 3600000; // 1 hour default
 const MAX_ENTRIES = 50;
 
 /** @type {Map<string, { data: object, expiresAt: number }>} */
