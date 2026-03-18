@@ -1,5 +1,7 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
 import { queryWithContext } from '../claude/query.js';
+import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
+import { queryChat } from '../claude/query.js';
 import {
   buildResponseBlocks,
   buildAccountingRedirectBlocks,
@@ -53,6 +55,51 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
+  // 1b. Follow-up path — thread has prior history, use conversational mode
+  if (hasHistory(threadTs)) {
+    const history = getHistory(threadTs);
+
+    // Post thinking placeholder
+    let thinkingTs;
+    try {
+      const thinkingMsg = await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text: 'Thinking…',
+      });
+      thinkingTs = thinkingMsg.ts;
+    } catch (err) {
+      console.error('[mention] Failed to post thinking message:', err.message);
+    }
+
+    let replyText;
+    try {
+      replyText = await queryChat(query, history);
+    } catch (err) {
+      console.error('[mention] queryChat failed:', err.message);
+      const errText = 'Something went wrong — please retry or escalate manually.';
+      if (thinkingTs) {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, text: errText });
+      } else {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: errText });
+      }
+      return;
+    }
+
+    // Append this exchange to history
+    appendToHistory(threadTs, [
+      { role: 'user', content: query },
+      { role: 'assistant', content: replyText },
+    ]);
+
+    if (thinkingTs) {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, text: replyText });
+    } else {
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: replyText });
+    }
+    return;
+  }
+
   // 1. Fast-path: accounting redirect (no Claude needed)
   if (isAccountingTopic(query)) {
     await client.chat.postMessage({
@@ -73,6 +120,10 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       blocks: buildResponseBlocks(cached),
       text: `Troubleshooting steps for: ${cached.issue_title}`,
     });
+    appendToHistory(threadTs, [
+      { role: 'user', content: query },
+      { role: 'assistant', content: JSON.stringify(cached) },
+    ]);
     return;
   }
 
@@ -182,6 +233,13 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       text: fallbackText,
     });
   }
+
+  // Save initial exchange to conversation history for follow-up support.
+  // Placed here (after delivery) so accounting redirects never seed history.
+  appendToHistory(threadTs, [
+    { role: 'user', content: query },
+    { role: 'assistant', content: JSON.stringify(result) },
+  ]);
 }
 
 /**

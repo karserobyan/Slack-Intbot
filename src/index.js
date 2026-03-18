@@ -4,6 +4,7 @@ import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { buildEmailModal, buildFeedbackModal } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
+import { pruneConversations } from './slack/conversation.js';
 import { saveFeedback, notifyFeedbackChannel } from './slack/feedback.js';
 
 // ── Validate required environment variables ──────────────────────────────────
@@ -116,6 +117,7 @@ app.view('feedback_submission', async ({ ack, body, view, client }) => {
 setInterval(
   () => {
     pruneExpired();
+    pruneConversations();
     const stats = cacheStats();
     app.logger.info(`[cache] Pruned expired entries. Current size: ${stats.size}/${stats.maxEntries}`);
   },
