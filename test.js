@@ -15,6 +15,7 @@ import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './s
 import { parseClaudeResponse } from './src/claude/prompts.js';
 import { getRelevantFeedback } from './src/slack/feedback.js';
 import { extractKeywords, scoreMessage } from './src/search/slack-search.js';
+import { buildCql } from './src/search/confluence-search.js';
 
 let passed = 0;
 let failed = 0;
@@ -249,6 +250,15 @@ assert(!extractKeywords('api').includes('api'), 'Short words (≤3 chars) filter
 assert(scoreMessage('zapier api access issue on tenant', ['zapier', 'access']) === 2, 'Scores 2 keyword hits');
 assert(scoreMessage('angi leads not syncing', ['zapier']) === 0, 'Scores 0 for no match');
 assert(scoreMessage('ZAPIER Integration Setup', ['zapier']) === 1, 'Score is case-insensitive');
+
+// ── 9. Confluence Search Utilities ───────────────────────────────────────────
+console.log('\n🔹 Confluence Search Utilities');
+
+assert(buildCql([]).includes('type=page'), 'Empty keywords returns safe default CQL');
+assert(buildCql(['zapier', 'access']).includes('text ~ "zapier"'), 'CQL includes first keyword');
+assert(buildCql(['zapier', 'access']).includes('text ~ "access"'), 'CQL includes second keyword');
+assert(buildCql(['zapier', 'access']).includes('AND'), 'CQL joins multiple keywords with AND');
+assert(buildCql(['zapier']).includes('text ~ "zapier"'), 'Single keyword CQL is valid');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
