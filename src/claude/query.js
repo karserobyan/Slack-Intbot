@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { SYSTEM_PROMPT, parseClaudeResponse } from './prompts.js';
+import { SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT, parseClaudeResponse } from './prompts.js';
 import { gatherContext } from '../search/index.js';
 
 const anthropic = new Anthropic({
@@ -59,4 +59,46 @@ export async function queryWithContext(userQuery) {
   }
 
   return parseClaudeResponse(fullText);
+}
+
+/**
+ * Conversational follow-up query — uses thread history, returns plain text.
+ * Does NOT run search (Slack/Confluence) — relies on history for context.
+ * Aborts automatically after TIMEOUT_MS.
+ *
+ * @param {string} userQuery - The agent's follow-up message
+ * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
+ * @returns {Promise<string>} Plain text response
+ */
+export async function queryChat(userQuery, history) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const messages = [...history, { role: 'user', content: userQuery }];
+
+  const requestParams = {
+    model: MODEL,
+    max_tokens: 2048,
+    system: CHAT_SYSTEM_PROMPT,
+    messages,
+  };
+
+  let fullText = '';
+
+  try {
+    const response = await anthropic.messages.create(requestParams, { signal: controller.signal });
+    fullText = response.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  } catch (err) {
+    if (err.name === 'AbortError' || controller.signal.aborted) {
+      throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — try rephrasing or being more specific.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return fullText;
 }
