@@ -12,6 +12,7 @@ import {
   buildEmailModal,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
+import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
 import { getRelevantFeedback } from './src/slack/feedback.js';
 import { extractKeywords, scoreMessage } from './src/search/slack-search.js';
@@ -280,6 +281,47 @@ const withBoth = formatContext({
 });
 assert(withBoth.includes('Confluence'), 'Confluence section present');
 assert(withBoth.includes('Zapier Setup Guide'), 'Confluence page title in context');
+
+// ── 11. Conversation History ──────────────────────────────────────────────────
+console.log('\n🔹 Conversation History');
+
+// Miss — no history yet
+assert(getHistory('ts-999') === null, 'getHistory returns null for unknown thread');
+assert(hasHistory('ts-999') === false, 'hasHistory returns false for unknown thread');
+
+// Append and retrieve
+appendToHistory('ts-001', [
+  { role: 'user', content: 'Zapier not working' },
+  { role: 'assistant', content: '{"issue_title":"Zapier API Access"}' },
+]);
+const h1 = getHistory('ts-001');
+assert(h1 !== null, 'getHistory returns history after append');
+assert(h1.length === 2, 'History has 2 messages after one append');
+assert(h1[0].role === 'user', 'First message is user');
+assert(h1[1].role === 'assistant', 'Second message is assistant');
+assert(hasHistory('ts-001') === true, 'hasHistory returns true after append');
+
+// Append again (follow-up)
+appendToHistory('ts-001', [
+  { role: 'user', content: 'Can you rewrite the email?' },
+  { role: 'assistant', content: 'Sure, here is a revised version...' },
+]);
+const h2 = getHistory('ts-001');
+assert(h2.length === 4, 'History grows with subsequent appends');
+
+// Max messages cap — adding 10 pairs should trim to 20
+for (let i = 0; i < 10; i++) {
+  appendToHistory('ts-cap', [
+    { role: 'user', content: `msg ${i}` },
+    { role: 'assistant', content: `reply ${i}` },
+  ]);
+}
+const hCap = getHistory('ts-cap');
+assert(hCap.length === 20, `Max 20 messages enforced (got ${hCap?.length})`);
+
+// pruneConversations does not remove fresh entries
+pruneConversations();
+assert(getHistory('ts-001') !== null, 'pruneConversations keeps fresh entries');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
