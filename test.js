@@ -14,6 +14,7 @@ import {
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
 import { getRelevantFeedback } from './src/slack/feedback.js';
+import { extractKeywords, scoreMessage } from './src/search/slack-search.js';
 
 let passed = 0;
 let failed = 0;
@@ -236,6 +237,18 @@ assert(Array.isArray(emptyFeedback), 'getRelevantFeedback returns array');
 const shortWordFeedback = await getRelevantFeedback('it is ok');
 assert(Array.isArray(shortWordFeedback), 'Short-word query returns array');
 assert(shortWordFeedback.length === 0, 'Short-word query matches nothing (all words ≤3 chars filtered)');
+
+// ── 8. Slack Search Utilities ─────────────────────────────────────────────────
+console.log('\n🔹 Slack Search Utilities');
+
+assert(extractKeywords('Zapier API access not working').includes('zapier'), 'Extracts "zapier"');
+assert(extractKeywords('Zapier API access not working').includes('access'), 'Extracts "access"');
+assert(!extractKeywords('Zapier API access not working').includes('not'), '"not" is filtered (stop word)');
+assert(!extractKeywords('api').includes('api'), 'Short words (≤3 chars) filtered');
+
+assert(scoreMessage('zapier api access issue on tenant', ['zapier', 'access']) === 2, 'Scores 2 keyword hits');
+assert(scoreMessage('angi leads not syncing', ['zapier']) === 0, 'Scores 0 for no match');
+assert(scoreMessage('ZAPIER Integration Setup', ['zapier']) === 1, 'Score is case-insensitive');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
