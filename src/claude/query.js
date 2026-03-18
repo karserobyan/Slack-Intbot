@@ -1,86 +1,57 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { SYSTEM_PROMPT, parseClaudeResponse } from './prompts.js';
+import { gatherContext } from '../search/index.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Configurable timeout — Claude with MCP tools can take 30-90s
-const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
+// Reduced timeout — no MCP round-trips anymore
+const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '45000', 10) || 45000;
 
-// Model is configurable so you can test with cheaper models locally
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-20250514';
 
-// MCP server configurations — connections are declared per-request as per SDK spec
-const MCP_SERVERS = [
-  {
-    type: 'url',
-    url: 'https://mcp.slack.com/mcp',
-    name: 'slack',
-    authorization_token: process.env.SLACK_MCP_TOKEN || process.env.SLACK_BOT_TOKEN,
-  },
-  {
-    type: 'url',
-    url: 'https://mcp.atlassian.com/v1/sse',
-    name: 'atlassian',
-    authorization_token: process.env.ATLASSIAN_MCP_TOKEN,
-  },
-];
-
 /**
- * Determines which MCP servers are configured and available.
- * Falls back gracefully if tokens are missing.
- */
-function getAvailableMcpServers() {
-  return MCP_SERVERS.filter((s) => s.authorization_token);
-}
-
-/**
- * Runs a single Claude API call with both MCP servers active simultaneously.
- * Aborts automatically after TIMEOUT_MS (default 90s).
+ * Searches Slack + Confluence, then calls Claude with grounded context.
+ * Aborts automatically after TIMEOUT_MS (default 45s).
+ * Note: the onToken streaming callback from the previous MCP implementation
+ * has been intentionally removed — no active caller uses it.
  *
  * @param {string} userQuery - The agent's question or customer issue
- * @param {Function} [onToken] - Optional callback fired with each streamed text chunk
  * @returns {Promise<object>} Parsed structured response
  */
-export async function queryWithMcp(userQuery, onToken) {
-  const mcpServers = getAvailableMcpServers();
+export async function queryWithContext(userQuery) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  // Gather real context before calling Claude
+  let contextBlock = '';
+  try {
+    contextBlock = await gatherContext(userQuery);
+  } catch (err) {
+    console.warn('[query] Context gathering failed — proceeding without context:', err.message);
+  }
+
+  const userContent = `Issue: ${userQuery}${contextBlock}`;
 
   const requestParams = {
     model: MODEL,
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: `Issue: ${userQuery}` }],
+    messages: [{ role: 'user', content: userContent }],
   };
-
-  if (mcpServers.length > 0) {
-    requestParams.mcp_servers = mcpServers;
-  }
 
   let fullText = '';
 
   try {
-    if (typeof onToken === 'function') {
-      const stream = await anthropic.messages.stream(requestParams, { signal: controller.signal });
-      for await (const chunk of stream) {
-        if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
-          const token = chunk.delta.text;
-          fullText += token;
-          onToken(token);
-        }
-      }
-    } else {
-      const response = await anthropic.messages.create(requestParams, { signal: controller.signal });
-      fullText = response.content
-        .filter((b) => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-    }
+    const response = await anthropic.messages.create(requestParams, { signal: controller.signal });
+    fullText = response.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
   } catch (err) {
     if (err.name === 'AbortError' || controller.signal.aborted) {
-      throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — Claude with MCP tools is slow on complex queries. Try rephrasing or being more specific.`);
+      throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — try rephrasing or being more specific.`);
     }
     throw err;
   } finally {

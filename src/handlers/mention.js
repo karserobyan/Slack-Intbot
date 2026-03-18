@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithMcp } from '../claude/query.js';
+import { queryWithContext } from '../claude/query.js';
 import {
   buildResponseBlocks,
   buildAccountingRedirectBlocks,
@@ -115,7 +115,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   // 5. Call Claude with both MCP servers
   let result;
   try {
-    result = await queryWithMcp(query + feedbackContext);
+    result = await queryWithContext(query + feedbackContext);
   } catch (err) {
     console.error('[mention] Claude query failed:', err.message);
 
