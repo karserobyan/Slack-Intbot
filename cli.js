@@ -10,7 +10,7 @@
 import 'dotenv/config';
 import { createInterface } from 'node:readline';
 import { isAccountingTopic, ACCOUNTING_REDIRECT_CHANNEL } from './src/utils/accounting-filter.js';
-import { queryWithMcp } from './src/claude/query.js';
+import { queryWithContext } from './src/claude/query.js';
 import { getCached, setCached, cacheStats } from './src/slack/cache.js';
 import { saveFeedback, getRelevantFeedback, getAllFeedback } from './src/slack/feedback.js';
 
@@ -269,7 +269,7 @@ rl.on('line', async (input) => {
       console.log(`${DIM}(injecting ${corrections.length} past correction(s) as context)${RESET}`);
     }
 
-    const result = await queryWithMcp(query + feedbackContext);
+    const result = await queryWithContext(query + feedbackContext);
 
     clearInterval(spinner);
     process.stdout.write('\r    \r'); // clear spinner

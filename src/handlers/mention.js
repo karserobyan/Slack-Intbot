@@ -112,7 +112,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     // feedback lookup failure is non-critical
   }
 
-  // 5. Call Claude with both MCP servers
+  // 5. Call Claude with gathered context
   let result;
   try {
     result = await queryWithContext(query + feedbackContext);
