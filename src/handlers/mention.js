@@ -1,7 +1,6 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext } from '../claude/query.js';
+import { queryWithContext, queryChat } from '../claude/query.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
-import { queryChat } from '../claude/query.js';
 import {
   buildResponseBlocks,
   buildAccountingRedirectBlocks,
