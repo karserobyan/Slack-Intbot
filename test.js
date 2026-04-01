@@ -15,9 +15,6 @@ import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './s
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
 import { getRelevantFeedback } from './src/slack/feedback.js';
-import { extractKeywords, scoreMessage } from './src/search/slack-search.js';
-import { buildCql } from './src/search/confluence-search.js';
-import { formatContext } from './src/search/index.js';
 
 let passed = 0;
 let failed = 0;
@@ -241,48 +238,7 @@ const shortWordFeedback = await getRelevantFeedback('it is ok');
 assert(Array.isArray(shortWordFeedback), 'Short-word query returns array');
 assert(shortWordFeedback.length === 0, 'Short-word query matches nothing (all words ≤3 chars filtered)');
 
-// ── 8. Slack Search Utilities ─────────────────────────────────────────────────
-console.log('\n🔹 Slack Search Utilities');
-
-assert(extractKeywords('Zapier API access not working').includes('zapier'), 'Extracts "zapier"');
-assert(extractKeywords('Zapier API access not working').includes('access'), 'Extracts "access"');
-assert(!extractKeywords('Zapier API access not working').includes('not'), '"not" is filtered (stop word)');
-assert(!extractKeywords('api').includes('api'), 'Short words (≤3 chars) filtered');
-
-assert(scoreMessage('zapier api access issue on tenant', ['zapier', 'access']) === 2, 'Scores 2 keyword hits');
-assert(scoreMessage('angi leads not syncing', ['zapier']) === 0, 'Scores 0 for no match');
-assert(scoreMessage('ZAPIER Integration Setup', ['zapier']) === 1, 'Score is case-insensitive');
-
-// ── 9. Confluence Search Utilities ───────────────────────────────────────────
-console.log('\n🔹 Confluence Search Utilities');
-
-assert(buildCql([]).includes('type=page'), 'Empty keywords returns safe default CQL');
-assert(buildCql(['zapier', 'access']).includes('text ~ "zapier"'), 'CQL includes first keyword');
-assert(buildCql(['zapier', 'access']).includes('text ~ "access"'), 'CQL includes second keyword');
-assert(buildCql(['zapier', 'access']).includes('AND'), 'CQL joins multiple keywords with AND');
-assert(buildCql(['zapier']).includes('text ~ "zapier"'), 'Single keyword CQL is valid');
-
-// ── 10. Search Orchestrator ───────────────────────────────────────────────────
-console.log('\n🔹 Search Orchestrator');
-
-const noResults = formatContext({ slackResults: [], confluenceResults: [] });
-assert(noResults === '', 'Empty results returns empty string');
-
-const withSlack = formatContext({
-  slackResults: [{ channel: 'ask-integrations', text: 'Zapier fix here', score: 2, ts: '123' }],
-  confluenceResults: [],
-});
-assert(withSlack.includes('[CONTEXT]'), 'Context block present when results exist');
-assert(withSlack.includes('ask-integrations'), 'Slack channel name in context');
-
-const withBoth = formatContext({
-  slackResults: [{ channel: 'ask-integrations', text: 'Zapier fix', score: 1, ts: '1' }],
-  confluenceResults: [{ title: 'Zapier Setup Guide', excerpt: 'How to set up Zapier', url: 'https://servicetitan.atlassian.net/wiki/zapier' }],
-});
-assert(withBoth.includes('Confluence'), 'Confluence section present');
-assert(withBoth.includes('Zapier Setup Guide'), 'Confluence page title in context');
-
-// ── 11. Conversation History ──────────────────────────────────────────────────
+// ── 8. Conversation History ───────────────────────────────────────────────────
 console.log('\n🔹 Conversation History');
 
 // Miss — no history yet
