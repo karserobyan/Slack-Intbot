@@ -20,7 +20,7 @@ import { deleteCache } from './cache.js';
 
 const FEEDBACK_DIR = join(process.cwd(), 'data');
 const FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
-const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL_ID || null;
+const FEEDBACK_CHANNEL = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID || null;
 const MAX_ENTRIES = 500;
 
 // In-memory cache of the feedback array. null = not yet loaded.
@@ -116,7 +116,10 @@ export async function saveFeedback(entry) {
  * @param {object} record - Saved feedback record
  */
 export async function notifyFeedbackChannel(client, record) {
-  if (!FEEDBACK_CHANNEL) return;
+  if (!FEEDBACK_CHANNEL) {
+    console.warn('[feedback] No review channel configured — set FEEDBACK_REVIEW_CHANNEL_ID in .env');
+    return;
+  }
 
   try {
     await client.chat.postMessage({

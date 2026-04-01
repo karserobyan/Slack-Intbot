@@ -152,6 +152,9 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
 
   app.logger.info('[startup] Bot is ready. Mention @IntegrationsBot or DM it to get started.');
 
+  const feedbackChannel = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID;
+  app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — feedback notifications disabled'}`);
+
   const hasMcpSlack = Boolean(process.env.SLACK_MCP_TOKEN || process.env.SLACK_BOT_TOKEN);
   const hasMcpAtlassian = Boolean(process.env.ATLASSIAN_MCP_TOKEN);
   app.logger.info(
