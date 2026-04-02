@@ -6,7 +6,7 @@ import { buildEmailModal, buildFeedbackModal, buildResponseBlocks } from './slac
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
-import { saveFeedback, notifyFeedbackChannel } from './slack/feedback.js';
+import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback } from './slack/feedback.js';
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -171,15 +171,101 @@ app.view('feedback_submission', async ({ ack, body, view, client }) => {
   // Notify feedback channel if configured
   await notifyFeedbackChannel(client, record);
 
-  // DM the agent a confirmation
+  // DM the submitting agent that feedback is pending review
   try {
     await client.chat.postMessage({
       channel: body.user.id,
-      text: `✅ Thanks for the feedback! Your correction has been saved (${record.id}). The bot will use this to improve future answers.`,
+      text: `Thanks for the feedback! It's been sent for review — if approved, it'll help improve the bot.`,
     });
   } catch (err) {
-    app.logger.warn(`[feedback] Could not DM confirmation to ${body.user.name}: ${err.message}`);
+    app.logger.warn(`[feedback] Could not DM submission confirmation to ${body.user.name}: ${err.message}`);
   }
+});
+
+// ── Approve feedback ──────────────────────────────────────────────────────
+app.action('approve_feedback', async ({ ack, body, client, action }) => {
+  await ack();
+
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  const { feedbackId } = payload;
+  if (!feedbackId) return;
+
+  const record = await approveFeedback(feedbackId);
+  if (!record) return; // Already processed
+
+  // Get reviewer name
+  let reviewerName = body.user.name;
+  try {
+    const res = await client.users.info({ user: body.user.id });
+    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
+  } catch { /* use fallback */ }
+
+  // Update review card
+  if (record.reviewMessageTs && record.reviewChannelId) {
+    await client.chat.update({
+      channel: record.reviewChannelId,
+      ts: record.reviewMessageTs,
+      text: `✅ Approved by ${reviewerName}`,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `✅ *Approved by ${reviewerName}*\n_Feedback ID: ${record.id}_` },
+        },
+      ],
+    }).catch((err) => app.logger.warn('[feedback] Failed to update review card:', err.message));
+  }
+
+  // DM the submitting agent
+  await client.chat.postMessage({
+    channel: record.agentId,
+    text: `✅ Your feedback on *"${record.issueTitle}"* was approved and applied — thanks for helping improve the bot!`,
+  }).catch((err) => app.logger.warn('[feedback] Failed to DM agent after approval:', err.message));
+
+  app.logger.info(`[feedback] ${feedbackId} approved by ${reviewerName}`);
+});
+
+// ── Reject feedback ───────────────────────────────────────────────────────
+app.action('reject_feedback', async ({ ack, body, client, action }) => {
+  await ack();
+
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  const { feedbackId } = payload;
+  if (!feedbackId) return;
+
+  const record = await rejectFeedback(feedbackId);
+  if (!record) return; // Already processed
+
+  // Get reviewer name
+  let reviewerName = body.user.name;
+  try {
+    const res = await client.users.info({ user: body.user.id });
+    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
+  } catch { /* use fallback */ }
+
+  // Update review card
+  if (record.reviewMessageTs && record.reviewChannelId) {
+    await client.chat.update({
+      channel: record.reviewChannelId,
+      ts: record.reviewMessageTs,
+      text: `❌ Rejected by ${reviewerName}`,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `❌ *Rejected by ${reviewerName}*\n_Feedback ID: ${record.id}_` },
+        },
+      ],
+    }).catch((err) => app.logger.warn('[feedback] Failed to update review card:', err.message));
+  }
+
+  // DM the submitting agent
+  await client.chat.postMessage({
+    channel: record.agentId,
+    text: `Your feedback on *"${record.issueTitle}"* was reviewed and not applied — thanks for flagging it.`,
+  }).catch((err) => app.logger.warn('[feedback] Failed to DM agent after rejection:', err.message));
+
+  app.logger.info(`[feedback] ${feedbackId} rejected by ${reviewerName}`);
 });
 
 // ── Periodic cache prune (every 15 minutes) ──────────────────────────────────
