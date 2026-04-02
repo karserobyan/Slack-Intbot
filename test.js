@@ -140,6 +140,42 @@ const modal = buildEmailModal('Test Subject', 'Test body text');
 assert(modal.type === 'modal', 'Modal has correct type');
 assert(modal.blocks.length === 2, 'Modal has subject + body blocks');
 
+// intro_message rendering
+const withIntro = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Sarah, this needs escalation.' });
+assert(withIntro[0].text.text === 'Hey Sarah, this needs escalation.', 'intro_message renders as first block');
+
+// escalate_decision rendering (CSA)
+const withEscalate = buildResponseBlocks({
+  ...sampleJson,
+  intro_message: 'Hey Sarah.',
+  escalate_decision: {
+    should_escalate: true,
+    reason: 'Requires backend access',
+    escalation_path: 'Live Assist → Integrations Specialist',
+  },
+});
+const escalateBlock = withEscalate.find(b => b.text?.text?.includes('escalate'));
+assert(escalateBlock !== undefined, 'Escalate decision block rendered for CSA');
+
+// No escalate_decision block for specialist (no escalate_decision field)
+const specialistBlocks = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Mike.' });
+const noEscalate = specialistBlocks.find(b => b.text?.text?.includes('Escalate') && b.text?.text?.includes('reason'));
+assert(noEscalate === undefined, 'No escalate decision block when field absent');
+
+// Show Specialist Detail button only when show_specialist_detail_value is present
+const csaBlocks = buildResponseBlocks({
+  ...sampleJson,
+  intro_message: 'Hey Sarah.',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
+  _showSpecialistValue: JSON.stringify({ threadTs: '123', channelId: 'C123', query: 'test' }),
+});
+const specialistBtn = csaBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
+assert(specialistBtn !== undefined, 'Show Specialist Detail button present when _showSpecialistValue set');
+
+const noSpecialistBtn = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Mike.' });
+const noBtn = noSpecialistBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
+assert(noBtn === undefined, 'Show Specialist Detail button absent when _showSpecialistValue not set');
+
 // ── 4. Cache ─────────────────────────────────────────────────────────────────
 console.log('\n🔹 Cache');
 
@@ -278,6 +314,28 @@ assert(hCap.length === 20, `Max 20 messages enforced (got ${hCap?.length})`);
 // pruneConversations does not remove fresh entries
 pruneConversations();
 assert(getHistory('ts-001') !== null, 'pruneConversations keeps fresh entries');
+
+// ── 9. Role Detection ────────────────────────────────────────────────────────
+console.log('\n🔹 Role Detection');
+
+// Helper — mirrors the detection logic in mention.js
+function detectRole(title) {
+  if (!title) return 'csa';
+  if (/Customer Support Advocate/i.test(title)) return 'csa';
+  if (/Specialist/i.test(title) && /Integrat/i.test(title)) return 'specialist';
+  return 'csa';
+}
+
+assert(detectRole('Customer Support Advocate I') === 'csa', 'CSA I detected');
+assert(detectRole('Customer Support Advocate II') === 'csa', 'CSA II detected');
+assert(detectRole('Senior Customer Support Advocate') === 'csa', 'Senior CSA detected');
+assert(detectRole('Associate Integrations Specialist') === 'specialist', 'Associate Specialist detected');
+assert(detectRole('Integrations Specialist') === 'specialist', 'Integrations Specialist detected');
+assert(detectRole('Specialist, Integrations') === 'specialist', 'Specialist, Integrations detected');
+assert(detectRole('Senior Specialist Integrations') === 'specialist', 'Senior Specialist detected');
+assert(detectRole('Account Manager') === 'csa', 'Unknown role defaults to CSA');
+assert(detectRole(null) === 'csa', 'Null title defaults to CSA');
+assert(detectRole('') === 'csa', 'Empty title defaults to CSA');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
