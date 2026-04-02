@@ -1,0 +1,21 @@
+{
+  "name": "servicetitan-integrations-bot",
+  "version": "1.0.0",
+  "description": "Slack bot for ServiceTitan integrations support agents",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "cli": "node cli.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
