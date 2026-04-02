@@ -24,6 +24,14 @@ function tagLabel(tag) {
 export function buildResponseBlocks(data) {
   const blocks = [];
 
+  // ── Intro message (personality greeting) ────────────────────────────────
+  if (data.intro_message) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: data.intro_message },
+    });
+  }
+
   // ── Header ──────────────────────────────────────────────────────────────
   blocks.push({
     type: 'header',
@@ -43,6 +51,19 @@ export function buildResponseBlocks(data) {
   });
 
   blocks.push({ type: 'divider' });
+
+  // ── Escalate decision (CSA only) ─────────────────────────────────────────
+  if (data.escalate_decision) {
+    const ed = data.escalate_decision;
+    const icon = ed.should_escalate ? '🔴' : '🟢';
+    const decision = ed.should_escalate ? '*Escalate this case*' : '*Handle this yourself*';
+    let text = `${icon} ${decision}\n_${ed.reason}_`;
+    if (ed.should_escalate && ed.escalation_path) {
+      text += `\n*Escalation path:* ${ed.escalation_path}`;
+    }
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+    blocks.push({ type: 'divider' });
+  }
 
   // ── Section 1 — Agent Troubleshooting ───────────────────────────────────
   blocks.push({
@@ -106,35 +127,41 @@ export function buildResponseBlocks(data) {
       });
     }
 
-    // Action buttons — copy email + wrong answer feedback
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '📋 Copy Email Draft', emoji: true },
-          action_id: 'copy_email_modal',
-          style: 'primary',
-          // Pass email data as value (JSON-encoded, max 2000 chars)
-          value: JSON.stringify({
-            subject: (email.subject ?? '').slice(0, 150),
-            body: email.body.slice(0, 1800), // guard against value size limit
-          }),
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
-          action_id: 'wrong_answer_modal',
-          style: 'danger',
-          // Pass context so the feedback modal knows what was asked/answered
-          value: JSON.stringify({
-            query: (data._originalQuery ?? '').slice(0, 400),
-            issueTitle: (data.issue_title ?? '').slice(0, 100),
-            integrationType: (data.integration_type ?? '').slice(0, 50),
-          }),
-        },
-      ],
-    });
+    // Action buttons — copy email + wrong answer feedback + optional specialist detail
+    const actionElements = [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '📋 Copy Email Draft', emoji: true },
+        action_id: 'copy_email_modal',
+        style: 'primary',
+        value: JSON.stringify({
+          subject: (email.subject ?? '').slice(0, 150),
+          body: email.body.slice(0, 1800),
+        }),
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+        action_id: 'wrong_answer_modal',
+        style: 'danger',
+        value: JSON.stringify({
+          query: (data._originalQuery ?? '').slice(0, 400),
+          issueTitle: (data.issue_title ?? '').slice(0, 100),
+          integrationType: (data.integration_type ?? '').slice(0, 50),
+        }),
+      },
+    ];
+
+    if (data._showSpecialistValue) {
+      actionElements.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
+        action_id: 'show_specialist_detail',
+        value: data._showSpecialistValue,
+      });
+    }
+
+    blocks.push({ type: 'actions', elements: actionElements });
 
     blocks.push({ type: 'divider' });
   }
