@@ -1,21 +1,50 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT, parseClaudeResponse } from './prompts.js';
-import { gatherContext } from '../search/index.js';
+import { getKnowledge } from '../slack/knowledge.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Reduced timeout — no MCP round-trips anymore
-const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '45000', 10) || 45000;
+const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
 
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-20250514';
 
 /**
- * Searches Slack + Confluence, then calls Claude with grounded context.
- * Aborts automatically after TIMEOUT_MS (default 45s).
- * Note: the onToken streaming callback from the previous MCP implementation
- * has been intentionally removed — no active caller uses it.
+ * Builds the MCP servers array based on available tokens.
+ * Slack MCP is omitted if SLACK_USER_TOKEN is missing or still a placeholder.
+ *
+ * @returns {Array} Array of MCP server config objects
+ */
+function buildMcpServers() {
+  const servers = [];
+
+  if (process.env.ATLASSIAN_MCP_TOKEN) {
+    servers.push({
+      type: 'url',
+      url: 'https://mcp.atlassian.com/v1/sse',
+      name: 'atlassian',
+      authorization_token: process.env.ATLASSIAN_MCP_TOKEN,
+    });
+  }
+
+  const slackToken = process.env.SLACK_USER_TOKEN;
+  if (slackToken && slackToken !== 'xoxp-replace-me') {
+    servers.push({
+      type: 'url',
+      url: 'https://mcp.slack.com/mcp',
+      name: 'slack',
+      authorization_token: slackToken,
+    });
+  }
+
+  return servers;
+}
+
+/**
+ * Calls Claude with MCP tools for Atlassian and Slack search.
+ * Claude drives its own searches — no pre-fetching on our side.
+ * Aborts automatically after TIMEOUT_MS.
  *
  * @param {string} userQuery - The agent's question or customer issue
  * @returns {Promise<object>} Parsed structured response
@@ -24,27 +53,31 @@ export async function queryWithContext(userQuery) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  // Gather real context before calling Claude
-  let contextBlock = '';
+  // Inject team knowledge base if available
+  let knowledgeBlock = '';
   try {
-    contextBlock = await gatherContext(userQuery);
-  } catch (err) {
-    console.warn('[query] Context gathering failed — proceeding without context:', err.message);
+    const knowledge = await getKnowledge();
+    if (knowledge) knowledgeBlock = `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
+  } catch {
+    // non-critical — proceed without it
   }
 
-  const userContent = `Issue: ${userQuery}${contextBlock}`;
+  const userContent = `Issue: ${userQuery}${knowledgeBlock}`;
+  const mcpServers = buildMcpServers();
 
   const requestParams = {
     model: MODEL,
     max_tokens: 4096,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userContent }],
+    ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
+    betas: ['mcp-client-2025-04-04'],
   };
 
   let fullText = '';
 
   try {
-    const response = await anthropic.messages.create(requestParams, { signal: controller.signal });
+    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
@@ -63,7 +96,7 @@ export async function queryWithContext(userQuery) {
 
 /**
  * Conversational follow-up query — uses thread history, returns plain text.
- * Does NOT run search (Slack/Confluence) — relies on history for context.
+ * Does NOT use MCP — relies on conversation history for context.
  * Aborts automatically after TIMEOUT_MS.
  *
  * @param {string} userQuery - The agent's follow-up message
