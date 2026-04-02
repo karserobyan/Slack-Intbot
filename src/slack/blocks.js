@@ -65,6 +65,20 @@ export function buildResponseBlocks(data) {
     blocks.push({ type: 'divider' });
   }
 
+  // ── Channel recommendation (CSA only) ────────────────────────────────────
+  if (data.channel_recommendation) {
+    const cr = data.channel_recommendation;
+    const icon = cr.channel === 'ks-integration' ? '💬' : '📢';
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${icon} *Post this in #${cr.channel}*\n_${cr.reason}_`,
+      },
+    });
+    blocks.push({ type: 'divider' });
+  }
+
   // ── Section 1 — Agent Troubleshooting ───────────────────────────────────
   blocks.push({
     type: 'section',
