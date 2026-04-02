@@ -212,7 +212,7 @@ export function buildThinkingBlocks(query) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*🔍 Searching knowledge sources…*\n\nLooking into: _"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_\n\nSearching Slack channels, Confluence, Jira, and KB simultaneously — this usually takes 10–20 seconds.`,
+        text: `*🔍 Checking knowledge sources…*\n\nLooking into: _"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_\n\nChecking Confluence, Jira, and past Slack threads — this usually takes 20–40 seconds.`,
       },
     },
     {

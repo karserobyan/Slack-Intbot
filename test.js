@@ -128,7 +128,7 @@ assert(redirectBlocks[0].text.text.includes('#ask-partner-enabled-accounting-int
 // Thinking blocks
 const thinkingBlocks = buildThinkingBlocks('Zapier not working');
 assert(thinkingBlocks.length === 2, 'Thinking has 2 blocks');
-assert(thinkingBlocks[0].text.text.includes('Searching'), 'Thinking shows searching message');
+assert(thinkingBlocks[0].text.text.includes('Checking'), 'Thinking shows checking message');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');

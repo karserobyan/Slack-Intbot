@@ -133,7 +133,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       channel: channelId,
       thread_ts: threadTs,
       blocks: buildThinkingBlocks(query),
-      text: 'Searching knowledge sources…',
+      text: 'Checking Confluence, Jira, and past Slack threads…',
     });
     thinkingTs = thinkingMsg.ts;
   } catch (err) {
