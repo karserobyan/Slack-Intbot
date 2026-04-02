@@ -21,6 +21,34 @@ function stripBotMention(text) {
 }
 
 /**
+ * Detects agent role from Slack profile title.
+ * Returns 'csa' | 'specialist'. Defaults to 'csa' on any failure.
+ *
+ * @param {object} client - Slack WebClient
+ * @param {string} userId - Slack user ID
+ * @returns {Promise<{ role: string, agentName: string }>}
+ */
+async function detectAgentRole(client, userId) {
+  try {
+    const res = await client.users.info({ user: userId });
+    const profile = res.user?.profile ?? {};
+    const title = profile.title ?? '';
+    const agentName = profile.display_name || profile.real_name || null;
+
+    let role = 'csa';
+    if (/Specialist/i.test(title) && /Integrat/i.test(title)) {
+      role = 'specialist';
+    }
+    // Customer Support Advocate already defaults to 'csa'
+
+    return { role, agentName };
+  } catch (err) {
+    console.warn('[mention] users.info failed — defaulting to CSA mode:', err.message);
+    return { role: 'csa', agentName: null };
+  }
+}
+
+/**
  * Core handler — shared by both mention.js and dm.js.
  * Posts a "thinking" placeholder, runs Claude, then updates the placeholder.
  *
@@ -126,19 +154,24 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 3. Post "thinking" placeholder
-  let thinkingTs;
-  try {
-    const thinkingMsg = await client.chat.postMessage({
+  // 3. Detect role + post thinking placeholder in parallel (zero latency cost)
+  const [{ role, agentName }, thinkingResult] = await Promise.allSettled([
+    detectAgentRole(client, userId),
+    client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
       blocks: buildThinkingBlocks(query),
       text: 'Checking Confluence, Jira, and past Slack threads…',
-    });
-    thinkingTs = thinkingMsg.ts;
-  } catch (err) {
-    console.error('[mention] Failed to post thinking message:', err.message);
-  }
+    }).catch((err) => {
+      console.error('[mention] Failed to post thinking message:', err.message);
+      return null;
+    }),
+  ]).then(([roleResult, thinkingSettled]) => [
+    roleResult.status === 'fulfilled' ? roleResult.value : { role: 'csa', agentName: null },
+    thinkingSettled.status === 'fulfilled' ? thinkingSettled.value : null,
+  ]);
+
+  const thinkingTs = thinkingResult?.ts;
 
   // 4. Look up past corrections to inject as context
   let feedbackContext = '';
@@ -165,7 +198,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   // 5. Call Claude with gathered context
   let result;
   try {
-    result = await queryWithContext(query + feedbackContext);
+    result = await queryWithContext(query + feedbackContext, { role, agentName });
   } catch (err) {
     console.error('[mention] Claude query failed:', err.message);
 
@@ -190,6 +223,14 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   // 6. Attach original query for the feedback button, then cache
   result._originalQuery = query;
+  // For CSA responses, attach value for the "Show Specialist Detail" button
+  if (role === 'csa') {
+    result._showSpecialistValue = JSON.stringify({
+      threadTs,
+      channelId,
+      query: query.slice(0, 800),
+    });
+  }
   setCached(query, result);
 
   // 7. If Claude itself decided it was an accounting topic (double-check via AI)
