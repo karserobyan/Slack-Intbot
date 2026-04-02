@@ -349,7 +349,7 @@ const testRecord = await saveFeedback({
   correction: 'The real fix is X',
   agentId: 'U12345',
   agentName: 'Test Agent',
-}, { skipNotify: true }); // skipNotify flag for testing
+});
 
 const pending = await getPendingFeedback();
 assert(Array.isArray(pending), 'getPendingFeedback returns array');
@@ -381,7 +381,7 @@ const testRecord2 = await saveFeedback({
   correction: 'This is wrong info',
   agentId: 'U99999',
   agentName: 'Bad Actor',
-}, { skipNotify: true });
+});
 
 await rejectFeedback(testRecord2.id);
 const pendingAfterReject = await getPendingFeedback();

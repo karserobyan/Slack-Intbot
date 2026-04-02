@@ -287,7 +287,7 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
     uptime: Math.round(process.uptime()),
     cache: stats,
     mcp: {
-      slack: Boolean(process.env.SLACK_MCP_TOKEN || process.env.SLACK_BOT_TOKEN),
+      slack: Boolean(process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_TOKEN !== 'xoxp-replace-me'),
       atlassian: Boolean(process.env.ATLASSIAN_MCP_TOKEN),
     },
   });
@@ -319,10 +319,10 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
   const feedbackChannel = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID;
   app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — feedback notifications disabled'}`);
 
-  const hasMcpSlack = Boolean(process.env.SLACK_MCP_TOKEN || process.env.SLACK_BOT_TOKEN);
+  const hasMcpSlack = Boolean(process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_TOKEN !== 'xoxp-replace-me');
   const hasMcpAtlassian = Boolean(process.env.ATLASSIAN_MCP_TOKEN);
   app.logger.info(
-    `[startup] MCP: Slack=${hasMcpSlack ? '✅' : '❌ (set SLACK_MCP_TOKEN)'}  Atlassian=${hasMcpAtlassian ? '✅' : '❌ (set ATLASSIAN_MCP_TOKEN)'}`,
+    `[startup] MCP: Slack=${hasMcpSlack ? '✅' : '❌ (set SLACK_USER_TOKEN)'}  Atlassian=${hasMcpAtlassian ? '✅' : '❌ (set ATLASSIAN_MCP_TOKEN)'}`,
   );
 })();
 

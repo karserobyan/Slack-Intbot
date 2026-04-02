@@ -67,12 +67,13 @@ async function persistPending(entries) {
  * Saves a new feedback entry to the pending queue.
  * Does NOT apply to active feedback until approved.
  *
+ * Note: callers are responsible for calling notifyFeedbackChannel separately
+ * after saveFeedback returns, if a review card should be posted.
+ *
  * @param {object} entry - Feedback data
- * @param {object} [opts]
- * @param {boolean} [opts.skipNotify] - Skip posting review card (for tests)
  * @returns {Promise<object>} The saved pending record
  */
-export async function saveFeedback(entry, { skipNotify = false } = {}) {
+export async function saveFeedback(entry) {
   const record = {
     id: `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     timestamp: new Date().toISOString(),
