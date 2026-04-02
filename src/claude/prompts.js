@@ -29,7 +29,11 @@ HARD RULE — ACCOUNTING EXCLUSION: If the follow-up involves accounting integra
  * @returns {object}
  */
 export function parseClaudeResponse(text) {
-  const stripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const fenceStripped = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  // Extract JSON object — strips any leading/trailing prose Claude adds before/after the braces
+  const start = fenceStripped.indexOf('{');
+  const end = fenceStripped.lastIndexOf('}');
+  const stripped = (start !== -1 && end !== -1) ? fenceStripped.slice(start, end + 1) : fenceStripped;
 
   if (process.env.LOG_LEVEL === 'debug') {
     console.debug('[claude] Raw response (first 500 chars):', stripped.slice(0, 500));
