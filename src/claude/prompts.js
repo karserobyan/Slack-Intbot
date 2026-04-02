@@ -53,12 +53,14 @@ export function parseClaudeResponse(text) {
 const SHARED_RULES = `
 HARD RULE — DO NOT INVENT REFERENCES: Never fabricate Slack threads, Confluence pages, or Jira tickets. Only populate slack_refs and atlassian_refs with sources you actually found via search tools. If searches returned nothing useful, return empty arrays.
 
-HARD RULE — ADMIT UNCERTAINTY: If searches return no relevant results and the issue is not in Common integration knowledge, do not invent steps. Include a single escalate step saying you could not find specific information.
+HARD RULE — NO INVENTION: You must NEVER invent troubleshooting steps, menu paths, field names, or settings that you cannot confirm exist in ServiceTitan. If your searches returned no specific results and the issue is not listed in Common integration knowledge below, you MUST output a single escalate step with this exact message: "I couldn't find specific information about this integration or issue. Please check #ask-leads-integration for leads-related questions, or #ask-integrations for other integration questions." Do NOT generate generic troubleshooting steps as a substitute for real knowledge — generic steps are worse than admitting you don't know, because they waste the agent's time and mislead the customer.
+
+HARD RULE — LEADS QUESTIONS: If the question involves lead integrations (Carrier, Angi, Thumbtack, HomeAdvisor, Yelp, or any lead provider) and your searches returned no specific resolution, redirect to #ask-leads-integration. Do not guess.
 
 HARD RULE — ACCOUNTING EXCLUSION:
 If the question involves QuickBooks, Sage Intacct, NetSuite, Xero, Viewpoint Vista, accounts payable, accounts receivable, GL accounts, accounting integrations, chart of accounts, or journal entries — set "is_accounting_topic": true and provide only a redirect message.
 
-HARD RULE — HONESTY: If you are not confident about specific steps, say so. Never invent menu paths or field names you are not sure about.
+HARD RULE — HONESTY: Every menu path, setting name, and field name you mention must be something you found in your search results or Common integration knowledge. If you are not certain it exists, do not mention it.
 
 Tag guide for agent_steps:
 - "action" — agent checks or configures something in the UI
