@@ -2,9 +2,10 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildEmailModal, buildFeedbackModal } from './slack/blocks.js';
+import { buildEmailModal, buildFeedbackModal, buildResponseBlocks } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
-import { pruneConversations } from './slack/conversation.js';
+import { pruneConversations, appendToHistory } from './slack/conversation.js';
+import { queryWithContext } from './claude/query.js';
 import { saveFeedback, notifyFeedbackChannel } from './slack/feedback.js';
 
 // ── Validate required environment variables ──────────────────────────────────
@@ -70,6 +71,74 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
     trigger_id: body.trigger_id,
     view: buildFeedbackModal(context),
   });
+});
+
+// ── "Show Specialist Detail" button ──────────────────────────────────────
+app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
+  await ack();
+
+  let context = { threadTs: null, channelId: null, query: '' };
+  try {
+    context = JSON.parse(action.value);
+  } catch {
+    // malformed value — abort
+    return;
+  }
+
+  const { threadTs, channelId, query } = context;
+  if (!threadTs || !channelId || !query) return;
+
+  const userId = body.user.id;
+
+  // Get agent name for personalised response
+  let agentName = null;
+  try {
+    const res = await client.users.info({ user: userId });
+    agentName = res.user?.profile?.display_name || res.user?.profile?.real_name || null;
+  } catch {
+    // non-critical
+  }
+
+  // Post a thinking placeholder in the thread
+  let thinkingTs;
+  try {
+    const msg = await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: 'Pulling up the full specialist view…',
+    });
+    thinkingTs = msg.ts;
+  } catch {
+    // continue without placeholder
+  }
+
+  let result;
+  try {
+    result = await queryWithContext(query, { role: 'specialist', agentName });
+  } catch (err) {
+    app.logger.error('[show_specialist_detail] queryWithContext failed:', err.message);
+    const errText = 'Something went wrong fetching specialist detail — please retry.';
+    if (thinkingTs) {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, text: errText });
+    }
+    return;
+  }
+
+  result._originalQuery = query;
+  const responseBlocks = buildResponseBlocks(result);
+  const fallbackText = `Specialist view: ${result.issue_title}`;
+
+  if (thinkingTs) {
+    await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
+  } else {
+    await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+  }
+
+  // Append to conversation history
+  appendToHistory(threadTs, [
+    { role: 'user', content: `[Specialist detail requested] ${query}` },
+    { role: 'assistant', content: JSON.stringify(result) },
+  ]);
 });
 
 // ── Feedback modal submission ────────────────────────────────────────────────
@@ -151,6 +220,15 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
   }
 
   app.logger.info('[startup] Bot is ready. Mention @IntegrationsBot or DM it to get started.');
+
+  // Check users:read scope is available for role detection
+  try {
+    await app.client.users.info({ user: 'USLACKBOT' }); // USLACKBOT always exists
+  } catch (err) {
+    if (err.message?.includes('missing_scope')) {
+      app.logger.error('[startup] WARNING: users:read scope missing — role detection will always default to CSA mode. Add users:read to bot token scopes and reinstall.');
+    }
+  }
 
   const feedbackChannel = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID;
   app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — feedback notifications disabled'}`);
