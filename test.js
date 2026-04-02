@@ -14,7 +14,7 @@ import {
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
-import { getRelevantFeedback } from './src/slack/feedback.js';
+import { getRelevantFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 
 let passed = 0;
 let failed = 0;
@@ -336,6 +336,68 @@ assert(detectRole('Senior Specialist Integrations') === 'specialist', 'Senior Sp
 assert(detectRole('Account Manager') === 'csa', 'Unknown role defaults to CSA');
 assert(detectRole(null) === 'csa', 'Null title defaults to CSA');
 assert(detectRole('') === 'csa', 'Empty title defaults to CSA');
+
+// ── Feedback Moderation ───────────────────────────────────────────────────
+console.log('\n🔹 Feedback Moderation');
+
+// saveFeedback should write to pending, NOT active
+const testRecord = await saveFeedback({
+  query: 'zapier test query for moderation',
+  issueTitle: 'Zapier API Access',
+  integrationType: 'Zapier',
+  feedbackType: 'wrong_answer',
+  correction: 'The real fix is X',
+  agentId: 'U12345',
+  agentName: 'Test Agent',
+}, { skipNotify: true }); // skipNotify flag for testing
+
+const pending = await getPendingFeedback();
+assert(Array.isArray(pending), 'getPendingFeedback returns array');
+assert(pending.some(e => e.id === testRecord.id), 'New feedback is in pending queue');
+
+// Schema check — pending entry must have reviewMessageTs and reviewChannelId
+const pendingEntry = pending.find(e => e.id === testRecord.id);
+assert(pendingEntry.reviewMessageTs === null, 'New pending entry has null reviewMessageTs');
+assert('reviewChannelId' in pendingEntry, 'New pending entry has reviewChannelId field');
+
+// Should NOT be in active feedback.json yet
+const activeBefore = await getRelevantFeedback('zapier test query for moderation');
+assert(!activeBefore.some(e => e.id === testRecord.id), 'New feedback NOT in active queue before approval');
+
+// Approve it
+await approveFeedback(testRecord.id);
+const activeAfter = await getRelevantFeedback('zapier test query for moderation');
+assert(activeAfter.some(e => e.id === testRecord.id), 'Feedback in active queue after approval');
+
+const pendingAfter = await getPendingFeedback();
+assert(!pendingAfter.some(e => e.id === testRecord.id), 'Feedback removed from pending after approval');
+
+// Reject a second entry
+const testRecord2 = await saveFeedback({
+  query: 'angi test query for rejection',
+  issueTitle: 'Angi Leads Issue',
+  integrationType: 'Angi',
+  feedbackType: 'outdated',
+  correction: 'This is wrong info',
+  agentId: 'U99999',
+  agentName: 'Bad Actor',
+}, { skipNotify: true });
+
+await rejectFeedback(testRecord2.id);
+const pendingAfterReject = await getPendingFeedback();
+assert(!pendingAfterReject.some(e => e.id === testRecord2.id), 'Feedback removed from pending after rejection');
+
+const activeAfterReject = await getRelevantFeedback('angi test query for rejection');
+assert(!activeAfterReject.some(e => e.id === testRecord2.id), 'Rejected feedback NOT in active queue');
+
+// Double-approve is idempotent — must NOT duplicate in active queue
+await approveFeedback(testRecord.id); // already approved
+const activeNoDup = await getRelevantFeedback('zapier test query for moderation');
+const matchCount = activeNoDup.filter(e => e.id === testRecord.id).length;
+assert(matchCount === 1, 'Double-approve does not duplicate entry in active queue');
+
+assert(typeof approveFeedback === 'function', 'approveFeedback is a function');
+assert(typeof rejectFeedback === 'function', 'rejectFeedback is a function');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
