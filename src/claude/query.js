@@ -83,7 +83,7 @@ export async function queryWithContext(userQuery) {
       .map((b) => b.text)
       .join('');
   } catch (err) {
-    if (err.name === 'AbortError' || controller.signal.aborted) {
+    if (controller.signal.aborted) {
       throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — try rephrasing or being more specific.`);
     }
     throw err;
@@ -125,7 +125,7 @@ export async function queryChat(userQuery, history) {
       .map((b) => b.text)
       .join('');
   } catch (err) {
-    if (err.name === 'AbortError' || controller.signal.aborted) {
+    if (controller.signal.aborted) {
       throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — try rephrasing or being more specific.`);
     }
     throw err;
