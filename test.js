@@ -176,6 +176,26 @@ const noSpecialistBtn = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey
 const noBtn = noSpecialistBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
 assert(noBtn === undefined, 'Show Specialist Detail button absent when _showSpecialistValue not set');
 
+// channel_recommendation rendering
+const withKsChannel = buildResponseBlocks({
+  ...sampleJson,
+  channel_recommendation: { channel: 'ks-integration', reason: 'Quick sanity check — no company-wide visibility needed.' },
+});
+const ksBlock = withKsChannel.find(b => b.text?.text?.includes('ks-integration') && b.text?.text?.includes('Quick sanity check'));
+assert(ksBlock !== undefined, 'channel_recommendation renders ks-integration block');
+assert(ksBlock && ksBlock.text.text.includes('Quick sanity check'), 'ks-integration block includes reason');
+
+const withAskChannel = buildResponseBlocks({
+  ...sampleJson,
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Complex issue worth the whole team seeing.' },
+});
+const askBlock = withAskChannel.find(b => b.text?.text?.includes('ask-integrations') && b.text?.text?.includes('Complex issue worth the whole team seeing'));
+assert(askBlock !== undefined, 'channel_recommendation renders ask-integrations block');
+
+const noChannelRec = buildResponseBlocks({ ...sampleJson });
+const noChannelBlock = noChannelRec.find(b => b.text?.text?.includes('Post this in'));
+assert(noChannelBlock === undefined, 'No channel recommendation block when field absent');
+
 // ── 4. Cache ─────────────────────────────────────────────────────────────────
 console.log('\n🔹 Cache');
 
