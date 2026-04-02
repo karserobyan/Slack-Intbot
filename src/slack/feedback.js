@@ -1,17 +1,14 @@
 /**
- * Feedback storage — persists "wrong answer" corrections to a local JSON file
- * and optionally posts to a Slack channel for team visibility.
+ * Feedback storage with moderation queue.
  *
  * Design:
- * - Write queue: all writes are serialised via a Promise chain to prevent concurrent
- *   write races that could corrupt or lose entries. The .catch() guard prevents a
- *   failed write from poisoning the queue for future writes.
- * - In-memory cache: feedback array is kept in memory after first load; invalidated
- *   on every write. Avoids a disk read on every query.
- * - Size cap: max 500 entries; oldest are evicted to keep the file manageable.
- * - Cache invalidation: when feedback is saved for a query, the bot's response cache
- *   entry for that query is deleted so the next identical query goes back to Claude
- *   with the correction injected.
+ * - Submissions go to data/feedback-pending.json (not applied yet)
+ * - A reviewer approves/rejects via Slack buttons in the review channel
+ * - Approved entries move to data/feedback.json (active, injected into prompts)
+ * - Rejected entries are discarded
+ * - Write queue: all writes serialised via Promise chain to prevent races
+ * - In-memory caches for both pending and active arrays
+ * - Max 500 active entries, 200 pending entries
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -20,54 +17,62 @@ import { deleteCache } from './cache.js';
 
 const FEEDBACK_DIR = join(process.cwd(), 'data');
 const FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
-const FEEDBACK_CHANNEL = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID || null;
-const MAX_ENTRIES = 500;
+const PENDING_FILE = join(FEEDBACK_DIR, 'feedback-pending.json');
+const REVIEW_CHANNEL = process.env.FEEDBACK_REVIEW_CHANNEL_ID || null;
+const MAX_ACTIVE = 500;
+const MAX_PENDING = 200;
 
-// In-memory cache of the feedback array. null = not yet loaded.
-let _cache = null;
+// In-memory caches. null = not yet loaded.
+let _activeCache = null;
+let _pendingCache = null;
 
-// Write queue — all writes are chained onto this Promise to prevent races.
+// Single write queue for both files — prevents any concurrent write races.
 let _writeQueue = Promise.resolve();
 
-/**
- * Loads feedback from disk (or returns the in-memory cache if populated).
- * @returns {Promise<Array>}
- */
-async function loadFeedback() {
-  if (_cache !== null) return _cache;
+// ── Disk I/O helpers ──────────────────────────────────────────────────────
+
+async function loadActive() {
+  if (_activeCache !== null) return _activeCache;
   try {
-    const raw = await readFile(FEEDBACK_FILE, 'utf-8');
-    _cache = JSON.parse(raw);
+    _activeCache = JSON.parse(await readFile(FEEDBACK_FILE, 'utf-8'));
   } catch {
-    _cache = [];
+    _activeCache = [];
   }
-  return _cache;
+  return _activeCache;
 }
 
-/**
- * Persists the current in-memory cache to disk.
- * Must only be called from within the write queue.
- */
-async function persistFeedback(entries) {
-  await mkdir(FEEDBACK_DIR, { recursive: true }); // safe to call even if dir exists
+async function loadPending() {
+  if (_pendingCache !== null) return _pendingCache;
+  try {
+    _pendingCache = JSON.parse(await readFile(PENDING_FILE, 'utf-8'));
+  } catch {
+    _pendingCache = [];
+  }
+  return _pendingCache;
+}
+
+async function persistActive(entries) {
+  await mkdir(FEEDBACK_DIR, { recursive: true });
   await writeFile(FEEDBACK_FILE, JSON.stringify(entries, null, 2));
 }
 
+async function persistPending(entries) {
+  await mkdir(FEEDBACK_DIR, { recursive: true });
+  await writeFile(PENDING_FILE, JSON.stringify(entries, null, 2));
+}
+
+// ── Public API ────────────────────────────────────────────────────────────
+
 /**
- * Saves a new feedback entry.
- * Writes are serialised via the write queue to prevent concurrent write races.
+ * Saves a new feedback entry to the pending queue.
+ * Does NOT apply to active feedback until approved.
  *
- * @param {object} entry
- * @param {string} entry.query
- * @param {string} entry.issueTitle
- * @param {string} entry.integrationType
- * @param {string} entry.feedbackType
- * @param {string} entry.correction
- * @param {string} entry.agentId
- * @param {string} entry.agentName
- * @returns {Promise<object>} The saved record
+ * @param {object} entry - Feedback data
+ * @param {object} [opts]
+ * @param {boolean} [opts.skipNotify] - Skip posting review card (for tests)
+ * @returns {Promise<object>} The saved pending record
  */
-export async function saveFeedback(entry) {
+export async function saveFeedback(entry, { skipNotify = false } = {}) {
   const record = {
     id: `fb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     timestamp: new Date().toISOString(),
@@ -78,59 +83,54 @@ export async function saveFeedback(entry) {
     correction: entry.correction,
     agentId: entry.agentId,
     agentName: entry.agentName,
+    reviewMessageTs: null,
+    reviewChannelId: REVIEW_CHANNEL,
   };
 
-  // Serialise the write. The .catch() on the chain prevents a failed write
-  // from permanently poisoning the queue — each write's error is handled
-  // independently so future writes still proceed.
   _writeQueue = _writeQueue
     .then(async () => {
-      const feedback = await loadFeedback();
-      feedback.push(record);
-
-      // Evict oldest entries if over the cap
-      if (feedback.length > MAX_ENTRIES) {
-        feedback.splice(0, feedback.length - MAX_ENTRIES);
+      const pending = await loadPending();
+      pending.push(record);
+      // Cap at MAX_PENDING — silently evict oldest
+      if (pending.length > MAX_PENDING) {
+        pending.splice(0, pending.length - MAX_PENDING);
       }
-
-      _cache = feedback;
-      await persistFeedback(feedback);
+      _pendingCache = pending;
+      await persistPending(pending);
     })
     .catch((err) => {
-      console.error('[feedback] Write failed, queue continues:', err.message);
+      console.error('[feedback] Pending write failed:', err.message);
     });
 
   await _writeQueue;
-
-  // Invalidate the bot's response cache so the next identical query
-  // goes back to Claude with this correction injected.
-  deleteCache(record.query);
-
   return record;
 }
 
 /**
- * Posts a feedback notification to the team channel.
+ * Posts a review card to the review channel with Approve/Reject buttons.
+ * Updates the pending entry with reviewMessageTs after posting.
+ * No-op if FEEDBACK_REVIEW_CHANNEL_ID is not configured.
  *
  * @param {object} client - Slack WebClient
- * @param {object} record - Saved feedback record
+ * @param {object} record - Pending feedback record
  */
 export async function notifyFeedbackChannel(client, record) {
-  if (!FEEDBACK_CHANNEL) {
-    console.warn('[feedback] No review channel configured — set FEEDBACK_REVIEW_CHANNEL_ID in .env');
+  if (!REVIEW_CHANNEL) {
+    console.warn('[feedback] FEEDBACK_REVIEW_CHANNEL_ID not set — review card not posted.');
     return;
   }
 
+  let messageTs;
   try {
-    await client.chat.postMessage({
-      channel: FEEDBACK_CHANNEL,
-      text: `📝 Feedback received from ${record.agentName}`,
+    const msg = await client.chat.postMessage({
+      channel: REVIEW_CHANNEL,
+      text: `📝 Feedback Review from ${record.agentName}`,
       blocks: [
         {
           type: 'section',
           text: {
             type: 'mrkdwn',
-            text: `*📝 Bot Feedback — ${record.feedbackType.replace(/_/g, ' ')}*`,
+            text: `*📝 Feedback Review — ${record.feedbackType.replace(/_/g, ' ')}*`,
           },
         },
         {
@@ -150,19 +150,139 @@ export async function notifyFeedbackChannel(client, record) {
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Correction:*\n>${record.correction}` },
+          text: { type: 'mrkdwn', text: `*Agent's correction:*\n>${record.correction}` },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '✅ Approve', emoji: true },
+              action_id: 'approve_feedback',
+              style: 'primary',
+              value: JSON.stringify({ feedbackId: record.id }),
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: '❌ Reject', emoji: true },
+              action_id: 'reject_feedback',
+              style: 'danger',
+              value: JSON.stringify({ feedbackId: record.id }),
+            },
+          ],
         },
         {
           type: 'context',
-          elements: [
-            { type: 'mrkdwn', text: `_${record.id} • ${record.timestamp}_` },
-          ],
+          elements: [{ type: 'mrkdwn', text: `_${record.id} • ${record.timestamp}_` }],
         },
       ],
     });
+    messageTs = msg.ts;
   } catch (err) {
-    console.error('[feedback] Failed to post to feedback channel:', err.message);
+    console.error('[feedback] Failed to post review card:', err.message);
+    return;
   }
+
+  // Update pending entry with message ts so action handlers can update it
+  _writeQueue = _writeQueue
+    .then(async () => {
+      const pending = await loadPending();
+      const idx = pending.findIndex(e => e.id === record.id);
+      if (idx !== -1) {
+        pending[idx].reviewMessageTs = messageTs;
+        pending[idx].reviewChannelId = REVIEW_CHANNEL;
+        _pendingCache = pending;
+        await persistPending(pending);
+      }
+    })
+    .catch((err) => {
+      console.error('[feedback] Failed to update pending entry with messageTs:', err.message);
+    });
+
+  await _writeQueue;
+}
+
+/**
+ * Approves a pending feedback entry — moves it to active feedback.
+ * Idempotent: no-op if entry not found (already processed).
+ *
+ * @param {string} id - Feedback entry ID
+ * @returns {Promise<object|null>} The approved record, or null if not found
+ */
+export async function approveFeedback(id) {
+  let approved = null;
+
+  _writeQueue = _writeQueue
+    .then(async () => {
+      const pending = await loadPending();
+      const idx = pending.findIndex(e => e.id === id);
+      if (idx === -1) return; // Already processed — idempotent
+
+      approved = pending[idx];
+      pending.splice(idx, 1);
+      _pendingCache = pending;
+      await persistPending(pending);
+
+      // Move to active
+      const active = await loadActive();
+      // Idempotent: don't add if already in active (double-approve)
+      if (!active.some(e => e.id === id)) {
+        active.push(approved);
+        if (active.length > MAX_ACTIVE) {
+          active.splice(0, active.length - MAX_ACTIVE);
+        }
+        _activeCache = active;
+        await persistActive(active);
+      }
+
+      // Invalidate response cache for this query
+      deleteCache(approved.query);
+    })
+    .catch((err) => {
+      console.error('[feedback] approveFeedback write failed:', err.message);
+    });
+
+  await _writeQueue;
+  return approved;
+}
+
+/**
+ * Rejects a pending feedback entry — removes it without applying.
+ * Idempotent: no-op if entry not found.
+ *
+ * @param {string} id - Feedback entry ID
+ * @returns {Promise<object|null>} The rejected record, or null if not found
+ */
+export async function rejectFeedback(id) {
+  let rejected = null;
+
+  _writeQueue = _writeQueue
+    .then(async () => {
+      const pending = await loadPending();
+      const idx = pending.findIndex(e => e.id === id);
+      if (idx === -1) return; // Already processed — idempotent
+
+      rejected = pending[idx];
+      pending.splice(idx, 1);
+      _pendingCache = pending;
+      await persistPending(pending);
+    })
+    .catch((err) => {
+      console.error('[feedback] rejectFeedback write failed:', err.message);
+    });
+
+  await _writeQueue;
+  return rejected;
+}
+
+/**
+ * Returns all pending (unreviewed) feedback entries.
+ * Used for testing only.
+ *
+ * @returns {Promise<Array>}
+ */
+export async function getPendingFeedback() {
+  return loadPending();
 }
 
 /**
@@ -170,23 +290,19 @@ export async function notifyFeedbackChannel(client, record) {
  * @returns {Promise<Array>}
  */
 export async function getAllFeedback() {
-  return loadFeedback();
+  return loadActive();
 }
 
 /**
  * Returns recent feedback entries relevant to a query (keyword-scored).
- * Used to inject corrections into the Claude prompt.
- *
- * Scoring: each query word (>3 chars) that appears in the feedback entry's
- * combined text earns 1 point. Longer matching words earn a bonus point,
- * biasing toward specific technical terms over common short words.
+ * Only returns APPROVED entries from feedback.json.
  *
  * @param {string} query
  * @param {number} [limit=5]
  * @returns {Promise<Array>}
  */
 export async function getRelevantFeedback(query, limit = 5) {
-  const all = await loadFeedback();
+  const all = await loadActive();
   if (all.length === 0) return [];
 
   const queryWords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
@@ -196,7 +312,7 @@ export async function getRelevantFeedback(query, limit = 5) {
     const text = `${entry.query} ${entry.integrationType} ${entry.correction}`.toLowerCase();
     const score = queryWords.reduce((acc, w) => {
       if (!text.includes(w)) return acc;
-      return acc + 1 + (w.length > 6 ? 1 : 0); // bonus for longer, more specific words
+      return acc + 1 + (w.length > 6 ? 1 : 0);
     }, 0);
     return { entry, score };
   });
