@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { SYSTEM_PROMPT, CHAT_SYSTEM_PROMPT, parseClaudeResponse } from './prompts.js';
+import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
 
 const anthropic = new Anthropic({
@@ -49,7 +49,7 @@ function buildMcpServers() {
  * @param {string} userQuery - The agent's question or customer issue
  * @returns {Promise<object>} Parsed structured response
  */
-export async function queryWithContext(userQuery) {
+export async function queryWithContext(userQuery, { role = 'csa', agentName = null } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -65,10 +65,16 @@ export async function queryWithContext(userQuery) {
   const userContent = `Issue: ${userQuery}${knowledgeBlock}`;
   const mcpServers = buildMcpServers();
 
+  // Select system prompt based on role. agentName is appended so Claude uses it in intro_message.
+  const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
+  const systemPrompt = agentName
+    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in intro_message.`
+    : basePrompt;
+
   const requestParams = {
     model: MODEL,
     max_tokens: 4096,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [{ role: 'user', content: userContent }],
     ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
     betas: ['mcp-client-2025-04-04'],
