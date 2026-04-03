@@ -42,11 +42,18 @@ export function buildResponseBlocks(data) {
     },
   });
 
+  const CONFIDENCE_DISPLAY = {
+    high:   { icon: '🟢', label: 'High confidence' },
+    medium: { icon: '🟡', label: 'Medium confidence' },
+    low:    { icon: '🔴', label: 'Low confidence — email draft suppressed' },
+  };
+  const conf = CONFIDENCE_DISPLAY[data.confidence] ?? CONFIDENCE_DISPLAY.medium;
+
   blocks.push({
     type: 'section',
     text: {
       type: 'mrkdwn',
-      text: `*Integration:* \`${data.integration_type}\`    *Sources:* ${(data.sources_used ?? []).map((s) => `\`${s}\``).join('  ')}`,
+      text: `*Integration:* \`${data.integration_type}\`    *Sources:* ${(data.sources_used ?? []).map((s) => `\`${s}\``).join('  ')}    ${conf.icon} ${conf.label}`,
     },
   });
 
@@ -102,7 +109,38 @@ export function buildResponseBlocks(data) {
   blocks.push({ type: 'divider' });
 
   // ── Section 2 — Customer Email Draft ────────────────────────────────────
-  if (data.customer_email) {
+  if (data.confidence === 'low') {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*✉️ Customer Email Draft*\n⚠️ *Suppressed — confidence is low.* The bot could not find specific information about this issue. Please verify the steps above with a Specialist or the relevant Slack channel before drafting a customer response.`,
+      },
+    });
+    const lowConfButtons = [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+        action_id: 'wrong_answer_modal',
+        style: 'danger',
+        value: JSON.stringify({
+          query: (data._originalQuery ?? '').slice(0, 400),
+          issueTitle: (data.issue_title ?? '').slice(0, 100),
+          integrationType: (data.integration_type ?? '').slice(0, 50),
+        }),
+      },
+    ];
+    if (data._showSpecialistValue) {
+      lowConfButtons.push({
+        type: 'button',
+        text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
+        action_id: 'show_specialist_detail',
+        value: data._showSpecialistValue,
+      });
+    }
+    blocks.push({ type: 'actions', elements: lowConfButtons });
+    blocks.push({ type: 'divider' });
+  } else if (data.customer_email) {
     const email = data.customer_email;
 
     blocks.push({
