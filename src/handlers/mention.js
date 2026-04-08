@@ -267,6 +267,31 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
+  // 8a. If Claude needs clarification before answering fully — post question and wait
+  if (result.clarifying_question) {
+    const questionText = result.clarifying_question;
+    if (thinkingTs) {
+      await client.chat.update({
+        channel: channelId,
+        ts: thinkingTs,
+        blocks: buildFollowUpBlocks(questionText),
+        text: questionText.slice(0, 200),
+      });
+    } else {
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        blocks: buildFollowUpBlocks(questionText),
+        text: questionText.slice(0, 200),
+      });
+    }
+    appendToHistory(threadTs, [
+      { role: 'user', content: query },
+      { role: 'assistant', content: summarizeResultForHistory(result) },
+    ]);
+    return;
+  }
+
   // 8. Update the thinking placeholder with the real response
   const responseBlocks = buildResponseBlocks(result);
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
