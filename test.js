@@ -10,6 +10,7 @@ import {
   buildThinkingBlocks,
   buildErrorBlocks,
   buildEmailModal,
+  buildFollowUpBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -204,6 +205,18 @@ assert(errorBlocks[0].text.text.includes('went wrong'), 'Error shows error messa
 const modal = buildEmailModal('Test Subject', 'Test body text');
 assert(modal.type === 'modal', 'Modal has correct type');
 assert(modal.blocks.length === 2, 'Modal has subject + body blocks');
+
+// Follow-up blocks
+const followUpBlocks = buildFollowUpBlocks('Try re-enabling the Zapier connection and reconnecting.');
+assert(Array.isArray(followUpBlocks), 'buildFollowUpBlocks returns array');
+assert(followUpBlocks.length >= 2, 'buildFollowUpBlocks has at least 2 blocks');
+const fuContext = followUpBlocks.find(b => b.type === 'context');
+assert(fuContext !== undefined, 'buildFollowUpBlocks has context block');
+assert(fuContext.elements[0].text.includes('Follow-up'), 'context block labels this as a follow-up');
+const fuSection = followUpBlocks.find(b => b.type === 'section');
+assert(fuSection !== undefined, 'buildFollowUpBlocks has section block');
+assert(fuSection.text.text === 'Try re-enabling the Zapier connection and reconnecting.', 'section block contains reply text');
+assert(fuSection.text.type === 'mrkdwn', 'section block uses mrkdwn for markdown rendering');
 
 // intro_message rendering
 const withIntro = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Sarah, this needs escalation.' });

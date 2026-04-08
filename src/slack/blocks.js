@@ -379,6 +379,27 @@ export function buildFeedbackModal(context) {
 }
 
 /**
+ * Builds Block Kit blocks for a follow-up conversational reply.
+ * Middle-ground format: context label + markdown-enabled body.
+ * Lighter than the initial structured response but clearly formatted.
+ *
+ * @param {string} text - Claude's plain text follow-up reply
+ * @returns {Array} Slack blocks array
+ */
+export function buildFollowUpBlocks(text) {
+  return [
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_Follow-up_' }],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text },
+    },
+  ];
+}
+
+/**
  * Builds the modal view shown when an agent clicks "Copy Email Draft".
  *
  * @param {string} subject
