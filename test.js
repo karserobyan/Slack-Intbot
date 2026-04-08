@@ -13,7 +13,7 @@ import {
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
-import { parseClaudeResponse } from './src/claude/prompts.js';
+import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 
 let passed = 0;
@@ -96,6 +96,71 @@ assert(parsed2.issue_title === 'Zapier API Access Not Enabled', 'Strips markdown
 let threwError = false;
 try { parseClaudeResponse('not json at all'); } catch { threwError = true; }
 assert(threwError, 'Throws on invalid JSON');
+
+// ── summarizeResultForHistory ────────────────────────────────────────────────
+console.log('\n🔹 summarizeResultForHistory');
+
+const resultWithEscalate = {
+  intro_message: 'Hey Sarah, looks like a Zapier API access issue.',
+  agent_steps: [
+    { num: 1, title: 'Enable Zapier API', detail: 'Go to Admin > Integrations > Zapier and toggle API access on.', tag: 'backend' },
+    { num: 2, title: 'Verify connection', detail: 'Ask customer to reconnect Zapier.', tag: 'verify' },
+  ],
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle this directly' },
+  customer_email: { subject: 'Re: Zapier Integration — ServiceTitan Support' },
+  confidence: 'high',
+  sources_used: ['slack', 'confluence'],
+};
+
+const histSummary = summarizeResultForHistory(resultWithEscalate);
+assert(typeof histSummary === 'string', 'summarizeResultForHistory returns string');
+assert(histSummary.includes('Hey Sarah'), 'summary includes intro_message');
+assert(histSummary.includes('Enable Zapier API'), 'summary includes step title');
+assert(histSummary.includes('backend'), 'summary includes step tag');
+assert(histSummary.includes('No escalation needed'), 'summary includes no-escalation text');
+assert(histSummary.includes('CSA can handle this directly'), 'summary includes escalation reason');
+assert(histSummary.includes('Re: Zapier Integration'), 'summary includes email subject');
+assert(histSummary.includes('high'), 'summary includes confidence');
+assert(histSummary.includes('slack'), 'summary includes sources');
+assert(!histSummary.includes('{'), 'summary contains no raw JSON');
+assert(!histSummary.includes('"role"'), 'summary contains no JSON keys');
+
+// Specialist mode — no escalate_decision field
+const specialistResult = {
+  intro_message: 'Hey Mike, here is the deep dive.',
+  agent_steps: [{ num: 1, title: 'Check backend config', detail: 'Access the ST admin portal.', tag: 'backend' }],
+  customer_email: { subject: 'Re: Procore Export — ServiceTitan Support' },
+  confidence: 'medium',
+  sources_used: ['jira'],
+};
+const specialistSummary = summarizeResultForHistory(specialistResult);
+assert(!specialistSummary.includes('Escalation:'), 'no escalation line in specialist summary');
+assert(specialistSummary.includes('Hey Mike'), 'specialist summary includes intro_message');
+
+// Long step detail is truncated to 300 chars
+const longDetailResult = {
+  intro_message: 'Hey Dave.',
+  agent_steps: [{ num: 1, title: 'Long step', detail: 'X'.repeat(400), tag: 'action' }],
+  confidence: 'low',
+  sources_used: [],
+};
+const longSummary = summarizeResultForHistory(longDetailResult);
+const stepLine = longSummary.split('\n').find(l => l.includes('Long step'));
+assert(stepLine !== undefined, 'long detail step line present');
+assert(stepLine !== undefined && stepLine.length < 400, 'long step detail is truncated');
+
+// Accounting topic returns empty string
+assert(summarizeResultForHistory({ is_accounting_topic: true }) === '', 'accounting topic returns empty string');
+
+// No customer_email (low confidence suppression)
+const noEmailResult = {
+  intro_message: 'Hey Lee.',
+  agent_steps: [],
+  confidence: 'low',
+  sources_used: ['slack'],
+};
+const noEmailSummary = summarizeResultForHistory(noEmailResult);
+assert(!noEmailSummary.includes('Customer email drafted'), 'no email line when customer_email absent');
 
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');

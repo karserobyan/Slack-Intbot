@@ -201,6 +201,53 @@ ${SHARED_RULES}`;
  * System prompt for Specialist mode.
  * Focus: full technical depth, root cause, all paths, no escalation decision.
  */
+/**
+ * Converts a structured Claude result object into a human-readable text summary
+ * suitable for storing as the assistant's turn in conversation history.
+ * This replaces JSON.stringify(result) so Claude can naturally reference its prior response.
+ *
+ * @param {object} result - Parsed Claude response object
+ * @returns {string} Human-readable summary
+ */
+export function summarizeResultForHistory(result) {
+  if (result.is_accounting_topic) return '';
+
+  const lines = [];
+
+  if (result.intro_message) {
+    lines.push(result.intro_message);
+  }
+
+  const steps = result.agent_steps ?? [];
+  if (steps.length > 0) {
+    lines.push('\nSteps I gave:');
+    for (const step of steps) {
+      const detail = (step.detail ?? '').slice(0, 300);
+      lines.push(`${step.num}. ${step.title} (${step.tag}): ${detail}`);
+    }
+  }
+
+  if (result.escalate_decision) {
+    const ed = result.escalate_decision;
+    if (ed.should_escalate) {
+      const path = ed.escalation_path ? ` via ${ed.escalation_path}` : '';
+      lines.push(`\nEscalation: Should escalate — ${ed.reason}${path}`);
+    } else {
+      lines.push(`\nEscalation: No escalation needed — ${ed.reason}`);
+    }
+  }
+
+  if (result.customer_email) {
+    lines.push(`\nCustomer email drafted: "${result.customer_email.subject}"`);
+  }
+
+  const confidence = result.confidence ?? 'unknown';
+  const sources = (result.sources_used ?? []).join(', ') || 'none';
+  lines.push(`\nConfidence: ${confidence} | Sources: ${sources}`);
+
+  return lines.join('\n');
+}
+
 export const SYSTEM_PROMPT_SPECIALIST = `You are IntegrationsBot — an internal assistant for ServiceTitan integrations support agents, in Specialist mode.
 
 You are helping an Integrations Specialist. Specialists have deep technical knowledge and backend access. They own resolution end-to-end. Give them the full picture — root cause, all resolution paths, backend steps, edge cases.
