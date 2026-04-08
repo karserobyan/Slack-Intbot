@@ -33,27 +33,19 @@ export function buildResponseBlocks(data) {
   }
 
   // ── Header ──────────────────────────────────────────────────────────────
-  blocks.push({
-    type: 'header',
-    text: {
-      type: 'plain_text',
-      text: `🔌 ${data.issue_title}`,
-      emoji: true,
-    },
-  });
-
   const CONFIDENCE_DISPLAY = {
-    high:   { icon: '🟢', label: 'High confidence' },
-    medium: { icon: '🟡', label: 'Medium confidence' },
-    low:    { icon: '🔴', label: 'Low confidence — email draft suppressed' },
+    high:   { icon: '🟢' },
+    medium: { icon: '🟡' },
+    low:    { icon: '🔴' },
   };
   const conf = CONFIDENCE_DISPLAY[data.confidence] ?? CONFIDENCE_DISPLAY.medium;
 
   blocks.push({
-    type: 'section',
+    type: 'header',
     text: {
-      type: 'mrkdwn',
-      text: `*Integration:* \`${data.integration_type}\`    *Sources:* ${(data.sources_used ?? []).map((s) => `\`${s}\``).join('  ')}    ${conf.icon} ${conf.label}`,
+      type: 'plain_text',
+      text: `${conf.icon} ${data.issue_title}`,
+      emoji: true,
     },
   });
 
@@ -217,46 +209,6 @@ export function buildResponseBlocks(data) {
 
     blocks.push({ type: 'divider' });
   }
-
-  // ── Sources ──────────────────────────────────────────────────────────────
-  const sourceLines = [];
-
-  const slackRefs = (data.slack_refs ?? []).slice(0, 5);
-  for (const ref of slackRefs) {
-    const resolved = ref.was_resolved ? '✅' : '⏳';
-    sourceLines.push(
-      `${resolved} *#${ref.channel}*${ref.author ? ` (${ref.author})` : ''} — ${ref.issue_summary}`,
-    );
-  }
-
-  const atlassianRefs = (data.atlassian_refs ?? []).slice(0, 5);
-  for (const ref of atlassianRefs) {
-    const icon = ref.type === 'jira' ? '🎟️' : '📄';
-    const titleLink = ref.url ? `<${ref.url}|${ref.title}>` : ref.title;
-    const statusPart = ref.status ? ` [${ref.status}]` : '';
-    sourceLines.push(`${icon} ${titleLink}${statusPart} — ${ref.summary}`);
-  }
-
-  if (sourceLines.length > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*📎 Sources Referenced*\n${sourceLines.join('\n')}`,
-      },
-    });
-  }
-
-  // Footer context block
-  blocks.push({
-    type: 'context',
-    elements: [
-      {
-        type: 'mrkdwn',
-        text: `_IntegrationsBot • Sources searched: ${(data.sources_used ?? []).join(', ')} • Powered by Claude_`,
-      },
-    ],
-  });
 
   return blocks;
 }

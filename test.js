@@ -172,7 +172,7 @@ assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response block
 assert(responseBlocks[0].type === 'header', 'First block is header');
 assert(responseBlocks.some(b => b.type === 'divider'), 'Contains dividers');
 assert(responseBlocks.some(b => b.type === 'actions'), 'Contains copy email button');
-assert(responseBlocks[responseBlocks.length - 1].type === 'context', 'Last block is context footer');
+assert(!responseBlocks.some(b => b.type === 'context'), 'No context footer in response');
 
 // Check header contains issue title
 const headerText = responseBlocks[0].text.text;
@@ -276,16 +276,16 @@ assert(noChannelBlock === undefined, 'No channel recommendation block when field
 
 // confidence badge rendering
 const highConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'high' });
-const highBadge = highConfBlocks.find(b => b.text?.text?.includes('High confidence'));
-assert(highBadge !== undefined, 'High confidence badge rendered');
+const highHeader = highConfBlocks.find(b => b.type === 'header');
+assert(highHeader?.text?.text?.startsWith('🟢'), 'High confidence shows 🟢 in header');
 
 const medConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'medium' });
-const medBadge = medConfBlocks.find(b => b.text?.text?.includes('Medium confidence'));
-assert(medBadge !== undefined, 'Medium confidence badge rendered');
+const medHeader = medConfBlocks.find(b => b.type === 'header');
+assert(medHeader?.text?.text?.startsWith('🟡'), 'Medium confidence shows 🟡 in header');
 
 const lowConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'low' });
-const lowBadge = lowConfBlocks.find(b => b.text?.text?.includes('Low confidence'));
-assert(lowBadge !== undefined, 'Low confidence badge rendered');
+const lowHeader = lowConfBlocks.find(b => b.type === 'header');
+assert(lowHeader?.text?.text?.startsWith('🔴'), 'Low confidence shows 🔴 in header');
 
 // low confidence: email draft suppressed, warning shown
 const lowEmailBlock = lowConfBlocks.find(b => b.text?.text?.includes('Suppressed'));
