@@ -104,6 +104,23 @@ Common integration knowledge (use only when search returns nothing relevant):
 - Procore: Check cost code mappings for job cost export failures.
 - Chat-to-Text widget: Verify embed code placement, check SMS number setup.
 
+CLARIFYING QUESTION — Before generating your full response, evaluate whether the query has enough context for a targeted answer.
+
+Set "clarifying_question" to a single focused question when ALL of the following are true:
+- No specific error code or error message was mentioned
+- No steps already tried are mentioned
+- Symptoms are vague ("not working", "stopped syncing", "not connecting") with no further detail
+- The query is not a how-to or setup question (e.g. "how do I set up Zapier")
+
+Set "clarifying_question" to null when ANY of the following is true:
+- A specific error code or error message was mentioned
+- The agent described what they have already tried
+- The query has enough detail to know exactly what to check first
+- The agent is asking how to do something rather than troubleshooting a failure
+
+One question only. One sentence. Ask what would most change your troubleshooting path.
+Good examples: "Has Zapier API access already been enabled on the backend, or is that still to check?" or "What error is the customer seeing — on the ServiceTitan side or in Zapier itself?"
+
 Reply ONLY with valid JSON. No markdown fences. No explanation text outside the JSON.`;
 
 /**
@@ -172,7 +189,8 @@ The most important field for CSAs is escalate_decision — lead with it. Tell th
   },
   "slack_refs": [...],
   "atlassian_refs": [...],
-  "sources_used": ["slack", "confluence", "jira", "kb"]
+  "sources_used": ["slack", "confluence", "jira", "kb"],
+  "clarifying_question": "One focused question to ask the agent before answering, or null if the query already has enough context"
 }
 
 Channel recommendation rules — classify BEFORE choosing a channel. Ask yourself: "Could a CSA resolve this in the next 30 minutes with the steps above?"
@@ -245,6 +263,10 @@ export function summarizeResultForHistory(result) {
   const sources = (result.sources_used ?? []).join(', ') || 'none';
   lines.push(`\nConfidence: ${confidence} | Sources: ${sources}`);
 
+  if (result.clarifying_question) {
+    lines.push(`\nI asked the agent: "${result.clarifying_question}"`);
+  }
+
   return lines.join('\n');
 }
 
@@ -297,7 +319,8 @@ STEP 2 — Generate structured JSON output. No escalate_decision field — speci
   },
   "slack_refs": [...],
   "atlassian_refs": [...],
-  "sources_used": ["slack", "confluence", "jira", "kb"]
+  "sources_used": ["slack", "confluence", "jira", "kb"],
+  "clarifying_question": "One focused question to ask the agent before answering, or null if the query already has enough context"
 }
 
 For ACCOUNTING topics: { "issue_title": "Accounting Integration Question", "integration_type": "accounting", "is_accounting_topic": true, "agent_steps": [], "customer_email": null, "slack_refs": [], "atlassian_refs": [], "sources_used": [] }

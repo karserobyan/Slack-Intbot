@@ -163,6 +163,29 @@ const noEmailResult = {
 const noEmailSummary = summarizeResultForHistory(noEmailResult);
 assert(!noEmailSummary.includes('Customer email drafted'), 'no email line when customer_email absent');
 
+// clarifying_question included in summary when present
+const resultWithQuestion = {
+  intro_message: 'Hey Sarah, let me look into this.',
+  agent_steps: [{ num: 1, title: 'Enable API', detail: 'Toggle Zapier API access on.', tag: 'backend' }],
+  confidence: 'medium',
+  sources_used: ['slack'],
+  clarifying_question: 'Has Zapier API access already been enabled on the backend, or is that still to check?',
+};
+const questionSummary = summarizeResultForHistory(resultWithQuestion);
+assert(questionSummary.includes('I asked the agent:'), 'summary includes clarifying question label');
+assert(questionSummary.includes('Has Zapier API access already been enabled'), 'summary includes clarifying question text');
+
+// clarifying_question absent when null
+const resultNoQuestion = {
+  intro_message: 'Hey Mike.',
+  agent_steps: [],
+  confidence: 'high',
+  sources_used: ['confluence'],
+  clarifying_question: null,
+};
+const noQuestionSummary = summarizeResultForHistory(resultNoQuestion);
+assert(!noQuestionSummary.includes('I asked the agent:'), 'no clarifying question line when null');
+
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');
 
