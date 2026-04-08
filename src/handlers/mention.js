@@ -1,11 +1,13 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
 import { queryWithContext, queryChat } from '../claude/query.js';
+import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
   buildResponseBlocks,
   buildAccountingRedirectBlocks,
   buildThinkingBlocks,
   buildErrorBlocks,
+  buildFollowUpBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
@@ -92,6 +94,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       const thinkingMsg = await client.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
+        blocks: buildThinkingBlocks(query),
         text: 'Thinking…',
       });
       thinkingTs = thinkingMsg.ts;
@@ -120,9 +123,19 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     ]);
 
     if (thinkingTs) {
-      await client.chat.update({ channel: channelId, ts: thinkingTs, text: replyText });
+      await client.chat.update({
+        channel: channelId,
+        ts: thinkingTs,
+        blocks: buildFollowUpBlocks(replyText),
+        text: replyText.slice(0, 200),
+      });
     } else {
-      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: replyText });
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        blocks: buildFollowUpBlocks(replyText),
+        text: replyText.slice(0, 200),
+      });
     }
     return;
   }
@@ -149,7 +162,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     });
     appendToHistory(threadTs, [
       { role: 'user', content: query },
-      { role: 'assistant', content: JSON.stringify(cached) },
+      { role: 'assistant', content: summarizeResultForHistory(cached) },
     ]);
     return;
   }
@@ -278,7 +291,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   // Placed here (after delivery) so accounting redirects never seed history.
   appendToHistory(threadTs, [
     { role: 'user', content: query },
-    { role: 'assistant', content: JSON.stringify(result) },
+    { role: 'assistant', content: summarizeResultForHistory(result) },
   ]);
 }
 
