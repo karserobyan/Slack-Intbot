@@ -93,6 +93,11 @@ const withFences = '```json\n' + JSON.stringify(sampleJson) + '\n```';
 const parsed2 = parseClaudeResponse(withFences);
 assert(parsed2.issue_title === 'Zapier API Access Not Enabled', 'Strips markdown fences');
 
+// Parse clarifying-question-only response (no other fields)
+const clarifyOnly = parseClaudeResponse('{"clarifying_question": "Has Zapier API access been enabled for this tenant?"}');
+assert(clarifyOnly.clarifying_question === 'Has Zapier API access been enabled for this tenant?', 'Parses clarifying-question-only response');
+assert(clarifyOnly.issue_title === undefined, 'No issue_title in clarifying-question-only response');
+
 // Parse invalid JSON should throw
 let threwError = false;
 try { parseClaudeResponse('not json at all'); } catch { threwError = true; }
@@ -185,6 +190,12 @@ const resultNoQuestion = {
 };
 const noQuestionSummary = summarizeResultForHistory(resultNoQuestion);
 assert(!noQuestionSummary.includes('I asked the agent:'), 'no clarifying question line when null');
+
+// summarizeResultForHistory with clarifying-question-only result (no intro, no steps)
+const clarifyOnlyResult = { clarifying_question: 'Has Zapier API access been enabled for this tenant?' };
+const clarifyOnlySummary = summarizeResultForHistory(clarifyOnlyResult);
+assert(clarifyOnlySummary.includes('Has Zapier API access been enabled'), 'clarify-only summary includes the question');
+assert(!clarifyOnlySummary.includes('Confidence: unknown'), 'clarify-only summary omits noise when no confidence/sources');
 
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');
