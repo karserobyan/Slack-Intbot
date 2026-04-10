@@ -102,7 +102,8 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
 
 /**
  * Conversational follow-up query — uses thread history, returns plain text.
- * Does NOT use MCP — relies on conversation history for context.
+ * Uses MCP tools so Claude can search for new information if the agent provides
+ * a new angle, error code, or additional context.
  * Aborts automatically after TIMEOUT_MS.
  *
  * @param {string} userQuery - The agent's follow-up message
@@ -114,18 +115,21 @@ export async function queryChat(userQuery, history) {
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   const messages = [...history, { role: 'user', content: userQuery }];
+  const mcpServers = buildMcpServers();
 
   const requestParams = {
     model: MODEL,
     max_tokens: 2048,
     system: CHAT_SYSTEM_PROMPT,
     messages,
+    ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
+    betas: ['mcp-client-2025-04-04'],
   };
 
   let fullText = '';
 
   try {
-    const response = await anthropic.messages.create(requestParams, { signal: controller.signal });
+    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)

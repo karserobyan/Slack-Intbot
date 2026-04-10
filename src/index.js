@@ -6,7 +6,7 @@ import { buildEmailModal, buildFeedbackModal, buildResponseBlocks } from './slac
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
-import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback } from './slack/feedback.js';
+import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -317,7 +317,27 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
   }
 
   const feedbackChannel = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID;
-  app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — feedback notifications disabled'}`);
+  app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — review cards will not be posted. Set FEEDBACK_REVIEW_CHANNEL_ID and invite the bot to that channel.'}`);
+
+  // Ensure data dir exists (prevents silent write failures on first run)
+  await initFeedbackStorage();
+
+  // Retry posting review cards for stuck pending entries (notifyFeedbackChannel
+  // failed previously — bot was not yet in the review channel, or channel was unset)
+  if (feedbackChannel) {
+    try {
+      const stuck = await getUnpostedPending();
+      if (stuck.length > 0) {
+        app.logger.warn(`[feedback] ${stuck.length} pending feedback entry(ies) never got a review card — retrying now...`);
+        for (const record of stuck) {
+          await notifyFeedbackChannel(app.client, record);
+        }
+        app.logger.info('[feedback] Retry complete.');
+      }
+    } catch (err) {
+      app.logger.warn('[feedback] Startup retry for stuck pending entries failed:', err.message);
+    }
+  }
 
   const hasMcpSlack = Boolean(process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_TOKEN !== 'xoxp-replace-me');
   const hasMcpAtlassian = Boolean(process.env.ATLASSIAN_MCP_TOKEN);

@@ -14,7 +14,7 @@ import {
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse } from './src/claude/prompts.js';
-import { getRelevantFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
+import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 
 let passed = 0;
 let failed = 0;
@@ -175,6 +175,59 @@ assert(specialistBtn !== undefined, 'Show Specialist Detail button present when 
 const noSpecialistBtn = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Mike.' });
 const noBtn = noSpecialistBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
 assert(noBtn === undefined, 'Show Specialist Detail button absent when _showSpecialistValue not set');
+
+// channel_recommendation rendering
+const withKsChannel = buildResponseBlocks({
+  ...sampleJson,
+  channel_recommendation: { channel: 'ks-integration', reason: 'Quick sanity check — no company-wide visibility needed.' },
+});
+const ksBlock = withKsChannel.find(b => b.text?.text?.includes('ks-integration') && b.text?.text?.includes('Quick sanity check'));
+assert(ksBlock !== undefined, 'channel_recommendation renders ks-integration block');
+assert(ksBlock && ksBlock.text.text.includes('Quick sanity check'), 'ks-integration block includes reason');
+
+const withAskChannel = buildResponseBlocks({
+  ...sampleJson,
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Complex issue worth the whole team seeing.' },
+});
+const askBlock = withAskChannel.find(b => b.text?.text?.includes('ask-integrations') && b.text?.text?.includes('Complex issue worth the whole team seeing'));
+assert(askBlock !== undefined, 'channel_recommendation renders ask-integrations block');
+
+const noChannelRec = buildResponseBlocks({ ...sampleJson });
+const noChannelBlock = noChannelRec.find(b => b.text?.text?.includes('Post this in'));
+assert(noChannelBlock === undefined, 'No channel recommendation block when field absent');
+
+// confidence badge rendering
+const highConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'high' });
+const highBadge = highConfBlocks.find(b => b.text?.text?.includes('High confidence'));
+assert(highBadge !== undefined, 'High confidence badge rendered');
+
+const medConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'medium' });
+const medBadge = medConfBlocks.find(b => b.text?.text?.includes('Medium confidence'));
+assert(medBadge !== undefined, 'Medium confidence badge rendered');
+
+const lowConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'low' });
+const lowBadge = lowConfBlocks.find(b => b.text?.text?.includes('Low confidence'));
+assert(lowBadge !== undefined, 'Low confidence badge rendered');
+
+// low confidence: email draft suppressed, warning shown
+const lowEmailBlock = lowConfBlocks.find(b => b.text?.text?.includes('Suppressed'));
+assert(lowEmailBlock !== undefined, 'Low confidence suppresses email draft with notice');
+const lowHasRealEmail = lowConfBlocks.some(b => b.text?.text?.startsWith('> '));
+assert(lowHasRealEmail === false, 'Low confidence: no quoted email body rendered');
+
+// low confidence: Wrong Answer button still present
+const lowActions = lowConfBlocks.find(b => b.type === 'actions');
+assert(lowActions !== undefined, 'Low confidence: action buttons still rendered');
+const lowWrongBtn = lowActions?.elements?.find(e => e.action_id === 'wrong_answer_modal');
+assert(lowWrongBtn !== undefined, 'Low confidence: Wrong Answer button present');
+
+// high/medium: email renders normally
+const highEmailBlock = highConfBlocks.find(b => b.text?.text?.startsWith('> '));
+assert(highEmailBlock !== undefined, 'High confidence: email body rendered normally');
+
+// unknown/missing confidence defaults to medium badge (no crash)
+const noConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: undefined });
+assert(noConfBlocks.length > 0, 'Missing confidence field does not crash');
 
 // ── 4. Cache ─────────────────────────────────────────────────────────────────
 console.log('\n🔹 Cache');
@@ -361,12 +414,12 @@ assert(pendingEntry.reviewMessageTs === null, 'New pending entry has null review
 assert('reviewChannelId' in pendingEntry, 'New pending entry has reviewChannelId field');
 
 // Should NOT be in active feedback.json yet
-const activeBefore = await getRelevantFeedback('zapier test query for moderation');
+const activeBefore = await getAllFeedback();
 assert(!activeBefore.some(e => e.id === testRecord.id), 'New feedback NOT in active queue before approval');
 
 // Approve it
 await approveFeedback(testRecord.id);
-const activeAfter = await getRelevantFeedback('zapier test query for moderation');
+const activeAfter = await getAllFeedback();
 assert(activeAfter.some(e => e.id === testRecord.id), 'Feedback in active queue after approval');
 
 const pendingAfter = await getPendingFeedback();
@@ -392,7 +445,7 @@ assert(!activeAfterReject.some(e => e.id === testRecord2.id), 'Rejected feedback
 
 // Double-approve is idempotent — must NOT duplicate in active queue
 await approveFeedback(testRecord.id); // already approved
-const activeNoDup = await getRelevantFeedback('zapier test query for moderation');
+const activeNoDup = await getAllFeedback();
 const matchCount = activeNoDup.filter(e => e.id === testRecord.id).length;
 assert(matchCount === 1, 'Double-approve does not duplicate entry in active queue');
 

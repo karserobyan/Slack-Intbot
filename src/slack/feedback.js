@@ -295,6 +295,25 @@ export async function getAllFeedback() {
 }
 
 /**
+ * Ensures the data directory exists. Call once at startup.
+ */
+export async function initFeedbackStorage() {
+  await mkdir(FEEDBACK_DIR, { recursive: true });
+}
+
+/**
+ * Returns pending entries that have a reviewChannelId but no reviewMessageTs.
+ * These are "stuck" — saveFeedback succeeded but notifyFeedbackChannel failed.
+ * Used at startup to retry posting their review cards.
+ *
+ * @returns {Promise<Array>}
+ */
+export async function getUnpostedPending() {
+  const pending = await loadPending();
+  return pending.filter((e) => e.reviewChannelId && !e.reviewMessageTs);
+}
+
+/**
  * Returns recent feedback entries relevant to a query (keyword-scored).
  * Only returns APPROVED entries from feedback.json.
  *
