@@ -254,7 +254,7 @@ export function summarizeResultForHistory(result) {
     lines.push(`\nCustomer email drafted: "${result.customer_email.subject}"`);
   }
 
-  if (result.confidence !== undefined || (result.sources_used ?? []).length > 0) {
+  if (result.confidence != null || (result.sources_used ?? []).length > 0) {
     const confidence = result.confidence ?? 'unknown';
     const sources = (result.sources_used ?? []).join(', ') || 'none';
     lines.push(`\nConfidence: ${confidence} | Sources: ${sources}`);

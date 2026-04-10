@@ -195,7 +195,12 @@ assert(!noQuestionSummary.includes('I asked the agent:'), 'no clarifying questio
 const clarifyOnlyResult = { clarifying_question: 'Has Zapier API access been enabled for this tenant?' };
 const clarifyOnlySummary = summarizeResultForHistory(clarifyOnlyResult);
 assert(clarifyOnlySummary.includes('Has Zapier API access been enabled'), 'clarify-only summary includes the question');
-assert(!clarifyOnlySummary.includes('Confidence: unknown'), 'clarify-only summary omits noise when no confidence/sources');
+assert(!clarifyOnlySummary.includes('Confidence:'), 'clarify-only summary omits noise when no confidence/sources');
+
+// confidence: null should also suppress the line
+const clarifyNullConf = { clarifying_question: 'Any question?', confidence: null };
+const clarifyNullSummary = summarizeResultForHistory(clarifyNullConf);
+assert(!clarifyNullSummary.includes('Confidence:'), 'null confidence suppresses confidence/sources line');
 
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');
