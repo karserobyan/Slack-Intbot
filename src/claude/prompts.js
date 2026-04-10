@@ -101,7 +101,7 @@ export function parseClaudeResponse(text) {
  * Shared rules injected at the end of both role prompts.
  */
 const SHARED_RULES = `
-CONFIDENCE SCORING — You must set "confidence" in every response using these exact criteria:
+CONFIDENCE SCORING — You must set "confidence" in every full structured response using these exact criteria (this rule does not apply when you output a clarifying_question-only response):
 - "high": Your search results directly address this integration AND this symptom. Every step you are giving is traceable to a specific source you found. You are not extrapolating.
 - "medium": You found partial results — related integration but a different symptom, or you are drawing from Common integration knowledge below rather than a direct search hit. Some extrapolation involved.
 - "low": Your searches returned nothing specifically matching this integration + symptom combination, or you are about to escalate because you genuinely don't know. When confidence is low, the customer email draft will be automatically suppressed by the system — do not invent steps to fill the gap.
@@ -195,7 +195,7 @@ The question must be:
 - Targeting the single most likely root cause for this integration (use common integration knowledge if searches returned nothing specific)
 - Example: "Has Zapier API access been enabled for this tenant on the ServiceTitan backend?"
 
-**If YES — generate the full structured JSON below:**
+**Full structured JSON (YES path only):**
 
 The most important field for CSAs is escalate_decision — lead with it. Tell them upfront whether this needs escalation and why. If no escalation needed, give them steps they can action themselves.
 
@@ -352,7 +352,7 @@ The question must be:
 - Targeting the single most likely root cause for this integration (use common integration knowledge if searches returned nothing specific)
 - Example: "Has Zapier API access been enabled for this tenant on the ServiceTitan backend?"
 
-**If YES — generate the full structured JSON below:**
+**Full structured JSON (YES path only):**
 
 No escalate_decision field — specialists own the resolution.
 
