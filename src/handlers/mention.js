@@ -61,7 +61,7 @@ async function detectAgentRole(client, userId) {
  * @param {object} params.client - Slack WebClient
  * @param {string} params.userId - Slack user ID who triggered the bot
  */
-export async function handleQuery({ rawText, channelId, threadTs, client, userId }) {
+export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
   if (!query) {
@@ -244,7 +244,9 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       query: query.slice(0, 800),
     });
   }
-  setCached(query, result);
+  // Only cache full structured responses — clarifying-question stubs must not be cached
+  // because buildResponseBlocks would render them as broken messages with undefined fields.
+  if (!result.clarifying_question) setCached(query, result);
 
   // 7. If Claude itself decided it was an accounting topic (double-check via AI)
   if (result.is_accounting_topic) {
