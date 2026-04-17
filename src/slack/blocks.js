@@ -10,6 +10,12 @@ const TAG_DISPLAY = {
   escalate: '🔴 `escalate`',
 };
 
+const CONFIDENCE_META = {
+  high:   { icon: '🟢', label: 'High',   note: 'steps are directly sourced' },
+  medium: { icon: '🟡', label: 'Medium', note: 'verify steps before actioning' },
+  low:    { icon: '🔴', label: 'Low',    note: 'no direct match — treat as a starting point' },
+};
+
 function tagLabel(tag) {
   return TAG_DISPLAY[tag] ?? `\`${tag}\``;
 }
@@ -33,12 +39,7 @@ export function buildResponseBlocks(data) {
   }
 
   // ── Header ──────────────────────────────────────────────────────────────
-  const CONFIDENCE_DISPLAY = {
-    high:   { icon: '🟢' },
-    medium: { icon: '🟡' },
-    low:    { icon: '🔴' },
-  };
-  const conf = CONFIDENCE_DISPLAY[data.confidence] ?? CONFIDENCE_DISPLAY.medium;
+  const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
   blocks.push({
     type: 'header',
@@ -102,11 +103,11 @@ export function buildResponseBlocks(data) {
 
   // ── Section 2 — Bottom Line ──────────────────────────────────────────────────
   if (data.findings_summary) {
-    const fs = data.findings_summary;
-    const actionLines = (fs.actions ?? []).map((a) => `• ${a}`).join('\n');
-    let summaryText = `*💡 Bottom Line*\n*${fs.diagnosis}*`;
+    const summary = data.findings_summary;
+    const actionLines = (summary.actions ?? []).map((a) => `• ${a}`).join('\n');
+    let summaryText = `*💡 Bottom Line*\n*${summary.diagnosis}*`;
     if (actionLines) summaryText += `\n\n${actionLines}`;
-    if (fs.guidance) summaryText += `\n\n_${fs.guidance}_`;
+    if (summary.guidance) summaryText += `\n\n_${summary.guidance}_`;
 
     blocks.push({
       type: 'section',
@@ -115,12 +116,7 @@ export function buildResponseBlocks(data) {
   }
 
   // ── Confidence context (small) ───────────────────────────────────────────────
-  const CONFIDENCE_CONTEXT = {
-    high:   { icon: '🟢', label: 'High', note: 'steps are directly sourced' },
-    medium: { icon: '🟡', label: 'Medium', note: 'verify steps before actioning' },
-    low:    { icon: '🔴', label: 'Low', note: 'no direct match — treat as a starting point' },
-  };
-  const confCtx = CONFIDENCE_CONTEXT[data.confidence] ?? CONFIDENCE_CONTEXT.medium;
+  const confCtx = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
   const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
   blocks.push({
     type: 'context',
@@ -326,7 +322,7 @@ export function buildHelpBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*What I can\'t help with*\nAccounting integrations (QuickBooks, NetSuite, Sage Intacct, Xero, etc.) — those go to #ask-partner-enabled-accounting-integrations.',
+        text: `*What I can't help with*\nAccounting integrations (QuickBooks, NetSuite, Sage Intacct, Xero, etc.) — those go to ${ACCOUNTING_REDIRECT_CHANNEL}.`,
       },
     },
     {
