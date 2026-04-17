@@ -139,10 +139,15 @@ Block Kit content:
 
 Help responses do not append to conversation history. A "help" query in an active diagnostic thread leaves the thread context untouched.
 
+### DM detection
+
+`handleQuery` receives `{ rawText, channelId, threadTs, client, userId }` and has no `channel_type`. To distinguish channel vs DM context for the ephemeral decision, add an `isDm` boolean parameter. `dm.js` passes `isDm: true`; `mention.js` passes `isDm: false` (or omits it, defaulting to false). The help handler uses `isDm` to decide whether `postEphemeral` is appropriate.
+
 ### Files changed
 
-- `src/handlers/mention.js` — add help handler, move accounting check, add logging, fix cache guard
-- `src/slack/blocks.js` — add `buildHelpBlocks(role)` returning the A blocks, add `buildHelpDetailBlocks()` returning the C blocks
+- `src/handlers/mention.js` — add help handler, move accounting check, add logging, fix cache guard; accept `isDm` param; pass `isDm: false` from `registerMentionHandler`
+- `src/handlers/dm.js` — pass `isDm: true` to `handleQuery`
+- `src/slack/blocks.js` — add `buildHelpBlocks()` (no role param — A blocks are identical for all roles) and `buildHelpDetailBlocks()` (C blocks). Role branching stays in `mention.js`.
 
 ---
 
@@ -166,8 +171,8 @@ Help responses do not append to conversation history. A "help" query in an activ
 
 ## Testing
 
-- `test.js`: Add `buildHelpBlocks` and `buildHelpDetailBlocks` import and assertions — blocks are arrays, contain expected text strings, no crash.
-- Cache bug: Add a test that passes a `clarifying_question`-only result through the cache write guard and asserts it is not stored.
+- `test.js`: Add `buildHelpBlocks` and `buildHelpDetailBlocks` import and assertions — both return arrays, contain expected key strings (e.g. "IntegrationsBot", "Zapier", "confidence"), no crash on either.
+- Cache bug guard: The guard lives in `mention.js`, which is not directly exercised by `test.js`. The underlying `getCached`/`setCached` behavior is already tested. The guard correctness is verified at runtime — a clarifying-question query followed by the same query again will return a clarifying question, not a broken cached response.
 - No new integration tests needed — logging is observable only at runtime.
 
 ---
