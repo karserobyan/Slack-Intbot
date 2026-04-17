@@ -193,6 +193,9 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   // 2. Check cache
   const cached = getCached(query);
   if (cached) {
+    const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
+    const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
+    console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -332,6 +335,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     ]);
     return;
   }
+
+  // Log confidence + sources for live full responses (after accounting + clarifying-question paths have returned)
+  const liveIntegration = (result.integration_type ?? 'unknown').slice(0, 50);
+  const liveSources = (result.sources_used ?? []).join(',') || 'none';
+  console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
   // 8. Update the thinking placeholder with the real response
   const responseBlocks = buildResponseBlocks(result);
