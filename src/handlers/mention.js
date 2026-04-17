@@ -8,6 +8,8 @@ import {
   buildThinkingBlocks,
   buildErrorBlocks,
   buildFollowUpBlocks,
+  buildHelpBlocks,
+  buildHelpDetailBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
@@ -84,6 +86,54 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
+  // 1. Fast-path: accounting redirect (no Claude needed)
+  // Checked before history so follow-up messages about accounting topics
+  // get the redirect without an unnecessary Claude call.
+  if (isAccountingTopic(query)) {
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      blocks: buildAccountingRedirectBlocks(query),
+      text: 'This question is about accounting integrations — please redirect to #ask-partner-enabled-accounting-integrations.',
+    });
+    return;
+  }
+
+  // 1c. Help command — "@bot help" returns capability overview (all roles)
+  // plus a Specialist-only full reference via ephemeral.
+  // Checked before history so "help" in an active thread always shows help.
+  if (query.toLowerCase() === 'help') {
+    const { role } = await detectAgentRole(client, userId);
+
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      blocks: buildHelpBlocks(),
+      text: 'IntegrationsBot — Help',
+    });
+
+    if (role === 'specialist') {
+      if (isDm) {
+        // DM is already private — post detail as a follow-up message
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          blocks: buildHelpDetailBlocks(),
+          text: 'IntegrationsBot — Full Reference',
+        });
+      } else {
+        // Channel — send ephemeral so only the Specialist sees the detail
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          blocks: buildHelpDetailBlocks(),
+          text: 'IntegrationsBot — Full Reference (Specialists only)',
+        });
+      }
+    }
+    return;
+  }
+
   // 1b. Follow-up path — thread has prior history, use conversational mode
   if (hasHistory(threadTs)) {
     const history = getHistory(threadTs);
@@ -137,17 +187,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
         text: replyText.slice(0, 200),
       });
     }
-    return;
-  }
-
-  // 1. Fast-path: accounting redirect (no Claude needed)
-  if (isAccountingTopic(query)) {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      blocks: buildAccountingRedirectBlocks(query),
-      text: 'This question is about accounting integrations — please redirect to #ask-partner-enabled-accounting-integrations.',
-    });
     return;
   }
 
