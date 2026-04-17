@@ -9,8 +9,9 @@ import {
   buildAccountingRedirectBlocks,
   buildThinkingBlocks,
   buildErrorBlocks,
-  buildEmailModal,
   buildFollowUpBlocks,
+  buildHelpBlocks,
+  buildHelpDetailBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -67,12 +68,14 @@ const sampleJson = {
     { num: 3, title: 'Verify connection', detail: 'Ask the customer to reconnect Zapier and confirm a test zap triggers successfully.', tag: 'verify' },
     { num: 4, title: 'Escalate if still failing', detail: 'If the issue persists after enabling API access, escalate to the Integrations Engineering team via #integrations-ts-specialists.', tag: 'escalate' },
   ],
-  customer_email: {
-    subject: 'Re: Zapier Integration Setup — ServiceTitan Integrations Support',
-    body: "Hi there,\n\nThank you for reaching out about your Zapier integration.\n\nWe've enabled API access on your account, which was the missing piece for getting Zapier connected. You should now be able to complete the setup on your end by following these steps:\n\n1. Log into your Zapier account\n2. Search for ServiceTitan in the app directory\n3. Follow the prompts to connect your account\n\nPlease let us know if you run into any issues during setup -- we're happy to help!\n\nBest regards,\nServiceTitan Integrations Support Team",
-    kb_links: [
-      { label: 'How to set up Zapier with ServiceTitan', url: 'https://help.servicetitan.com/how-to/zapier' },
+  findings_summary: {
+    diagnosis: 'The Zapier integration is failing because API access has not been enabled on the ServiceTitan backend for this tenant.',
+    actions: [
+      'Enable Zapier API access via the ST backend admin panel',
+      'Have the customer re-authenticate their Zapier account',
+      'Verify the first trigger fires successfully after re-auth',
     ],
+    guidance: 'If re-auth still fails, check whether the tenant is on a legacy Zapier plan that requires manual re-provisioning.',
   },
   slack_refs: [
     { channel: 'ask-integrations', author: 'jsmith', issue_summary: 'Similar Zapier setup issue', resolution: 'Enabled API access on backend', was_resolved: true },
@@ -113,7 +116,10 @@ const resultWithEscalate = {
     { num: 2, title: 'Verify connection', detail: 'Ask customer to reconnect Zapier.', tag: 'verify' },
   ],
   escalate_decision: { should_escalate: false, reason: 'CSA can handle this directly' },
-  customer_email: { subject: 'Re: Zapier Integration — ServiceTitan Support' },
+  findings_summary: {
+    diagnosis: 'Zapier API access needs enabling on the backend.',
+    actions: ['Enable Zapier API access', 'Ask customer to re-authenticate'],
+  },
   confidence: 'high',
   sources_used: ['slack', 'confluence'],
 };
@@ -125,7 +131,7 @@ assert(histSummary.includes('Enable Zapier API'), 'summary includes step title')
 assert(histSummary.includes('backend'), 'summary includes step tag');
 assert(histSummary.includes('No escalation needed'), 'summary includes no-escalation text');
 assert(histSummary.includes('CSA can handle this directly'), 'summary includes escalation reason');
-assert(histSummary.includes('Re: Zapier Integration'), 'summary includes email subject');
+assert(histSummary.includes('Zapier API access needs enabling'), 'summary includes findings_summary diagnosis');
 assert(histSummary.includes('high'), 'summary includes confidence');
 assert(histSummary.includes('slack'), 'summary includes sources');
 assert(!histSummary.includes('{'), 'summary contains no raw JSON');
@@ -135,7 +141,6 @@ assert(!histSummary.includes('"role"'), 'summary contains no JSON keys');
 const specialistResult = {
   intro_message: 'Hey Mike, here is the deep dive.',
   agent_steps: [{ num: 1, title: 'Check backend config', detail: 'Access the ST admin portal.', tag: 'backend' }],
-  customer_email: { subject: 'Re: Procore Export — ServiceTitan Support' },
   confidence: 'medium',
   sources_used: ['jira'],
 };
@@ -210,8 +215,8 @@ assert(Array.isArray(responseBlocks), 'buildResponseBlocks returns array');
 assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response blocks count: ${responseBlocks.length} (≤50 limit)`);
 assert(responseBlocks[0].type === 'header', 'First block is header');
 assert(responseBlocks.some(b => b.type === 'divider'), 'Contains dividers');
-assert(responseBlocks.some(b => b.type === 'actions'), 'Contains copy email button');
-assert(!responseBlocks.some(b => b.type === 'context'), 'No context footer in response');
+assert(responseBlocks.some(b => b.type === 'actions'), 'Contains action buttons');
+assert(responseBlocks.some(b => b.type === 'context'), 'Contains confidence context block');
 
 // Check header contains issue title
 const headerText = responseBlocks[0].text.text;
@@ -239,11 +244,6 @@ assert(thinkingBlocks[0].text.text.includes('Checking'), 'Thinking shows checkin
 const errorBlocks = buildErrorBlocks('test query');
 assert(errorBlocks.length === 2, 'Error has 2 blocks');
 assert(errorBlocks[0].text.text.includes('went wrong'), 'Error shows error message');
-
-// Email modal
-const modal = buildEmailModal('Test Subject', 'Test body text');
-assert(modal.type === 'modal', 'Modal has correct type');
-assert(modal.blocks.length === 2, 'Modal has subject + body blocks');
 
 // Follow-up blocks
 const followUpBlocks = buildFollowUpBlocks('Try re-enabling the Zapier connection and reconnecting.');
@@ -326,21 +326,45 @@ const lowConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'low' });
 const lowHeader = lowConfBlocks.find(b => b.type === 'header');
 assert(lowHeader?.text?.text?.startsWith('🔴'), 'Low confidence shows 🔴 in header');
 
-// low confidence: email draft suppressed, warning shown
-const lowEmailBlock = lowConfBlocks.find(b => b.text?.text?.includes('Suppressed'));
-assert(lowEmailBlock !== undefined, 'Low confidence suppresses email draft with notice');
-const lowHasRealEmail = lowConfBlocks.some(b => b.text?.text?.startsWith('> '));
-assert(lowHasRealEmail === false, 'Low confidence: no quoted email body rendered');
+// Confidence context block — shows level, sources, and guidance note
+const highConfContext = highConfBlocks.find(b => b.type === 'context');
+assert(highConfContext !== undefined, 'High confidence: context block present');
+assert(highConfContext.elements[0].text.includes('🟢'), 'High confidence: green icon in context');
+assert(highConfContext.elements[0].text.includes('High'), 'High confidence: label in context');
+assert(highConfContext.elements[0].text.includes('slack'), 'Confidence context includes sources');
 
-// low confidence: Wrong Answer button still present
-const lowActions = lowConfBlocks.find(b => b.type === 'actions');
-assert(lowActions !== undefined, 'Low confidence: action buttons still rendered');
-const lowWrongBtn = lowActions?.elements?.find(e => e.action_id === 'wrong_answer_modal');
-assert(lowWrongBtn !== undefined, 'Low confidence: Wrong Answer button present');
+const lowConfContext = lowConfBlocks.find(b => b.type === 'context');
+assert(lowConfContext !== undefined, 'Low confidence: context block present');
+assert(lowConfContext.elements[0].text.includes('🔴'), 'Low confidence: red icon in context');
+assert(lowConfContext.elements[0].text.includes('Low'), 'Low confidence: label in context');
 
-// high/medium: email renders normally
-const highEmailBlock = highConfBlocks.find(b => b.text?.text?.startsWith('> '));
-assert(highEmailBlock !== undefined, 'High confidence: email body rendered normally');
+// Bottom Line renders for all confidence levels
+const lowBottomLine = lowConfBlocks.find(b => b.text?.text?.includes('Bottom Line'));
+assert(lowBottomLine !== undefined, 'Low confidence: Bottom Line section still renders');
+const highBottomLine = highConfBlocks.find(b => b.text?.text?.includes('Bottom Line'));
+assert(highBottomLine !== undefined, 'High confidence: Bottom Line section renders');
+
+// Bottom Line contains diagnosis (bold), actions (bullets), guidance (italic)
+const bottomLineBlock = highBottomLine;
+assert(bottomLineBlock?.text?.text?.includes('*The Zapier integration is failing'), 'Bottom Line diagnosis is bold');
+assert(bottomLineBlock?.text?.text?.includes('• Enable Zapier API access'), 'Bottom Line contains action bullet');
+assert(bottomLineBlock?.text?.text?.includes('_If re-auth still fails'), 'Bottom Line guidance is italic');
+
+// No quoted email body anywhere
+const noQuotedEmail = highConfBlocks.every(b => !b.text?.text?.startsWith('> '));
+assert(noQuotedEmail, 'No quoted email body in any block');
+
+// Wrong Answer button still present
+const highActions = highConfBlocks.find(b => b.type === 'actions');
+assert(highActions !== undefined, 'Action buttons still rendered');
+const highWrongBtn = highActions?.elements?.find(e => e.action_id === 'wrong_answer_modal');
+assert(highWrongBtn !== undefined, 'Wrong Answer button present');
+
+// No Copy Email button
+const noCopyEmail = highConfBlocks.every(b =>
+  b.type !== 'actions' || !b.elements?.some(e => e.action_id === 'copy_email_modal')
+);
+assert(noCopyEmail, 'No Copy Email button in any actions block');
 
 // unknown/missing confidence defaults to medium badge (no crash)
 const noConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: undefined });
@@ -407,9 +431,9 @@ console.log('\n🔹 Edge Cases');
 const emptySteps = buildResponseBlocks({ ...sampleJson, agent_steps: [] });
 assert(emptySteps.length > 0, 'Handles empty agent_steps without crashing');
 
-// Missing customer_email
-const noEmail = buildResponseBlocks({ ...sampleJson, customer_email: null });
-assert(noEmail.length > 0, 'Handles null customer_email without crashing');
+// Missing findings_summary
+const noSummary = buildResponseBlocks({ ...sampleJson, findings_summary: undefined });
+assert(noSummary.length > 0, 'Handles missing findings_summary without crashing');
 
 // Missing refs
 const noRefs = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [] });
@@ -430,7 +454,7 @@ const longTitleBlocks = buildResponseBlocks({
 const actionsBlock = longTitleBlocks.find(b => b.type === 'actions');
 const wrongBtn = actionsBlock?.elements?.find(e => e.action_id === 'wrong_answer_modal');
 assert(wrongBtn !== undefined, 'wrong_answer_modal button exists even with long values');
-assert(wrongBtn.value.length <= 2000, `wrong_answer_modal value within 2000 chars (got ${wrongBtn?.value?.length})`);
+assert(wrongBtn?.value?.length <= 2000, `wrong_answer_modal value within 2000 chars (got ${wrongBtn?.value?.length})`);
 
 // ── 7. Feedback Module ───────────────────────────────────────────────────────
 console.log('\n🔹 Feedback Module');
@@ -568,6 +592,29 @@ assert(matchCount === 1, 'Double-approve does not duplicate entry in active queu
 
 assert(typeof approveFeedback === 'function', 'approveFeedback is a function');
 assert(typeof rejectFeedback === 'function', 'rejectFeedback is a function');
+
+// ── 10. Help Blocks ───────────────────────────────────────────────────────────
+console.log('\n🔹 Help Blocks');
+
+const helpBlocks = buildHelpBlocks();
+assert(Array.isArray(helpBlocks), 'buildHelpBlocks returns array');
+assert(helpBlocks.length > 0, 'buildHelpBlocks returns non-empty array');
+assert(helpBlocks[0].type === 'header', 'buildHelpBlocks first block is header');
+assert(helpBlocks[0].text.text.includes('IntegrationsBot'), 'help header mentions IntegrationsBot');
+assert(helpBlocks.some(b => b.text?.text?.includes('Zapier')), 'help blocks mention Zapier');
+assert(helpBlocks.some(b => b.text?.text?.includes('accounting')), 'help blocks mention accounting exclusion');
+assert(helpBlocks.some(b => b.type === 'context'), 'help blocks have context footer');
+assert(helpBlocks.every(b => b.type === 'header' || b.type === 'section' || b.type === 'context'), 'help blocks contain only valid block types');
+
+const helpDetailBlocks = buildHelpDetailBlocks();
+assert(Array.isArray(helpDetailBlocks), 'buildHelpDetailBlocks returns array');
+assert(helpDetailBlocks.length > 0, 'buildHelpDetailBlocks returns non-empty array');
+assert(helpDetailBlocks[0].type === 'header', 'buildHelpDetailBlocks first block is header');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('confidence')), 'detail blocks explain confidence levels');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'detail blocks explain feedback');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks explain specialist button');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
+assert(helpDetailBlocks.some(b => b.type === 'context'), 'detail blocks have context footer');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
