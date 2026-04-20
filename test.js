@@ -18,6 +18,7 @@ import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './s
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
+import { searchKnowledgeBase } from './src/claude/kb-search.js';
 
 let passed = 0;
 let failed = 0;
@@ -716,6 +717,17 @@ assert(parsedValue.slack_refs.length >= 1 && parsedValue.slack_refs.length <= 3,
 assert(parsedValue.atlassian_refs.length >= 1 && parsedValue.atlassian_refs.length <= 3, 'atlassian_refs capped to 1–3 entries in button value');
 assert(parsedValue.kb_refs.length >= 1 && parsedValue.kb_refs.length <= 3, 'kb_refs capped to 1–3 entries in button value');
 assert(manySourcesBtn.value.length <= 2000, 'Button value within Slack 2000-char limit');
+
+// ── 13. KB Search ─────────────────────────────────────────────────────────────
+console.log('\n🔹 KB Search');
+
+// Exported function exists and is async
+assert(typeof searchKnowledgeBase === 'function', 'searchKnowledgeBase is a function');
+assert(searchKnowledgeBase.constructor.name === 'AsyncFunction', 'searchKnowledgeBase is async');
+
+// Returns null when GOOGLE_CSE_API_KEY is not set (will not be set in CI)
+const kbResult = await searchKnowledgeBase('zapier api access not working');
+assert(kbResult === null, 'searchKnowledgeBase returns null when env vars not set');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
