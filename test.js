@@ -704,17 +704,17 @@ assert(legacySourcesBtn === undefined, 'Sources button hidden when ref fields ab
 // Button value caps at 5 refs per type
 const manyRefsBlocks = buildResponseBlocks({
   ...sampleJson,
-  slack_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://slack.com/${i}`, channel: '#ch', title: `Thread ${i}` })),
-  atlassian_refs: Array.from({ length: 10 }, (_, i) => ({ type: 'confluence', url: `https://atlassian.net/${i}`, title: `Page ${i}` })),
-  kb_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://help.st.com/${i}`, title: `Article ${i}`, snippet: 'snippet' })),
+  slack_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://servicetitan.slack.com/archives/C0123456789/p${String(i).padStart(16, '0')}`, channel: '#ask-integrations', title: `Zapier API access not working after tenant migration — case ${i}` })),
+  atlassian_refs: Array.from({ length: 10 }, (_, i) => ({ type: 'confluence', url: `https://servicetitan.atlassian.net/wiki/spaces/INT/pages/123456789${i}/Zapier-Integration-Setup-Guide`, title: `Zapier Integration Setup and Troubleshooting Guide for ServiceTitan v${i}` })),
+  kb_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://help.servicetitan.com/hc/en-us/articles/36000000000${i}-Setting-Up-Zapier-Integration`, title: `Setting Up and Configuring the Zapier Integration with ServiceTitan`, snippet: `To enable Zapier API access, navigate to your ServiceTitan admin portal and find the tenant settings under Integrations tab. Enable Zapier API access for tenant ${i}.` })),
 });
 const manyRefsActions = manyRefsBlocks.find(b => b.type === 'actions');
 const manySourcesBtn = manyRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(manySourcesBtn !== undefined, 'Sources button present with many refs');
 const parsedValue = JSON.parse(manySourcesBtn.value);
-assert(parsedValue.slack_refs.length <= 5, 'slack_refs capped at 5 in button value');
-assert(parsedValue.atlassian_refs.length <= 5, 'atlassian_refs capped at 5 in button value');
-assert(parsedValue.kb_refs.length <= 5, 'kb_refs capped at 5 in button value');
+assert(parsedValue.slack_refs.length <= 3, 'slack_refs capped at 3 in button value');
+assert(parsedValue.atlassian_refs.length <= 3, 'atlassian_refs capped at 3 in button value');
+assert(parsedValue.kb_refs.length <= 3, 'kb_refs capped at 3 in button value');
 assert(manySourcesBtn.value.length <= 2000, 'Capped button value within 2000 chars');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
