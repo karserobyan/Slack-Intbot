@@ -12,11 +12,13 @@ import {
   buildFollowUpBlocks,
   buildHelpBlocks,
   buildHelpDetailBlocks,
+  buildSourcesModal,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
+import { searchKnowledgeBase } from './src/claude/kb-search.js';
 
 let passed = 0;
 let failed = 0;
@@ -78,11 +80,14 @@ const sampleJson = {
     guidance: 'If re-auth still fails, check whether the tenant is on a legacy Zapier plan that requires manual re-provisioning.',
   },
   slack_refs: [
-    { channel: 'ask-integrations', author: 'jsmith', issue_summary: 'Similar Zapier setup issue', resolution: 'Enabled API access on backend', was_resolved: true },
+    { url: 'https://servicetitan.slack.com/archives/C123/p456', channel: '#ask-integrations', title: 'Zapier API access not working after tenant migration' },
   ],
   atlassian_refs: [
-    { type: 'confluence', title: 'Zapier Setup Guide', summary: 'Step-by-step Zapier config', url: 'https://company.atlassian.net/wiki/zapier', status: null, assignee: null },
-    { type: 'jira', title: 'INT-4821', summary: 'Zapier not connecting for tenant', url: 'https://company.atlassian.net/browse/INT-4821', status: 'Done', assignee: 'jdoe' },
+    { type: 'confluence', url: 'https://company.atlassian.net/wiki/zapier', title: 'Zapier Integration Setup Guide' },
+    { type: 'jira', url: 'https://company.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting for tenant' },
+  ],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/zapier-setup', title: 'Setting up Zapier with ServiceTitan', snippet: 'Enable API access in the ST admin portal before connecting Zapier.' },
   ],
   sources_used: ['slack', 'confluence', 'jira', 'kb'],
 };
@@ -615,6 +620,114 @@ assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'deta
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks explain specialist button');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
 assert(helpDetailBlocks.some(b => b.type === 'context'), 'detail blocks have context footer');
+
+// ── 11. Sources Modal ─────────────────────────────────────────────────────────
+console.log('\n🔹 Sources Modal');
+
+// Modal with all three source types
+const fullRefsModal = buildSourcesModal({
+  slack_refs: [
+    { url: 'https://slack.com/1', channel: '#ask-integrations', title: 'Zapier API not working' },
+  ],
+  atlassian_refs: [
+    { type: 'confluence', url: 'https://atlassian.net/wiki/1', title: 'Zapier Setup Guide' },
+    { type: 'jira', url: 'https://atlassian.net/browse/INT-1', title: 'INT-1 — Zapier auth failure' },
+  ],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/zapier', title: 'Zapier Setup', snippet: 'Enable API access first.' },
+  ],
+});
+assert(fullRefsModal.type === 'modal', 'buildSourcesModal returns modal type');
+assert(typeof fullRefsModal.title === 'object', 'modal has title');
+assert(Array.isArray(fullRefsModal.blocks), 'modal has blocks array');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('💬 Slack')), 'modal has Slack section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('📄 Atlassian')), 'modal has Atlassian section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('📚 Knowledge Base')), 'modal has KB section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier API not working')), 'slack ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier Setup Guide')), 'confluence ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('INT-1')), 'jira ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier Setup')), 'kb ref title appears in modal');
+
+// Modal with only Slack refs — Atlassian and KB sections should not appear
+const slackOnlyModal = buildSourcesModal({
+  slack_refs: [{ url: 'https://slack.com/2', channel: '#ks-integration', title: 'Thread about Angi' }],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('📄 Atlassian')), 'Atlassian section hidden when no atlassian_refs');
+assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('📚 Knowledge Base')), 'KB section hidden when no kb_refs');
+
+// Modal with no refs — shows fallback message
+const emptyRefsModal = buildSourcesModal({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
+assert(emptyRefsModal.blocks.some(b => b.text?.text?.includes('No specific sources')), 'empty refs modal shows fallback message');
+
+// Missing arrays default gracefully (no crash)
+const noArgsModal = buildSourcesModal({});
+assert(noArgsModal.type === 'modal', 'buildSourcesModal handles missing arrays without crash');
+
+// ── 12. Sources Button in buildResponseBlocks ─────────────────────────────────
+console.log('\n🔹 Sources Button');
+
+// Sources button appears when refs are present
+const withRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [{ url: 'https://slack.com/1', channel: '#ask-integrations', title: 'Zapier thread' }],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const withRefsActions = withRefsBlocks.find(b => b.type === 'actions');
+const sourcesBtn = withRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(sourcesBtn !== undefined, 'Sources button appears when refs present');
+assert(sourcesBtn?.value?.length <= 2000, 'Sources button value within 2000 chars');
+
+// Sources button hidden when all ref arrays are empty
+const noRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const noRefsActions = noRefsBlocks.find(b => b.type === 'actions');
+const noSourcesBtn = noRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(noSourcesBtn === undefined, 'Sources button hidden when all ref arrays empty');
+
+// Sources button hidden when ref fields are absent (legacy responses)
+const legacyNoRefsBlocks = buildResponseBlocks({
+  issue_title: 'Test',
+  agent_steps: [],
+  confidence: 'high',
+  sources_used: [],
+});
+const legacyActions = legacyNoRefsBlocks.find(b => b.type === 'actions');
+const legacySourcesBtn = legacyActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(legacySourcesBtn === undefined, 'Sources button hidden when ref fields absent');
+
+// Button value is capped to fit within Slack's 2000-char limit (adaptive: up to 3 per type)
+const manyRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://servicetitan.slack.com/archives/C0123456789/p${String(i).padStart(16, '0')}`, channel: '#ask-integrations', title: `Zapier API access not working after tenant migration — case ${i}` })),
+  atlassian_refs: Array.from({ length: 10 }, (_, i) => ({ type: 'confluence', url: `https://servicetitan.atlassian.net/wiki/spaces/INT/pages/123456789${i}/Zapier-Integration-Setup-Guide`, title: `Zapier Integration Setup and Troubleshooting Guide for ServiceTitan v${i}` })),
+  kb_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://help.servicetitan.com/hc/en-us/articles/36000000000${i}-Setting-Up-Zapier-Integration`, title: `Setting Up and Configuring the Zapier Integration with ServiceTitan`, snippet: `To enable Zapier API access, navigate to your ServiceTitan admin portal and find the tenant settings under Integrations tab. Enable Zapier API access for tenant ${i}.` })),
+});
+const manyRefsActions = manyRefsBlocks.find(b => b.type === 'actions');
+const manySourcesBtn = manyRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(manySourcesBtn !== undefined, 'Sources button present with many refs');
+const parsedValue = JSON.parse(manySourcesBtn.value);
+assert(parsedValue.slack_refs.length >= 1 && parsedValue.slack_refs.length <= 3, 'slack_refs capped to 1–3 entries in button value');
+assert(parsedValue.atlassian_refs.length >= 1 && parsedValue.atlassian_refs.length <= 3, 'atlassian_refs capped to 1–3 entries in button value');
+assert(parsedValue.kb_refs.length >= 1 && parsedValue.kb_refs.length <= 3, 'kb_refs capped to 1–3 entries in button value');
+assert(manySourcesBtn.value.length <= 2000, 'Button value within Slack 2000-char limit');
+
+// ── 13. KB Search ─────────────────────────────────────────────────────────────
+console.log('\n🔹 KB Search');
+
+// Exported function exists and is async
+assert(typeof searchKnowledgeBase === 'function', 'searchKnowledgeBase is a function');
+assert(searchKnowledgeBase.constructor.name === 'AsyncFunction', 'searchKnowledgeBase is async');
+
+// Returns null when GOOGLE_CSE_API_KEY is not set (will not be set in CI)
+const kbResult = await searchKnowledgeBase('zapier api access not working');
+assert(kbResult === null, 'searchKnowledgeBase returns null when env vars not set');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

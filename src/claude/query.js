@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
+import { searchKnowledgeBase } from './kb-search.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -53,16 +54,15 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  // Inject team knowledge base if available
-  let knowledgeBlock = '';
-  try {
-    const knowledge = await getKnowledge();
-    if (knowledge) knowledgeBlock = `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
-  } catch {
-    // non-critical — proceed without it
-  }
+  // Run team knowledge fetch and KB search in parallel
+  const [knowledge, kbResult] = await Promise.all([
+    getKnowledge().catch(() => null),
+    searchKnowledgeBase(userQuery),
+  ]);
 
-  const userContent = `Issue: ${userQuery}${knowledgeBlock}`;
+  let userContent = `Issue: ${userQuery}`;
+  if (knowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
+  if (kbResult?.text) userContent += `\n\n[KB RESULTS]\n${kbResult.text}\n[/KB RESULTS]`;
   const mcpServers = buildMcpServers();
 
   // Select system prompt based on role. agentName is appended so Claude uses it in intro_message.
@@ -97,7 +97,9 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
     clearTimeout(timer);
   }
 
-  return parseClaudeResponse(fullText);
+  const result = parseClaudeResponse(fullText);
+  if (kbResult?.refs?.length > 0) result.kb_refs = kbResult.refs;
+  return result;
 }
 
 /**
