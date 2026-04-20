@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildFeedbackModal, buildResponseBlocks } from './slack/blocks.js';
+import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
@@ -53,6 +53,17 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
   await client.views.open({
     trigger_id: body.trigger_id,
     view: buildFeedbackModal(context),
+  });
+});
+
+// ── "Sources" button — opens sources modal ───────────────────────────────────
+app.action('view_sources_modal', async ({ ack, body, client, action }) => {
+  await ack();
+  let refsData = { slack_refs: [], atlassian_refs: [], kb_refs: [] };
+  try { refsData = JSON.parse(action.value); } catch { /* show empty modal on bad JSON */ }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: buildSourcesModal(refsData),
   });
 });
 
