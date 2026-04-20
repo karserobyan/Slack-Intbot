@@ -35,6 +35,10 @@ export async function searchKnowledgeBase(query) {
   let data;
   try {
     const response = await fetch(url.toString());
+    if (!response.ok) {
+      console.warn(`[kb-search] Google API returned ${response.status} — skipping KB search`);
+      return null;
+    }
     data = await response.json();
   } catch (err) {
     console.warn('[kb-search] Fetch or JSON parse failed:', err.message);
