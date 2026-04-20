@@ -27,6 +27,28 @@ function tagLabel(tag) {
  * @param {object} data - Parsed Claude response
  * @returns {Array} Slack blocks array
  */
+
+// Builds the Sources button JSON value, fitting as many refs as possible within
+// Slack's 2000-char button value limit. Tries 3 entries per type, falls back to 2 or 1.
+function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs) {
+  const capRef = (ref) => ({
+    url:   (ref.url   ?? '').slice(0, 150),
+    title: (ref.title ?? '').slice(0, 60),
+    ...(ref.channel ? { channel: ref.channel.slice(0, 40) } : {}),
+    ...(ref.type    ? { type:    ref.type }                 : {}),
+    ...(ref.snippet ? { snippet: ref.snippet.slice(0, 80) } : {}),
+  });
+  for (let n = 3; n >= 1; n--) {
+    const v = JSON.stringify({
+      slack_refs:     slack_refs.slice(0, n).map(capRef),
+      atlassian_refs: atlassian_refs.slice(0, n).map(capRef),
+      kb_refs:        kb_refs.slice(0, n).map(capRef),
+    });
+    if (v.length <= 1990) return v;
+  }
+  return JSON.stringify({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
+}
+
 export function buildResponseBlocks(data) {
   const blocks = [];
 
@@ -143,22 +165,15 @@ export function buildResponseBlocks(data) {
 
   const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
   if (totalRefs > 0) {
-    const capRef = (ref) => ({
-      url:   (ref.url   ?? '').slice(0, 100),
-      title: (ref.title ?? '').slice(0, 60),
-      ...(ref.channel ? { channel: ref.channel.slice(0, 40) } : {}),
-      ...(ref.type    ? { type:    ref.type }                  : {}),
-      ...(ref.snippet ? { snippet: ref.snippet.slice(0, 80) } : {}),
-    });
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '📎 Sources', emoji: true },
       action_id: 'view_sources_modal',
-      value: JSON.stringify({
-        slack_refs:     (data.slack_refs     ?? []).slice(0, 3).map(capRef),
-        atlassian_refs: (data.atlassian_refs ?? []).slice(0, 3).map(capRef),
-        kb_refs:        (data.kb_refs        ?? []).slice(0, 3).map(capRef),
-      }),
+      value: _buildSourcesButtonValue(
+        data.slack_refs     ?? [],
+        data.atlassian_refs ?? [],
+        data.kb_refs        ?? [],
+      ),
     });
   }
 

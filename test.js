@@ -701,7 +701,7 @@ const legacyActions = legacyNoRefsBlocks.find(b => b.type === 'actions');
 const legacySourcesBtn = legacyActions?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(legacySourcesBtn === undefined, 'Sources button hidden when ref fields absent');
 
-// Button value caps at 5 refs per type
+// Button value is capped to fit within Slack's 2000-char limit (adaptive: up to 3 per type)
 const manyRefsBlocks = buildResponseBlocks({
   ...sampleJson,
   slack_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://servicetitan.slack.com/archives/C0123456789/p${String(i).padStart(16, '0')}`, channel: '#ask-integrations', title: `Zapier API access not working after tenant migration — case ${i}` })),
@@ -712,10 +712,10 @@ const manyRefsActions = manyRefsBlocks.find(b => b.type === 'actions');
 const manySourcesBtn = manyRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(manySourcesBtn !== undefined, 'Sources button present with many refs');
 const parsedValue = JSON.parse(manySourcesBtn.value);
-assert(parsedValue.slack_refs.length <= 3, 'slack_refs capped at 3 in button value');
-assert(parsedValue.atlassian_refs.length <= 3, 'atlassian_refs capped at 3 in button value');
-assert(parsedValue.kb_refs.length <= 3, 'kb_refs capped at 3 in button value');
-assert(manySourcesBtn.value.length <= 2000, 'Capped button value within 2000 chars');
+assert(parsedValue.slack_refs.length >= 1 && parsedValue.slack_refs.length <= 3, 'slack_refs capped to 1–3 entries in button value');
+assert(parsedValue.atlassian_refs.length >= 1 && parsedValue.atlassian_refs.length <= 3, 'atlassian_refs capped to 1–3 entries in button value');
+assert(parsedValue.kb_refs.length >= 1 && parsedValue.kb_refs.length <= 3, 'kb_refs capped to 1–3 entries in button value');
+assert(manySourcesBtn.value.length <= 2000, 'Button value within Slack 2000-char limit');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
