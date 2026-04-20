@@ -237,8 +237,16 @@ The most important field for CSAs is escalate_decision — lead with it. Tell th
     "actions": ["Action 1", "Action 2"],
     "guidance": "Optional: one watch-out or fallback if the fix does not work. Omit this field entirely if nothing noteworthy."
   },
-  "slack_refs": [...],
-  "atlassian_refs": [...],
+  "slack_refs": [
+    { "url": "https://servicetitan.slack.com/archives/...", "channel": "#channel-name", "title": "Brief description of what this thread is about" }
+  ],
+  "atlassian_refs": [
+    { "type": "confluence", "url": "https://...", "title": "Page title" },
+    { "type": "jira", "url": "https://...", "title": "INT-1234 — ticket title" }
+  ],
+  "kb_refs": [
+    { "url": "https://help.servicetitan.com/...", "title": "Article title", "snippet": "One-line excerpt from the article" }
+  ],
   "sources_used": ["slack", "confluence", "jira", "kb"]
 }
 
@@ -260,7 +268,7 @@ Use "ask-integrations" (Complex — needs team visibility) when ANY of the follo
 - The question involves multiple integrated systems
 - Examples: RwG matching failures across multiple locations, Procore export errors for specific job types, unknown error codes, leads suddenly stopping for a known provider
 
-For ACCOUNTING topics: { "issue_title": "Accounting Integration Question", "integration_type": "accounting", "is_accounting_topic": true, "agent_steps": [], "slack_refs": [], "atlassian_refs": [], "sources_used": [] }
+For ACCOUNTING topics: { "issue_title": "Accounting Integration Question", "integration_type": "accounting", "is_accounting_topic": true, "agent_steps": [], "slack_refs": [], "atlassian_refs": [], "kb_refs": [], "sources_used": [] }
 
 ${SHARED_RULES}`;
 
@@ -389,12 +397,20 @@ No escalate_decision field — specialists own the resolution.
     "actions": ["Action 1", "Action 2"],
     "guidance": "Optional: one watch-out or fallback if the fix does not work. Omit this field entirely if nothing noteworthy."
   },
-  "slack_refs": [...],
-  "atlassian_refs": [...],
+  "slack_refs": [
+    { "url": "https://servicetitan.slack.com/archives/...", "channel": "#channel-name", "title": "Brief description of what this thread is about" }
+  ],
+  "atlassian_refs": [
+    { "type": "confluence", "url": "https://...", "title": "Page title" },
+    { "type": "jira", "url": "https://...", "title": "INT-1234 — ticket title" }
+  ],
+  "kb_refs": [
+    { "url": "https://help.servicetitan.com/...", "title": "Article title", "snippet": "One-line excerpt from the article" }
+  ],
   "sources_used": ["slack", "confluence", "jira", "kb"]
 }
 
-For ACCOUNTING topics: { "issue_title": "Accounting Integration Question", "integration_type": "accounting", "is_accounting_topic": true, "agent_steps": [], "slack_refs": [], "atlassian_refs": [], "sources_used": [] }
+For ACCOUNTING topics: { "issue_title": "Accounting Integration Question", "integration_type": "accounting", "is_accounting_topic": true, "agent_steps": [], "slack_refs": [], "atlassian_refs": [], "kb_refs": [], "sources_used": [] }
 
 ${SHARED_RULES}`;
 

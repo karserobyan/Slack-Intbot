@@ -78,11 +78,14 @@ const sampleJson = {
     guidance: 'If re-auth still fails, check whether the tenant is on a legacy Zapier plan that requires manual re-provisioning.',
   },
   slack_refs: [
-    { channel: 'ask-integrations', author: 'jsmith', issue_summary: 'Similar Zapier setup issue', resolution: 'Enabled API access on backend', was_resolved: true },
+    { url: 'https://servicetitan.slack.com/archives/C123/p456', channel: '#ask-integrations', title: 'Zapier API access not working after tenant migration' },
   ],
   atlassian_refs: [
-    { type: 'confluence', title: 'Zapier Setup Guide', summary: 'Step-by-step Zapier config', url: 'https://company.atlassian.net/wiki/zapier', status: null, assignee: null },
-    { type: 'jira', title: 'INT-4821', summary: 'Zapier not connecting for tenant', url: 'https://company.atlassian.net/browse/INT-4821', status: 'Done', assignee: 'jdoe' },
+    { type: 'confluence', url: 'https://company.atlassian.net/wiki/zapier', title: 'Zapier Integration Setup Guide' },
+    { type: 'jira', url: 'https://company.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting for tenant' },
+  ],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/zapier-setup', title: 'Setting up Zapier with ServiceTitan', snippet: 'Enable API access in the ST admin portal before connecting Zapier.' },
   ],
   sources_used: ['slack', 'confluence', 'jira', 'kb'],
 };
