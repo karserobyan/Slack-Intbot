@@ -70,23 +70,16 @@ function formatResponse(data) {
     }
   }
 
-  // Section 2 — Customer Email Draft
-  if (data.customer_email) {
-    const email = data.customer_email;
-    printSection('✉️  Customer Email Draft');
-    console.log(`\n  ${BOLD}Subject:${RESET} ${email.subject}\n`);
-    console.log(`${YELLOW}${'─'.repeat(60)}${RESET}`);
-    const bodyLines = email.body.split('\n');
-    for (const line of bodyLines) {
-      console.log(`  ${line}`);
+  // Section 2 — Bottom Line
+  if (data.findings_summary) {
+    const fs = data.findings_summary;
+    printSection('💡 Bottom Line');
+    console.log(`\n  ${BOLD}${fs.diagnosis}${RESET}\n`);
+    for (const action of (fs.actions ?? [])) {
+      console.log(`  • ${action}`);
     }
-    console.log(`${YELLOW}${'─'.repeat(60)}${RESET}`);
-
-    if (email.kb_links && email.kb_links.length > 0) {
-      console.log(`\n  ${BOLD}📚 KB Links:${RESET}`);
-      for (const link of email.kb_links) {
-        console.log(`     • ${link.label}: ${BLUE}${link.url}${RESET}`);
-      }
+    if (fs.guidance) {
+      console.log(`\n  ${DIM}Note: ${fs.guidance}${RESET}`);
     }
   }
 

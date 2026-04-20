@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildEmailModal, buildFeedbackModal, buildResponseBlocks } from './slack/blocks.js';
+import { buildFeedbackModal, buildResponseBlocks } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
@@ -38,23 +38,6 @@ const app = new App({
 // ── Register event handlers ──────────────────────────────────────────────────
 registerMentionHandler(app);
 registerDmHandler(app);
-
-// ── "Copy Email Draft" button — opens a modal with the email text ────────────
-app.action('copy_email_modal', async ({ ack, body, client, action }) => {
-  await ack();
-
-  let emailData = { subject: '', body: '' };
-  try {
-    emailData = JSON.parse(action.value);
-  } catch {
-    // value may be malformed — show empty modal rather than crash
-  }
-
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildEmailModal(emailData.subject, emailData.body),
-  });
-});
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
