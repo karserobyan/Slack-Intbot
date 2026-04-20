@@ -12,6 +12,7 @@ import {
   buildFollowUpBlocks,
   buildHelpBlocks,
   buildHelpDetailBlocks,
+  buildSourcesModal,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -618,6 +619,103 @@ assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'deta
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks explain specialist button');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
 assert(helpDetailBlocks.some(b => b.type === 'context'), 'detail blocks have context footer');
+
+// ── 11. Sources Modal ─────────────────────────────────────────────────────────
+console.log('\n🔹 Sources Modal');
+
+// Modal with all three source types
+const fullRefsModal = buildSourcesModal({
+  slack_refs: [
+    { url: 'https://slack.com/1', channel: '#ask-integrations', title: 'Zapier API not working' },
+  ],
+  atlassian_refs: [
+    { type: 'confluence', url: 'https://atlassian.net/wiki/1', title: 'Zapier Setup Guide' },
+    { type: 'jira', url: 'https://atlassian.net/browse/INT-1', title: 'INT-1 — Zapier auth failure' },
+  ],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/zapier', title: 'Zapier Setup', snippet: 'Enable API access first.' },
+  ],
+});
+assert(fullRefsModal.type === 'modal', 'buildSourcesModal returns modal type');
+assert(typeof fullRefsModal.title === 'object', 'modal has title');
+assert(Array.isArray(fullRefsModal.blocks), 'modal has blocks array');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('💬 Slack')), 'modal has Slack section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('📄 Atlassian')), 'modal has Atlassian section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('📚 Knowledge Base')), 'modal has KB section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier API not working')), 'slack ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier Setup Guide')), 'confluence ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('INT-1')), 'jira ref title appears in modal');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('Zapier Setup')), 'kb ref title appears in modal');
+
+// Modal with only Slack refs — Atlassian and KB sections should not appear
+const slackOnlyModal = buildSourcesModal({
+  slack_refs: [{ url: 'https://slack.com/2', channel: '#ks-integration', title: 'Thread about Angi' }],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('📄 Atlassian')), 'Atlassian section hidden when no atlassian_refs');
+assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('📚 Knowledge Base')), 'KB section hidden when no kb_refs');
+
+// Modal with no refs — shows fallback message
+const emptyRefsModal = buildSourcesModal({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
+assert(emptyRefsModal.blocks.some(b => b.text?.text?.includes('No specific sources')), 'empty refs modal shows fallback message');
+
+// Missing arrays default gracefully (no crash)
+const noArgsModal = buildSourcesModal({});
+assert(noArgsModal.type === 'modal', 'buildSourcesModal handles missing arrays without crash');
+
+// ── 12. Sources Button in buildResponseBlocks ─────────────────────────────────
+console.log('\n🔹 Sources Button');
+
+// Sources button appears when refs are present
+const withRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [{ url: 'https://slack.com/1', channel: '#ask-integrations', title: 'Zapier thread' }],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const withRefsActions = withRefsBlocks.find(b => b.type === 'actions');
+const sourcesBtn = withRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(sourcesBtn !== undefined, 'Sources button appears when refs present');
+assert(sourcesBtn?.value?.length <= 2000, 'Sources button value within 2000 chars');
+
+// Sources button hidden when all ref arrays are empty
+const noRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const noRefsActions = noRefsBlocks.find(b => b.type === 'actions');
+const noSourcesBtn = noRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(noSourcesBtn === undefined, 'Sources button hidden when all ref arrays empty');
+
+// Sources button hidden when ref fields are absent (legacy responses)
+const legacyNoRefsBlocks = buildResponseBlocks({
+  issue_title: 'Test',
+  agent_steps: [],
+  confidence: 'high',
+  sources_used: [],
+});
+const legacyActions = legacyNoRefsBlocks.find(b => b.type === 'actions');
+const legacySourcesBtn = legacyActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(legacySourcesBtn === undefined, 'Sources button hidden when ref fields absent');
+
+// Button value caps at 5 refs per type
+const manyRefsBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://slack.com/${i}`, channel: '#ch', title: `Thread ${i}` })),
+  atlassian_refs: Array.from({ length: 10 }, (_, i) => ({ type: 'confluence', url: `https://atlassian.net/${i}`, title: `Page ${i}` })),
+  kb_refs: Array.from({ length: 10 }, (_, i) => ({ url: `https://help.st.com/${i}`, title: `Article ${i}`, snippet: 'snippet' })),
+});
+const manyRefsActions = manyRefsBlocks.find(b => b.type === 'actions');
+const manySourcesBtn = manyRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(manySourcesBtn !== undefined, 'Sources button present with many refs');
+const parsedValue = JSON.parse(manySourcesBtn.value);
+assert(parsedValue.slack_refs.length <= 5, 'slack_refs capped at 5 in button value');
+assert(parsedValue.atlassian_refs.length <= 5, 'atlassian_refs capped at 5 in button value');
+assert(parsedValue.kb_refs.length <= 5, 'kb_refs capped at 5 in button value');
+assert(manySourcesBtn.value.length <= 2000, 'Capped button value within 2000 chars');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

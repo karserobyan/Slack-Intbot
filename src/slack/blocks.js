@@ -141,6 +141,20 @@ export function buildResponseBlocks(data) {
     },
   ];
 
+  const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
+  if (totalRefs > 0) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📎 Sources', emoji: true },
+      action_id: 'view_sources_modal',
+      value: JSON.stringify({
+        slack_refs: (data.slack_refs ?? []).slice(0, 5),
+        atlassian_refs: (data.atlassian_refs ?? []).slice(0, 5),
+        kb_refs: (data.kb_refs ?? []).slice(0, 5),
+      }),
+    });
+  }
+
   if (data._showSpecialistValue) {
     actionElements.push({
       type: 'button',
@@ -390,5 +404,70 @@ export function buildHelpDetailBlocks() {
       elements: [{ type: 'mrkdwn', text: '_This reference is visible to Specialists only_' }],
     },
   ];
+}
+
+/**
+ * Builds the Sources modal shown when an agent clicks 📎 Sources.
+ * Groups refs by type: Slack, Atlassian (Confluence + Jira), Knowledge Base.
+ *
+ * @param {object} data - { slack_refs, atlassian_refs, kb_refs }
+ * @returns {object} Slack modal view payload
+ */
+export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_refs = [] } = {}) {
+  const blocks = [];
+
+  if (slack_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*💬 Slack (${slack_refs.length})*` },
+    });
+    for (const ref of slack_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.channel}_` },
+      });
+    }
+  }
+
+  if (atlassian_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*📄 Atlassian (${atlassian_refs.length})*` },
+    });
+    for (const ref of atlassian_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>` },
+      });
+    }
+  }
+
+  if (kb_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*📚 Knowledge Base (${kb_refs.length})*` },
+    });
+    for (const ref of kb_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.snippet}_` },
+      });
+    }
+  }
+
+  if (blocks.length === 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: 'No specific sources were found for this answer.' },
+    });
+  }
+
+  return {
+    type: 'modal',
+    callback_id: 'sources_view',
+    title: { type: 'plain_text', text: '📎 Sources', emoji: true },
+    close: { type: 'plain_text', text: 'Close', emoji: true },
+    blocks,
+  };
 }
 
