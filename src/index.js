@@ -3,7 +3,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal } from './slack/blocks.js';
-import { pruneExpired, cacheStats } from './slack/cache.js';
+import { pruneExpired, cacheStats, deleteCache } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
@@ -161,6 +161,9 @@ app.view('feedback_submission', async ({ ack, body, view, client }) => {
   });
 
   app.logger.info(`[feedback] Saved ${record.id} from ${body.user.name}: ${feedbackType}`);
+
+  // Evict cache immediately so the flagged answer isn't served to others while pending review
+  if (context.query) deleteCache(context.query);
 
   // Notify feedback channel if configured
   await notifyFeedbackChannel(client, record);
