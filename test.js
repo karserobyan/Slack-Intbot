@@ -255,6 +255,70 @@ assert(talktackBlock.text.text.includes('Zapier connection was reset'), 'Talktra
 const stepsHeader = responseBlocks.find(b => b.text?.text === '*🔧 What you do*');
 assert(stepsHeader !== undefined, 'Steps section header renders as "🔧 What you do"');
 
+// ── Routing signal scenarios ─────────────────────────────────────────────────
+
+// Handle yourself — no escalation, high confidence
+const handleYourselfBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'high',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle this' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Quick sanity check' },
+});
+const handleBlock = handleYourselfBlocks.find(b => b.text?.text?.includes('✅'));
+assert(handleBlock !== undefined, 'Routing signal: handle yourself renders ✅');
+assert(handleBlock.text.text.includes("You've got this"), 'Routing signal: handle yourself text correct');
+
+// Post in channel — should_escalate: true
+const escalateRoutingBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'high',
+  escalate_decision: { should_escalate: true, reason: 'Needs backend access' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility needed' },
+  suggested_channel_post: 'Anyone seen Zapier failing after migration for this tenant?',
+});
+const postBlock = escalateRoutingBlocks.find(b => b.text?.text?.includes('📢'));
+assert(postBlock !== undefined, 'Routing signal: post in channel renders 📢');
+assert(postBlock.text.text.includes('ask-integrations'), 'Routing signal: post in channel includes channel name');
+assert(postBlock.text.text.includes('Anyone seen Zapier failing'), 'Routing signal: post in channel includes suggested post');
+
+// Post to verify — low confidence
+const lowConfRoutingBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'low',
+  escalate_decision: { should_escalate: false, reason: 'Worth verifying with team' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Check with team' },
+  suggested_channel_post: 'Uncertain about this one — anyone confirm?',
+});
+const lowVerifyBlock = lowConfRoutingBlocks.find(b => b.text?.text?.includes('🔎'));
+assert(lowVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for low confidence');
+assert(lowVerifyBlock.text.text.includes('Post to verify'), 'Routing signal: post to verify text correct');
+assert(lowVerifyBlock.text.text.includes('Uncertain about this one'), 'Routing signal: post to verify includes suggested post');
+
+// Post to verify — medium confidence
+const medConfRoutingBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'medium',
+  escalate_decision: { should_escalate: false, reason: 'Partial match only' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Verify steps' },
+});
+const medVerifyBlock = medConfRoutingBlocks.find(b => b.text?.text?.includes('🔎'));
+assert(medVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for medium confidence');
+
+// No routing signal when escalate_decision absent (Specialist)
+const noRoutingBlocks = buildResponseBlocks({ ...sampleJson });
+const noRouting = noRoutingBlocks.find(b => ['✅', '📢', '🔎'].some(s => b.text?.text?.includes(s)));
+assert(noRouting === undefined, 'Routing signal: absent when no escalate_decision (Specialist mode)');
+
+// should_escalate wins over low confidence (escalation more urgent)
+const escalatePlusLowBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'low',
+  escalate_decision: { should_escalate: true, reason: 'Escalation needed' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Team needed' },
+});
+const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.text?.text?.includes('📢'));
+assert(escalatePlusLowBlock !== undefined, 'Routing signal: should_escalate wins over low confidence');
+
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
 assert(redirectBlocks.length === 2, 'Redirect has 2 blocks');
