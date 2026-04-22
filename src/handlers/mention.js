@@ -216,7 +216,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       channel: channelId,
       thread_ts: threadTs,
       blocks: buildThinkingBlocks(query),
-      text: 'Checking Confluence, Jira, and past Slack threads…',
+      text: 'Checking…',
     }).catch((err) => {
       console.error('[mention] Failed to post thinking message:', err.message);
       return null;

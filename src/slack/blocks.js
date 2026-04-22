@@ -190,7 +190,7 @@ export function buildThinkingBlocks(query) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*🔍 Checking knowledge sources…*\n\nLooking into: _"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_\n\nChecking Confluence, Jira, and past Slack threads — this usually takes 20–40 seconds.`,
+        text: `*🔍 Checking…*\n_"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
       },
     },
     {
