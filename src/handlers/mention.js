@@ -251,6 +251,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   }
 
   // 5. Call Claude with gathered context
+  const _queryStart = Date.now();
   let result;
   try {
     result = await queryWithContext(query + feedbackContext, { role, agentName });
@@ -286,9 +287,10 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       query: query.slice(0, 800),
     });
   }
-  // Only cache full structured responses — clarifying-question stubs must not be cached
-  // because buildResponseBlocks would render them as broken messages with undefined fields.
-  if (!result.clarifying_question) setCached(query, result);
+  // Only cache full structured responses that took long enough to be worth caching.
+  // Quick responses are cheap to re-run; slow ones (deep multi-search) are worth keeping.
+  const CACHE_MIN_MS = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
+  if (!result.clarifying_question && (Date.now() - _queryStart) >= CACHE_MIN_MS) setCached(query, result);
 
   // 7. If Claude itself decided it was an accounting topic (double-check via AI)
   if (result.is_accounting_topic) {
