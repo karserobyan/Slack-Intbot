@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { searchKnowledgeBase } from './kb-search.js';
+import { appendKbArticle } from '../slack/knowledge-writer.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -98,7 +99,15 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   }
 
   const result = parseClaudeResponse(fullText);
-  if (kbResult?.refs?.length > 0) result.kb_refs = kbResult.refs;
+  if (kbResult?.refs?.length > 0) {
+    result.kb_refs = kbResult.refs;
+    const integration = result.integration_type || 'General';
+    for (const ref of kbResult.refs) {
+      appendKbArticle(integration, ref.url, ref.title, ref.snippet ?? '').catch((err) => {
+        console.warn('[query] KB auto-save failed for', ref.url, ':', err.message);
+      });
+    }
+  }
   return result;
 }
 
