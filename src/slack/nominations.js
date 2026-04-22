@@ -9,9 +9,10 @@
  * Pending nominations are stored in-memory — they do not survive bot restarts.
  */
 
-import { appendBotResponse } from './knowledge-writer.js';
+import { appendBotResponse, DEFAULT_KB_FILE } from './knowledge-writer.js';
 
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || process.env.FEEDBACK_REVIEW_CHANNEL_ID || null;
+const NOMINATION_ID_PREFIX = 'nom_';
 
 /** @type {Map<string, object>} nominationId → record */
 const _pending = new Map();
@@ -86,7 +87,7 @@ export async function nominateResponse(client, record) {
   const proposedEntry = `- [auto, ${date}] ${record.issueTitle}: ${record.steps.join('; ')}.${refsText}`;
 
   const nomination = {
-    id: `nom_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `${NOMINATION_ID_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, // base-36 = 0-9 + a-z
     timestamp: new Date().toISOString(),
     integration: record.integration,
     issueTitle: record.issueTitle,
@@ -129,7 +130,7 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
   _pending.delete(id);
 
   try {
-    await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, undefined, client);
+    await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, DEFAULT_KB_FILE, client);
   } catch (err) {
     console.error('[nominations] appendBotResponse failed during approve:', err.message);
   }
