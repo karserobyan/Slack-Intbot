@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
+import { searchKnowledgeBase } from './kb-search.js';
+import { appendKbArticle } from '../slack/knowledge-writer.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -53,16 +55,15 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  // Inject team knowledge base if available
-  let knowledgeBlock = '';
-  try {
-    const knowledge = await getKnowledge();
-    if (knowledge) knowledgeBlock = `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
-  } catch {
-    // non-critical — proceed without it
-  }
+  // Run team knowledge fetch and KB search in parallel
+  const [knowledge, kbResult] = await Promise.all([
+    getKnowledge().catch(() => null),
+    searchKnowledgeBase(userQuery),
+  ]);
 
-  const userContent = `Issue: ${userQuery}${knowledgeBlock}`;
+  let userContent = `Issue: ${userQuery}`;
+  if (knowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
+  if (kbResult?.text) userContent += `\n\n[KB RESULTS]\n${kbResult.text}\n[/KB RESULTS]`;
   const mcpServers = buildMcpServers();
 
   // Select system prompt based on role. agentName is appended so Claude uses it in intro_message.
@@ -97,7 +98,17 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
     clearTimeout(timer);
   }
 
-  return parseClaudeResponse(fullText);
+  const result = parseClaudeResponse(fullText);
+  if (kbResult?.refs?.length > 0) {
+    result.kb_refs = kbResult.refs;
+    const integration = result.integration_type || 'General';
+    for (const ref of kbResult.refs) {
+      appendKbArticle(integration, ref.url, ref.title, ref.snippet ?? '').catch((err) => {
+        console.warn('[query] KB auto-save failed for', ref.url, ':', err.message);
+      });
+    }
+  }
+  return result;
 }
 
 /**
@@ -144,4 +155,49 @@ export async function queryChat(userQuery, history) {
   }
 
   return fullText;
+}
+
+/**
+ * Tier 2 fast-lookup — calls Claude with knowledge.md content only, no MCP servers.
+ * Used in mention.js before the full MCP search.
+ * Falls through (caller checks) if result has clarifying_question or confidence === 'low'.
+ *
+ * @param {string} userQuery
+ * @param {string} knowledgeContent - Full contents of knowledge.md
+ * @param {{ role?: string, agentName?: string|null }} [options]
+ * @returns {Promise<object>} Parsed structured response
+ */
+export async function queryWithKnowledge(userQuery, knowledgeContent, { role = 'csa', agentName = null } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const userContent = `Issue: ${userQuery}\n\n[TEAM KNOWLEDGE]\n${knowledgeContent}\n[/TEAM KNOWLEDGE]`;
+  const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
+  const systemPrompt = agentName
+    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in intro_message.`
+    : basePrompt;
+
+  let fullText = '';
+  try {
+    const response = await anthropic.beta.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+    }, { signal: controller.signal });
+
+    fullText = response.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Knowledge fast-lookup timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return parseClaudeResponse(fullText);
 }

@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext, queryChat } from '../claude/query.js';
+import { queryWithContext, queryChat, queryWithKnowledge } from '../claude/query.js';
 import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
@@ -8,10 +8,14 @@ import {
   buildThinkingBlocks,
   buildErrorBlocks,
   buildFollowUpBlocks,
+  buildHelpBlocks,
+  buildHelpDetailBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
+import { getKnowledge } from '../slack/knowledge.js';
+import { nominateResponse } from '../slack/nominations.js';
 
 /**
  * Strips the bot mention (<@UXXXXXXX>) from the message text.
@@ -61,7 +65,7 @@ async function detectAgentRole(client, userId) {
  * @param {object} params.client - Slack WebClient
  * @param {string} params.userId - Slack user ID who triggered the bot
  */
-export async function handleQuery({ rawText, channelId, threadTs, client, userId }) {
+export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
   if (!query) {
@@ -81,6 +85,54 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       thread_ts: threadTs,
       text: `⏳ You're sending requests too quickly. Please wait ${resetIn}s before trying again.`,
     });
+    return;
+  }
+
+  // 1. Fast-path: accounting redirect (no Claude needed)
+  // Checked before history so follow-up messages about accounting topics
+  // get the redirect without an unnecessary Claude call.
+  if (isAccountingTopic(query)) {
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      blocks: buildAccountingRedirectBlocks(query),
+      text: 'This question is about accounting integrations — please redirect to #ask-partner-enabled-accounting-integrations.',
+    });
+    return;
+  }
+
+  // 1c. Help command — "@bot help" returns capability overview (all roles)
+  // plus a Specialist-only full reference via ephemeral.
+  // Checked before history so "help" in an active thread always shows help.
+  if (query.toLowerCase() === 'help') {
+    const { role } = await detectAgentRole(client, userId);
+
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      blocks: buildHelpBlocks(),
+      text: 'IntegrationsBot — Help',
+    });
+
+    if (role === 'specialist') {
+      if (isDm) {
+        // DM is already private — post detail as a follow-up message
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          blocks: buildHelpDetailBlocks(),
+          text: 'IntegrationsBot — Full Reference',
+        });
+      } else {
+        // Channel — send ephemeral so only the Specialist sees the detail
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          blocks: buildHelpDetailBlocks(),
+          text: 'IntegrationsBot — Full Reference (Specialists only)',
+        });
+      }
+    }
     return;
   }
 
@@ -140,20 +192,12 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 1. Fast-path: accounting redirect (no Claude needed)
-  if (isAccountingTopic(query)) {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      blocks: buildAccountingRedirectBlocks(query),
-      text: 'This question is about accounting integrations — please redirect to #ask-partner-enabled-accounting-integrations.',
-    });
-    return;
-  }
-
   // 2. Check cache
   const cached = getCached(query);
   if (cached) {
+    const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
+    const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
+    console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -186,6 +230,54 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
+  // 2.5 — Tier 2: knowledge.md fast-lookup (no MCP, answer from stored knowledge)
+  try {
+    const knowledge = await getKnowledge();
+    if (knowledge) {
+      let fastResult = null;
+      try {
+        fastResult = await queryWithKnowledge(query, knowledge, { role, agentName });
+      } catch (err) {
+        console.warn('[mention] Knowledge fast-lookup failed, falling through:', err.message);
+      }
+
+      if (fastResult && !fastResult.clarifying_question && fastResult.confidence !== 'low') {
+        console.info(`[query] knowledge-hit confidence=${fastResult.confidence ?? 'unknown'} integration=${(fastResult.integration_type ?? 'unknown').slice(0, 50)}`);
+
+        fastResult._originalQuery = query;
+        if (role === 'csa') {
+          fastResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
+        }
+
+        if (thinkingTs) {
+          await client.chat.update({
+            channel: channelId,
+            ts: thinkingTs,
+            blocks: buildResponseBlocks(fastResult),
+            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
+          });
+        } else {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            blocks: buildResponseBlocks(fastResult),
+            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
+          });
+        }
+
+        appendToHistory(threadTs, [
+          { role: 'user', content: query },
+          { role: 'assistant', content: summarizeResultForHistory(fastResult) },
+        ]);
+
+        return;
+      }
+      // Low confidence or clarifying question — fall through to full MCP search
+    }
+  } catch (err) {
+    console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
+  }
+
   // 4. Look up past corrections to inject as context
   let feedbackContext = '';
   try {
@@ -209,6 +301,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   }
 
   // 5. Call Claude with gathered context
+  const _queryStart = Date.now();
   let result;
   try {
     result = await queryWithContext(query + feedbackContext, { role, agentName });
@@ -244,7 +337,10 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       query: query.slice(0, 800),
     });
   }
-  setCached(query, result);
+  // Only cache full structured responses that took long enough to be worth caching.
+  // Quick responses are cheap to re-run; slow ones (deep multi-search) are worth keeping.
+  const CACHE_MIN_MS = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
+  if (!result.clarifying_question && (Date.now() - _queryStart) >= CACHE_MIN_MS) setCached(query, result);
 
   // 7. If Claude itself decided it was an accounting topic (double-check via AI)
   if (result.is_accounting_topic) {
@@ -292,6 +388,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
+  // Log confidence + sources for live full responses (after accounting + clarifying-question paths have returned)
+  const liveIntegration = (result.integration_type ?? 'unknown').slice(0, 50);
+  const liveSources = (result.sources_used ?? []).join(',') || 'none';
+  console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
+
   // 8. Update the thinking placeholder with the real response
   const responseBlocks = buildResponseBlocks(result);
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
@@ -318,6 +419,33 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     { role: 'user', content: query },
     { role: 'assistant', content: summarizeResultForHistory(result) },
   ]);
+
+  // Nomination check — nominate high-quality bot responses for knowledge base
+  const KNOWLEDGE_MIN_MS = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);
+  const hasRefs = (result.slack_refs?.length > 0) || (result.atlassian_refs?.length > 0);
+  const noEscalation = result.escalate_decision?.should_escalate !== true;
+  const hasSteps = (result.agent_steps?.length ?? 0) > 0;
+
+  if (
+    (Date.now() - _queryStart) >= KNOWLEDGE_MIN_MS &&
+    hasRefs &&
+    noEscalation &&
+    hasSteps &&
+    !result.clarifying_question
+  ) {
+    const steps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+    const refs = [
+      ...(result.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
+      ...(result.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
+    ].filter(Boolean);
+
+    nominateResponse(client, {
+      integration: result.integration_type ?? 'General',
+      issueTitle: result.issue_title ?? query.slice(0, 80),
+      steps,
+      refs,
+    }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
+  }
 }
 
 /**

@@ -2,11 +2,12 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildEmailModal, buildFeedbackModal, buildResponseBlocks } from './slack/blocks.js';
+import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
+import { approveNomination, rejectNomination } from './slack/nominations.js';
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -39,23 +40,6 @@ const app = new App({
 registerMentionHandler(app);
 registerDmHandler(app);
 
-// ── "Copy Email Draft" button — opens a modal with the email text ────────────
-app.action('copy_email_modal', async ({ ack, body, client, action }) => {
-  await ack();
-
-  let emailData = { subject: '', body: '' };
-  try {
-    emailData = JSON.parse(action.value);
-  } catch {
-    // value may be malformed — show empty modal rather than crash
-  }
-
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildEmailModal(emailData.subject, emailData.body),
-  });
-});
-
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
   await ack();
@@ -70,6 +54,17 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
   await client.views.open({
     trigger_id: body.trigger_id,
     view: buildFeedbackModal(context),
+  });
+});
+
+// ── "Sources" button — opens sources modal ───────────────────────────────────
+app.action('view_sources_modal', async ({ ack, body, client, action }) => {
+  await ack();
+  let refsData = { slack_refs: [], atlassian_refs: [], kb_refs: [] };
+  try { refsData = JSON.parse(action.value); } catch { /* show empty modal on bad JSON */ }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: buildSourcesModal(refsData),
   });
 });
 
@@ -266,6 +261,44 @@ app.action('reject_feedback', async ({ ack, body, client, action }) => {
   }).catch((err) => app.logger.warn('[feedback] Failed to DM agent after rejection:', err.message));
 
   app.logger.info(`[feedback] ${feedbackId} rejected by ${reviewerName}`);
+});
+
+// ── Approve nomination ────────────────────────────────────────────────────────
+app.action('approve_nomination', async ({ ack, body, client, action }) => {
+  await ack();
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  const { nominationId } = payload;
+  if (!nominationId) return;
+
+  let reviewerName = body.user.name;
+  try {
+    const res = await client.users.info({ user: body.user.id });
+    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
+  } catch { /* use fallback */ }
+
+  const record = await approveNomination(nominationId, client, reviewerName);
+  if (!record) return;
+  app.logger.info(`[nominations] ${nominationId} approved by ${reviewerName} (${record.integration}: ${record.issueTitle})`);
+});
+
+// ── Reject nomination ─────────────────────────────────────────────────────────
+app.action('reject_nomination', async ({ ack, body, client, action }) => {
+  await ack();
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  const { nominationId } = payload;
+  if (!nominationId) return;
+
+  let reviewerName = body.user.name;
+  try {
+    const res = await client.users.info({ user: body.user.id });
+    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
+  } catch { /* use fallback */ }
+
+  const record = await rejectNomination(nominationId, client, reviewerName);
+  if (!record) return;
+  app.logger.info(`[nominations] ${nominationId} rejected by ${reviewerName}`);
 });
 
 // ── Periodic cache prune (every 15 minutes) ──────────────────────────────────

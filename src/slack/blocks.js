@@ -10,6 +10,12 @@ const TAG_DISPLAY = {
   escalate: '🔴 `escalate`',
 };
 
+const CONFIDENCE_META = {
+  high:   { icon: '🟢', label: 'High',   note: 'steps are directly sourced' },
+  medium: { icon: '🟡', label: 'Medium', note: 'verify steps before actioning' },
+  low:    { icon: '🔴', label: 'Low',    note: 'no direct match — treat as a starting point' },
+};
+
 function tagLabel(tag) {
   return TAG_DISPLAY[tag] ?? `\`${tag}\``;
 }
@@ -21,6 +27,28 @@ function tagLabel(tag) {
  * @param {object} data - Parsed Claude response
  * @returns {Array} Slack blocks array
  */
+
+// Builds the Sources button JSON value, fitting as many refs as possible within
+// Slack's 2000-char button value limit. Tries 3 entries per type, falls back to 2 or 1.
+function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs) {
+  const capRef = (ref) => ({
+    url:   (ref.url   ?? '').slice(0, 150),
+    title: (ref.title ?? '').slice(0, 60),
+    ...(ref.channel ? { channel: ref.channel.slice(0, 40) } : {}),
+    ...(ref.type    ? { type:    ref.type }                 : {}),
+    ...(ref.snippet ? { snippet: ref.snippet.slice(0, 80) } : {}),
+  });
+  for (let n = 3; n >= 1; n--) {
+    const v = JSON.stringify({
+      slack_refs:     slack_refs.slice(0, n).map(capRef),
+      atlassian_refs: atlassian_refs.slice(0, n).map(capRef),
+      kb_refs:        kb_refs.slice(0, n).map(capRef),
+    });
+    if (v.length <= 1990) return v;
+  }
+  return JSON.stringify({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
+}
+
 export function buildResponseBlocks(data) {
   const blocks = [];
 
@@ -33,12 +61,7 @@ export function buildResponseBlocks(data) {
   }
 
   // ── Header ──────────────────────────────────────────────────────────────
-  const CONFIDENCE_DISPLAY = {
-    high:   { icon: '🟢' },
-    medium: { icon: '🟡' },
-    low:    { icon: '🔴' },
-  };
-  const conf = CONFIDENCE_DISPLAY[data.confidence] ?? CONFIDENCE_DISPLAY.medium;
+  const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
   blocks.push({
     type: 'header',
@@ -100,115 +123,71 @@ export function buildResponseBlocks(data) {
 
   blocks.push({ type: 'divider' });
 
-  // ── Section 2 — Customer Email Draft ────────────────────────────────────
-  if (data.confidence === 'low') {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*✉️ Customer Email Draft*\n⚠️ *Suppressed — confidence is low.* The bot could not find specific information about this issue. Please verify the steps above with a Specialist or the relevant Slack channel before drafting a customer response.`,
-      },
-    });
-    const lowConfButtons = [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
-        action_id: 'wrong_answer_modal',
-        style: 'danger',
-        value: JSON.stringify({
-          query: (data._originalQuery ?? '').slice(0, 400),
-          issueTitle: (data.issue_title ?? '').slice(0, 100),
-          integrationType: (data.integration_type ?? '').slice(0, 50),
-        }),
-      },
-    ];
-    if (data._showSpecialistValue) {
-      lowConfButtons.push({
-        type: 'button',
-        text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
-        action_id: 'show_specialist_detail',
-        value: data._showSpecialistValue,
-      });
-    }
-    blocks.push({ type: 'actions', elements: lowConfButtons });
-    blocks.push({ type: 'divider' });
-  } else if (data.customer_email) {
-    const email = data.customer_email;
+  // ── Section 2 — Bottom Line ──────────────────────────────────────────────────
+  if (data.findings_summary) {
+    const summary = data.findings_summary;
+    const actionLines = (summary.actions ?? []).map((a) => `• ${a}`).join('\n');
+    let summaryText = `*💡 Bottom Line*\n*${summary.diagnosis}*`;
+    if (actionLines) summaryText += `\n\n${actionLines}`;
+    if (summary.guidance) summaryText += `\n\n_${summary.guidance}_`;
 
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*✉️ Customer Email Draft*\n*Subject:* ${email.subject}`,
-      },
+      text: { type: 'mrkdwn', text: summaryText },
     });
-
-    // Email body — use rich_text quote for easy visual separation
-    // Slack's rich_text elements don't support full block-quote of arbitrary text,
-    // so we use a section with mrkdwn > prefix lines, which renders as a quote.
-    const quotedBody = email.body
-      .split('\n')
-      .map((line) => `> ${line}`)
-      .join('\n');
-
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: quotedBody,
-      },
-    });
-
-    // KB links
-    if (email.kb_links && email.kb_links.length > 0) {
-      const linkLines = email.kb_links.map((l) => `• <${l.url}|${l.label}>`).join('\n');
-      blocks.push({
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*📚 KB Articles to include:*\n${linkLines}`,
-        },
-      });
-    }
-
-    // Action buttons — copy email + wrong answer feedback + optional specialist detail
-    const actionElements = [
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '📋 Copy Email Draft', emoji: true },
-        action_id: 'copy_email_modal',
-        style: 'primary',
-        value: JSON.stringify({
-          subject: (email.subject ?? '').slice(0, 150),
-          body: email.body.slice(0, 1800),
-        }),
-      },
-      {
-        type: 'button',
-        text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
-        action_id: 'wrong_answer_modal',
-        style: 'danger',
-        value: JSON.stringify({
-          query: (data._originalQuery ?? '').slice(0, 400),
-          issueTitle: (data.issue_title ?? '').slice(0, 100),
-          integrationType: (data.integration_type ?? '').slice(0, 50),
-        }),
-      },
-    ];
-
-    if (data._showSpecialistValue) {
-      actionElements.push({
-        type: 'button',
-        text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
-        action_id: 'show_specialist_detail',
-        value: data._showSpecialistValue,
-      });
-    }
-
-    blocks.push({ type: 'actions', elements: actionElements });
-
-    blocks.push({ type: 'divider' });
   }
+
+  // ── Confidence context (small) ───────────────────────────────────────────────
+  const confCtx = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+  const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `${confCtx.icon} *${confCtx.label} confidence* · Sources: ${sourcesText} · _${confCtx.note}_`,
+    }],
+  });
+
+  // ── Action buttons ───────────────────────────────────────────────────────────
+  const actionElements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+      action_id: 'wrong_answer_modal',
+      style: 'danger',
+      value: JSON.stringify({
+        query: (data._originalQuery ?? '').slice(0, 400),
+        issueTitle: (data.issue_title ?? '').slice(0, 100),
+        integrationType: (data.integration_type ?? '').slice(0, 50),
+      }),
+    },
+  ];
+
+  const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
+  if (totalRefs > 0) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📎 Sources', emoji: true },
+      action_id: 'view_sources_modal',
+      value: _buildSourcesButtonValue(
+        data.slack_refs     ?? [],
+        data.atlassian_refs ?? [],
+        data.kb_refs        ?? [],
+      ),
+    });
+  }
+
+  if (data._showSpecialistValue) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
+      action_id: 'show_specialist_detail',
+      value: data._showSpecialistValue,
+    });
+  }
+
+  blocks.push({ type: 'actions', elements: actionElements });
+  blocks.push({ type: 'divider' });
 
   return blocks;
 }
@@ -352,41 +331,165 @@ export function buildFollowUpBlocks(text) {
 }
 
 /**
- * Builds the modal view shown when an agent clicks "Copy Email Draft".
- *
- * @param {string} subject
- * @param {string} body
- * @returns {object} Slack view payload
+ * Builds the public help response shown to all roles when an agent asks "@bot help".
+ * @returns {Array} Slack blocks array
  */
-export function buildEmailModal(subject, body) {
+export function buildHelpBlocks() {
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '🤖 IntegrationsBot — Help', emoji: true },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*What I do*\nSearch Confluence, Jira, and past Slack threads to give you troubleshooting steps for integration issues. Describe the problem and I\'ll tell you what to do — or ask a clarifying question to narrow it down first.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Integrations I cover*\nZapier · Angi / Angi Leads · Reserve with Google (RwG) · ServiceChannel · Thumbtack · Procore · Chat-to-Text widget · and others',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*What I can't help with*\nAccounting integrations (QuickBooks, NetSuite, Sage Intacct, Xero, etc.) — those go to ${ACCOUNTING_REDIRECT_CHANNEL}.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Example queries*\n• _"Customer\'s Zapier integration shows no API access on their tenant"_\n• _"Angi leads stopped syncing after the tenant migration"_\n• _"Procore job cost export failing for one specific job type"_',
+      },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot · Tag me or DM me with an issue · Team support: #ask-integrations_' }],
+    },
+  ];
+}
+
+/**
+ * Builds the Specialist-only full reference, sent as an ephemeral in channels
+ * or appended to the thread in DMs.
+ * @returns {Array} Slack blocks array
+ */
+export function buildHelpDetailBlocks() {
+  return [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📖 Full Reference — Specialists', emoji: true },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Confidence levels*\nEach answer shows a confidence indicator so you know how much to rely on it.\n🟢 *High* — every step traced directly to a search result. Act on it.\n🟡 *Medium* — partial match or drawn from built-in knowledge. Verify before actioning.\n🔴 *Low* — no direct match found. Treat as a starting point; escalate if unsure.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Wrong Answer feedback*\nClick 👎 Wrong Answer → describe the correct answer → goes to pending review in the feedback channel → if approved, the correction is injected into future Claude prompts for the same query type.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Show Specialist Detail button*\nAppears on CSA responses. Clicking it triggers a second Claude call in Specialist mode and posts the full technical response in the same thread — useful when a CSA wants more depth without re-asking.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*Thread continuation*\nAfter my first response, any follow-up in the same thread enters guided diagnostic mode — I ask yes/no questions to narrow down the root cause, then deliver a final answer.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*"No direct match" escalations*\nWhen I output a single escalate step saying I couldn\'t find specific information — that\'s intentional honesty, not a failure. It means searches returned nothing specific for this integration + symptom combination.',
+      },
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_This reference is visible to Specialists only_' }],
+    },
+  ];
+}
+
+/**
+ * Builds the Sources modal shown when an agent clicks 📎 Sources.
+ * Groups refs by type: Slack, Atlassian (Confluence + Jira), Knowledge Base.
+ *
+ * @param {object} data - { slack_refs, atlassian_refs, kb_refs }
+ * @returns {object} Slack modal view payload
+ */
+export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_refs = [] } = {}) {
+  const blocks = [];
+
+  if (slack_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*💬 Slack (${slack_refs.length})*` },
+    });
+    for (const ref of slack_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.channel}_` },
+      });
+    }
+  }
+
+  if (atlassian_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*📄 Atlassian (${atlassian_refs.length})*` },
+    });
+    for (const ref of atlassian_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>` },
+      });
+    }
+  }
+
+  if (kb_refs.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*📚 Knowledge Base (${kb_refs.length})*` },
+    });
+    for (const ref of kb_refs) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.snippet}_` },
+      });
+    }
+  }
+
+  if (blocks.length === 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: 'No specific sources were found for this answer.' },
+    });
+  }
+
   return {
     type: 'modal',
-    title: { type: 'plain_text', text: 'Email Draft', emoji: true },
+    callback_id: 'sources_view',
+    title: { type: 'plain_text', text: '📎 Sources', emoji: true },
     close: { type: 'plain_text', text: 'Close', emoji: true },
-    blocks: [
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*Subject:* ${subject}`,
-        },
-      },
-      {
-        type: 'input',
-        block_id: 'email_body_block',
-        label: { type: 'plain_text', text: 'Email Body (select all and copy)', emoji: true },
-        element: {
-          type: 'plain_text_input',
-          action_id: 'email_body_input',
-          multiline: true,
-          initial_value: body,
-        },
-        hint: {
-          type: 'plain_text',
-          text: 'Click into the text area and use Ctrl+A / Cmd+A to select all, then copy.',
-          emoji: false,
-        },
-      },
-    ],
+    blocks,
   };
 }
+

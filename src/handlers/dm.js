@@ -30,6 +30,7 @@ export function registerDmHandler(app) {
         threadTs: message.thread_ts ?? message.ts,
         client,
         userId: message.user,
+        isDm: true,
       });
     } finally {
       setTimeout(() => _inFlight.delete(message.ts), 60_000);
