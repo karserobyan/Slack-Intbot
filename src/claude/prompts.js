@@ -289,8 +289,8 @@ export function summarizeResultForHistory(result) {
 
   const lines = [];
 
-  if (result.intro_message) {
-    lines.push(result.intro_message);
+  if (result.customer_message) {
+    lines.push(result.customer_message);
   }
 
   const steps = result.agent_steps ?? [];

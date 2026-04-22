@@ -115,7 +115,7 @@ assert(threwError, 'Throws on invalid JSON');
 console.log('\n🔹 summarizeResultForHistory');
 
 const resultWithEscalate = {
-  intro_message: 'Hey Sarah, looks like a Zapier API access issue.',
+  customer_message: 'Hi Sarah, I can see exactly what happened — your Zapier connection was reset during our recent migration. I\'m re-enabling it right now.',
   agent_steps: [
     { num: 1, title: 'Enable Zapier API', detail: 'Go to Admin > Integrations > Zapier and toggle API access on.', tag: 'backend' },
     { num: 2, title: 'Verify connection', detail: 'Ask customer to reconnect Zapier.', tag: 'verify' },
@@ -131,7 +131,7 @@ const resultWithEscalate = {
 
 const histSummary = summarizeResultForHistory(resultWithEscalate);
 assert(typeof histSummary === 'string', 'summarizeResultForHistory returns string');
-assert(histSummary.includes('Hey Sarah'), 'summary includes intro_message');
+assert(histSummary.includes('Hi Sarah'), 'summary includes customer_message');
 assert(histSummary.includes('Enable Zapier API'), 'summary includes step title');
 assert(histSummary.includes('backend'), 'summary includes step tag');
 assert(histSummary.includes('No escalation needed'), 'summary includes no-escalation text');
@@ -144,14 +144,14 @@ assert(!histSummary.includes('"role"'), 'summary contains no JSON keys');
 
 // Specialist mode — no escalate_decision field
 const specialistResult = {
-  intro_message: 'Hey Mike, here is the deep dive.',
+  customer_message: 'Hi Mike, the API token was invalidated during the migration — I\'m re-issuing it now.',
   agent_steps: [{ num: 1, title: 'Check backend config', detail: 'Access the ST admin portal.', tag: 'backend' }],
   confidence: 'medium',
   sources_used: ['jira'],
 };
 const specialistSummary = summarizeResultForHistory(specialistResult);
 assert(!specialistSummary.includes('Escalation:'), 'no escalation line in specialist summary');
-assert(specialistSummary.includes('Hey Mike'), 'specialist summary includes intro_message');
+assert(specialistSummary.includes('Hi Mike'), 'specialist summary includes customer_message');
 
 // Long step detail is truncated to 300 chars
 const longDetailResult = {
