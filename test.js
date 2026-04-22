@@ -19,6 +19,14 @@ import { getHistory, appendToHistory, hasHistory, pruneConversations } from './s
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
+import {
+  appendKbArticle,
+  appendBotResponse,
+  hasKbUrl,
+  hasIssueTitle,
+} from './src/slack/knowledge-writer.js';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 let passed = 0;
 let failed = 0;
@@ -728,6 +736,47 @@ assert(searchKnowledgeBase.constructor.name === 'AsyncFunction', 'searchKnowledg
 // Returns null when GOOGLE_CSE_API_KEY is not set (will not be set in CI)
 const kbResult = await searchKnowledgeBase('zapier api access not working');
 assert(kbResult === null, 'searchKnowledgeBase returns null when env vars not set');
+
+// ── 14. Knowledge Writer ─────────────────────────────────────────────────────
+console.log('\n🔹 Knowledge Writer');
+
+const TEST_KB = join(process.cwd(), 'data', '__test-knowledge.md');
+try { await writeFile(TEST_KB, '', 'utf-8'); } catch { /* ok */ }
+
+assert(await hasKbUrl('https://help.servicetitan.com/zapier', TEST_KB) === false, 'hasKbUrl returns false on empty file');
+
+await appendKbArticle('Zapier', 'https://help.servicetitan.com/zapier-setup', 'Setting Up Zapier', 'Enable API access first.', TEST_KB);
+const kb1 = await readFile(TEST_KB, 'utf-8');
+assert(kb1.includes('## Zapier'), 'appendKbArticle creates integration section');
+assert(kb1.includes('[kb,'), 'appendKbArticle writes [kb, ...] tag');
+assert(kb1.includes('https://help.servicetitan.com/zapier-setup'), 'appendKbArticle writes URL');
+assert(kb1.includes('Setting Up Zapier'), 'appendKbArticle writes title');
+assert(kb1.includes('Enable API access first.'), 'appendKbArticle writes snippet');
+
+assert(await hasKbUrl('https://help.servicetitan.com/zapier-setup', TEST_KB) === true, 'hasKbUrl returns true after write');
+
+await appendKbArticle('Zapier', 'https://help.servicetitan.com/zapier-setup', 'Setting Up Zapier Again', 'Different snippet.', TEST_KB);
+const kb2 = await readFile(TEST_KB, 'utf-8');
+assert((kb2.match(/zapier-setup/g) ?? []).length === 1, 'appendKbArticle deduplicates by URL');
+
+await appendBotResponse('Zapier', 'API access resets after migration', ['Re-enable via ST backend', 'Verify in admin panel'], ['Slack #ask-integrations'], TEST_KB);
+const kb3 = await readFile(TEST_KB, 'utf-8');
+assert(kb3.includes('[auto,'), 'appendBotResponse writes [auto, ...] tag');
+assert(kb3.includes('API access resets after migration'), 'appendBotResponse writes issue title');
+assert(kb3.includes('Re-enable via ST backend'), 'appendBotResponse includes steps');
+
+assert(await hasIssueTitle('Zapier', 'API access resets after migration', TEST_KB) === true, 'hasIssueTitle returns true after write');
+
+await appendBotResponse('Zapier', 'API access resets after migration', ['Different step'], [], TEST_KB);
+const kb4 = await readFile(TEST_KB, 'utf-8');
+assert((kb4.match(/API access resets after migration/g) ?? []).length === 1, 'appendBotResponse deduplicates by issue title within section');
+
+await appendKbArticle('Angi', 'https://help.servicetitan.com/angi-setup', 'Angi Leads Setup', 'Check booking provider IDs.', TEST_KB);
+const kb5 = await readFile(TEST_KB, 'utf-8');
+assert(kb5.includes('## Angi'), 'appendKbArticle creates new section for unknown integration');
+assert(kb5.includes('## Zapier'), 'appendKbArticle preserves existing sections');
+
+try { await writeFile(TEST_KB, '', 'utf-8'); } catch { /* ok */ }
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
