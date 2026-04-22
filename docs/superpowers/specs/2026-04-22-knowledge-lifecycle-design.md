@@ -89,20 +89,20 @@ Between the cache check (Step 2) and the Claude+MCP call (Step 5), add a new Ste
 
 ```
 2.5 — Knowledge lookup
-  - Extract integration hint from query (keyword match against known integration names)
-  - Find matching section in knowledge.md
-  - If entries found → call Claude with those entries as context, no MCP servers
-  - If Claude returns a full structured response → serve it (log as knowledge-hit)
-  - If Claude returns a clarifying question or low-confidence → fall through to Step 5
+  - Load full knowledge.md content
+  - If knowledge.md is empty or missing → skip to Step 5
+  - Call Claude with full knowledge.md as context, no MCP servers attached
+  - If result is a full structured response AND confidence !== 'low' → serve it (log as knowledge-hit)
+  - If result has clarifying_question OR confidence === 'low' → fall through to Step 5
 ```
 
 ### Fast-path Claude call
 
 Same model and system prompt as the full call, but:
 - No `mcp_servers` attached
-- `userContent` is: `Issue: [query]\n\n[TEAM KNOWLEDGE]\n[matching entries]\n[/TEAM KNOWLEDGE]`
+- `userContent` is: `Issue: [query]\n\n[TEAM KNOWLEDGE]\n[full knowledge.md content]\n[/TEAM KNOWLEDGE]`
 - Max tokens: 2048 (answers from known knowledge are concise)
-- Result is NOT cached (knowledge.md is already the persistent store)
+- Result is NOT cached (Tier 1 cache handles repeat queries; Tier 2 is already fast at 5–10s)
 
 ---
 
