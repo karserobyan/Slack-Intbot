@@ -155,7 +155,7 @@ assert(specialistSummary.includes('Hi Mike'), 'specialist summary includes custo
 
 // Long step detail is truncated to 300 chars
 const longDetailResult = {
-  intro_message: 'Hey Dave.',
+  customer_message: 'Hey Dave, quick heads up on this one.',
   agent_steps: [{ num: 1, title: 'Long step', detail: 'X'.repeat(400), tag: 'action' }],
   confidence: 'low',
   sources_used: [],
@@ -170,7 +170,7 @@ assert(summarizeResultForHistory({ is_accounting_topic: true }) === '', 'account
 
 // No customer_email (low confidence suppression)
 const noEmailResult = {
-  intro_message: 'Hey Lee.',
+  customer_message: 'Hey Lee, checking this now.',
   agent_steps: [],
   confidence: 'low',
   sources_used: ['slack'],
@@ -180,7 +180,7 @@ assert(!noEmailSummary.includes('Customer email drafted'), 'no email line when c
 
 // clarifying_question included in summary when present
 const resultWithQuestion = {
-  intro_message: 'Hey Sarah, let me look into this.',
+  customer_message: 'Hey Sarah, I\'m looking into this right now.',
   agent_steps: [{ num: 1, title: 'Enable API', detail: 'Toggle Zapier API access on.', tag: 'backend' }],
   confidence: 'medium',
   sources_used: ['slack'],
@@ -192,7 +192,7 @@ assert(questionSummary.includes('Has Zapier API access already been enabled'), '
 
 // clarifying_question absent when null
 const resultNoQuestion = {
-  intro_message: 'Hey Mike.',
+  customer_message: 'Hey Mike, on it.',
   agent_steps: [],
   confidence: 'high',
   sources_used: ['confluence'],
