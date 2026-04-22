@@ -8,9 +8,9 @@ const TAG_CIRCLE = {
 };
 
 const CONFIDENCE_META = {
-  high:   { icon: '🟢', label: 'High',   note: 'steps are directly sourced' },
-  medium: { icon: '🟡', label: 'Medium', note: 'verify steps before actioning' },
-  low:    { icon: '🔴', label: 'Low',    note: 'no direct match — treat as a starting point' },
+  high:   { icon: '🟢', label: 'High'   },
+  medium: { icon: '🟡', label: 'Medium' },
+  low:    { icon: '🔴', label: 'Low'    },
 };
 
 /**

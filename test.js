@@ -247,9 +247,9 @@ assert(diagBlock !== undefined, 'Diagnosis callout renders with 🔍 Root Cause 
 assert(diagBlock.text.text.includes('Zapier integration is failing'), 'Diagnosis callout contains diagnosis text');
 
 // Customer talktrack
-const talktractBlock = responseBlocks.find(b => b.text?.text?.includes('💬 Message the customer'));
-assert(talktractBlock !== undefined, 'Customer talktrack renders with 💬 label');
-assert(talktractBlock.text.text.includes('Zapier connection was reset'), 'Talktrack contains customer_message text');
+const talktackBlock = responseBlocks.find(b => b.text?.text?.includes('💬 Message the customer'));
+assert(talktackBlock !== undefined, 'Customer talktrack renders with 💬 label');
+assert(talktackBlock.text.text.includes('Zapier connection was reset'), 'Talktrack contains customer_message text');
 
 // Steps header
 const stepsHeader = responseBlocks.find(b => b.text?.text === '*🔧 What you do*');
