@@ -184,7 +184,6 @@ export async function queryWithKnowledge(userQuery, knowledgeContent, { role = '
       max_tokens: 2048,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
-      betas: ['mcp-client-2025-04-04'],
     }, { signal: controller.signal });
 
     fullText = response.content

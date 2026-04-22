@@ -12,6 +12,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { clearKnowledgeCache } from './knowledge.js';
 
 const DATA_DIR = join(process.cwd(), 'data');
 export const DEFAULT_KB_FILE = join(DATA_DIR, 'knowledge.md');
@@ -89,6 +90,7 @@ export async function appendKbArticle(integration, url, title, snippet, filePath
     const line = `- [kb, ${today()}] ${title} — ${url} — ${snippet}`;
     await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
     resolve(true);
+    clearKnowledgeCache();
     if (client && FEEDBACK_CHANNEL) {
       await client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `📚 KB article auto-saved to knowledge.md: ${integration} — ${title}` })
         .catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
@@ -122,6 +124,7 @@ export async function appendBotResponse(integration, issueTitle, steps, refs, fi
     const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;
     await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
     resolve(true);
+    clearKnowledgeCache();
     if (client && FEEDBACK_CHANNEL) {
       await client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `✅ Knowledge entry approved and saved: ${integration} — ${issueTitle}` })
         .catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
