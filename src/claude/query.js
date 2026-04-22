@@ -147,3 +147,49 @@ export async function queryChat(userQuery, history) {
 
   return fullText;
 }
+
+/**
+ * Tier 2 fast-lookup — calls Claude with knowledge.md content only, no MCP servers.
+ * Used in mention.js before the full MCP search.
+ * Falls through (caller checks) if result has clarifying_question or confidence === 'low'.
+ *
+ * @param {string} userQuery
+ * @param {string} knowledgeContent - Full contents of knowledge.md
+ * @param {{ role?: string, agentName?: string|null }} [options]
+ * @returns {Promise<object>} Parsed structured response
+ */
+export async function queryWithKnowledge(userQuery, knowledgeContent, { role = 'csa', agentName = null } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const userContent = `Issue: ${userQuery}\n\n[TEAM KNOWLEDGE]\n${knowledgeContent}\n[/TEAM KNOWLEDGE]`;
+  const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
+  const systemPrompt = agentName
+    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in intro_message.`
+    : basePrompt;
+
+  let fullText = '';
+  try {
+    const response = await anthropic.beta.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+      betas: ['mcp-client-2025-04-04'],
+    }, { signal: controller.signal });
+
+    fullText = response.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Knowledge fast-lookup timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return parseClaudeResponse(fullText);
+}
