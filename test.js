@@ -64,6 +64,8 @@ const sampleJson = {
   issue_title: 'Zapier API Access Not Enabled',
   integration_type: 'Zapier',
   is_accounting_topic: false,
+  confidence: 'high',
+  customer_message: 'Hi [Name], I can see exactly what happened — your Zapier connection was reset during our recent migration on our end. I\'m re-enabling it right now, and you\'ll just need to reconnect Zapier after. Give me one moment.',
   agent_steps: [
     { num: 1, title: 'Check tenant Zapier config', detail: 'Go to Admin > Integrations > Zapier and verify API access is toggled on.', tag: 'action' },
     { num: 2, title: 'Enable API access on backend', detail: 'In the ST admin portal, find the tenant and enable Zapier API access under the Integrations tab.', tag: 'backend' },
@@ -228,12 +230,30 @@ const headerText = responseBlocks[0].text.text;
 assert(headerText.includes('Zapier API Access Not Enabled'), 'Header has issue title');
 
 // Check steps are present
-const stepBlocks = responseBlocks.filter(b => b.type === 'section' && b.text?.text?.match(/^\*\d+\.\*/));
+const stepBlocks = responseBlocks.filter(b => b.type === 'section' && /\*\d+\. /.test(b.text?.text ?? ''));
 assert(stepBlocks.length === 4, `All 4 agent steps rendered (found ${stepBlocks.length})`);
 
 // Check tags render
 assert(stepBlocks[0].text.text.includes('`action`'), 'Step 1 has action tag');
 assert(stepBlocks[1].text.text.includes('`backend`'), 'Step 2 has backend tag');
+assert(stepBlocks[0].text.text.startsWith('🔵'), 'Action step has blue circle');
+assert(stepBlocks[1].text.text.startsWith('🟠'), 'Backend step has orange circle');
+assert(stepBlocks[2].text.text.startsWith('🟢'), 'Verify step has green circle');
+assert(stepBlocks[3].text.text.startsWith('🔴'), 'Escalate step has red circle');
+
+// Diagnosis callout
+const diagBlock = responseBlocks.find(b => b.text?.text?.includes('🔍 Root Cause'));
+assert(diagBlock !== undefined, 'Diagnosis callout renders with 🔍 Root Cause label');
+assert(diagBlock.text.text.includes('Zapier integration is failing'), 'Diagnosis callout contains diagnosis text');
+
+// Customer talktrack
+const talktractBlock = responseBlocks.find(b => b.text?.text?.includes('💬 Message the customer'));
+assert(talktractBlock !== undefined, 'Customer talktrack renders with 💬 label');
+assert(talktractBlock.text.text.includes('Zapier connection was reset'), 'Talktrack contains customer_message text');
+
+// Steps header
+const stepsHeader = responseBlocks.find(b => b.text?.text === '*🔧 What you do*');
+assert(stepsHeader !== undefined, 'Steps section header renders as "🔧 What you do"');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
@@ -262,61 +282,17 @@ assert(fuSection !== undefined, 'buildFollowUpBlocks has section block');
 assert(fuSection.text.text === 'Try re-enabling the Zapier connection and reconnecting.', 'section block contains reply text');
 assert(fuSection.text.type === 'mrkdwn', 'section block uses mrkdwn for markdown rendering');
 
-// intro_message rendering
-const withIntro = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Sarah, this needs escalation.' });
-assert(withIntro[0].text.text === 'Hey Sarah, this needs escalation.', 'intro_message renders as first block');
-
-// escalate_decision rendering (CSA)
-const withEscalate = buildResponseBlocks({
+// Show Specialist Detail button only when _showSpecialistValue is present
+const csaBlocksWithSpecBtn = buildResponseBlocks({
   ...sampleJson,
-  intro_message: 'Hey Sarah.',
-  escalate_decision: {
-    should_escalate: true,
-    reason: 'Requires backend access',
-    escalation_path: 'Live Assist → Integrations Specialist',
-  },
-});
-const escalateBlock = withEscalate.find(b => b.text?.text?.includes('escalate'));
-assert(escalateBlock !== undefined, 'Escalate decision block rendered for CSA');
-
-// No escalate_decision block for specialist (no escalate_decision field)
-const specialistBlocks = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Mike.' });
-const noEscalate = specialistBlocks.find(b => b.text?.text?.includes('Escalate') && b.text?.text?.includes('reason'));
-assert(noEscalate === undefined, 'No escalate decision block when field absent');
-
-// Show Specialist Detail button only when show_specialist_detail_value is present
-const csaBlocks = buildResponseBlocks({
-  ...sampleJson,
-  intro_message: 'Hey Sarah.',
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
   _showSpecialistValue: JSON.stringify({ threadTs: '123', channelId: 'C123', query: 'test' }),
 });
-const specialistBtn = csaBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
+const specialistBtn = csaBlocksWithSpecBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
 assert(specialistBtn !== undefined, 'Show Specialist Detail button present when _showSpecialistValue set');
 
-const noSpecialistBtn = buildResponseBlocks({ ...sampleJson, intro_message: 'Hey Mike.' });
+const noSpecialistBtn = buildResponseBlocks({ ...sampleJson });
 const noBtn = noSpecialistBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
 assert(noBtn === undefined, 'Show Specialist Detail button absent when _showSpecialistValue not set');
-
-// channel_recommendation rendering
-const withKsChannel = buildResponseBlocks({
-  ...sampleJson,
-  channel_recommendation: { channel: 'ks-integration', reason: 'Quick sanity check — no company-wide visibility needed.' },
-});
-const ksBlock = withKsChannel.find(b => b.text?.text?.includes('ks-integration') && b.text?.text?.includes('Quick sanity check'));
-assert(ksBlock !== undefined, 'channel_recommendation renders ks-integration block');
-assert(ksBlock && ksBlock.text.text.includes('Quick sanity check'), 'ks-integration block includes reason');
-
-const withAskChannel = buildResponseBlocks({
-  ...sampleJson,
-  channel_recommendation: { channel: 'ask-integrations', reason: 'Complex issue worth the whole team seeing.' },
-});
-const askBlock = withAskChannel.find(b => b.text?.text?.includes('ask-integrations') && b.text?.text?.includes('Complex issue worth the whole team seeing'));
-assert(askBlock !== undefined, 'channel_recommendation renders ask-integrations block');
-
-const noChannelRec = buildResponseBlocks({ ...sampleJson });
-const noChannelBlock = noChannelRec.find(b => b.text?.text?.includes('Post this in'));
-assert(noChannelBlock === undefined, 'No channel recommendation block when field absent');
 
 // confidence badge rendering
 const highConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'high' });
@@ -342,18 +318,6 @@ const lowConfContext = lowConfBlocks.find(b => b.type === 'context');
 assert(lowConfContext !== undefined, 'Low confidence: context block present');
 assert(lowConfContext.elements[0].text.includes('🔴'), 'Low confidence: red icon in context');
 assert(lowConfContext.elements[0].text.includes('Low'), 'Low confidence: label in context');
-
-// Bottom Line renders for all confidence levels
-const lowBottomLine = lowConfBlocks.find(b => b.text?.text?.includes('Bottom Line'));
-assert(lowBottomLine !== undefined, 'Low confidence: Bottom Line section still renders');
-const highBottomLine = highConfBlocks.find(b => b.text?.text?.includes('Bottom Line'));
-assert(highBottomLine !== undefined, 'High confidence: Bottom Line section renders');
-
-// Bottom Line contains diagnosis (bold), actions (bullets), guidance (italic)
-const bottomLineBlock = highBottomLine;
-assert(bottomLineBlock?.text?.text?.includes('*The Zapier integration is failing'), 'Bottom Line diagnosis is bold');
-assert(bottomLineBlock?.text?.text?.includes('• Enable Zapier API access'), 'Bottom Line contains action bullet');
-assert(bottomLineBlock?.text?.text?.includes('_If re-auth still fails'), 'Bottom Line guidance is italic');
 
 // No quoted email body anywhere
 const noQuotedEmail = highConfBlocks.every(b => !b.text?.text?.startsWith('> '));
