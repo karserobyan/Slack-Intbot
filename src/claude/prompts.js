@@ -212,10 +212,10 @@ The most important field for CSAs is escalate_decision — lead with it. Tell th
 {
   "issue_title": "short title max 8 words",
   "integration_type": "specific integration name",
-  "customer_message": "First-person message to paste into the customer ticket. Assertive, charismatic, empathetic. Start with 'Hi [Name]' or 'Hey [Name]'. 2–4 sentences. CSA: friendly language, no jargon. See customer_message rules below.",
-  "suggested_channel_post": "Ready-to-post Slack message when routing to a channel. Agent voice, not bot voice. States what the issue is, what was checked, and what's needed. 2–3 sentences. Omit this field entirely when not posting to a channel.",
   "is_accounting_topic": false,
   "confidence": "high | medium | low",
+  "customer_message": "First-person message to paste into the customer ticket. Assertive, charismatic, empathetic. Start with 'Hi [Name]' or 'Hey [Name]'. 2–4 sentences. CSA: friendly language, no jargon. See customer_message rules below.",
+  "suggested_channel_post": "Ready-to-post Slack message when routing to a channel. Agent voice, not bot voice. States what the issue is, what was checked, and what's needed. 2–3 sentences. Omit this field entirely when should_escalate is false AND confidence is high.",
   "escalate_decision": {
     "should_escalate": true | false,
     "reason": "clear explanation of why escalation is or isn't needed",
@@ -401,9 +401,9 @@ No escalate_decision field — specialists own the resolution.
 {
   "issue_title": "short title max 8 words",
   "integration_type": "specific integration name",
-  "customer_message": "First-person message to paste into the customer ticket. Assertive, charismatic, empathetic. Start with 'Hi [Name]' or 'Hey [Name]'. 2–4 sentences. Specialist: peer-to-peer tone, technically precise, still warm. See customer_message rules below.",
   "is_accounting_topic": false,
   "confidence": "high | medium | low",
+  "customer_message": "First-person message to paste into the customer ticket. Assertive, charismatic, empathetic. Start with 'Hi [Name]' or 'Hey [Name]'. 2–4 sentences. Specialist: peer-to-peer tone, technically precise, still warm. See customer_message rules below.",
   "agent_steps": [
     {
       "num": 1,
