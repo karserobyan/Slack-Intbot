@@ -19,6 +19,7 @@ import { getHistory, appendToHistory, hasHistory, pruneConversations } from './s
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
+import { buildNominationBlocks } from './src/slack/nominations.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -777,6 +778,52 @@ assert(kb5.includes('## Angi'), 'appendKbArticle creates new section for unknown
 assert(kb5.includes('## Zapier'), 'appendKbArticle preserves existing sections');
 
 try { await writeFile(TEST_KB, '', 'utf-8'); } catch { /* ok */ }
+
+// ── 15. Nominations ──────────────────────────────────────────────────────────
+console.log('\n🔹 Nominations');
+
+const nomRecord = {
+  id: 'nom_test_001',
+  timestamp: '2026-04-22T10:00:00.000Z',
+  integration: 'Zapier',
+  issueTitle: 'API access resets after tenant migration',
+  steps: ['Re-enable via ST backend admin panel', 'Verify in admin portal'],
+  refs: ['Slack #ask-integrations', 'Confluence Zapier guide'],
+  proposedEntry: '- [auto, 2026-04-22] API access resets after tenant migration: Re-enable via ST backend admin panel; Verify in admin portal. Confirmed in Slack #ask-integrations + Confluence Zapier guide.',
+};
+
+const nomBlocks = buildNominationBlocks(nomRecord);
+
+assert(Array.isArray(nomBlocks), 'buildNominationBlocks returns array');
+assert(nomBlocks.length > 0, 'buildNominationBlocks returns non-empty array');
+
+const hasTitle = nomBlocks.some(b =>
+  (b.type === 'header' || b.type === 'section') && b.text?.text?.includes('Zapier')
+);
+assert(hasTitle, 'buildNominationBlocks includes integration name');
+
+const hasEntry = nomBlocks.some(b => b.text?.text?.includes('API access resets after tenant migration'));
+assert(hasEntry, 'buildNominationBlocks shows proposed entry text');
+
+const nomActionsBlock = nomBlocks.find(b => b.type === 'actions');
+assert(nomActionsBlock !== undefined, 'buildNominationBlocks has actions block');
+
+const approveBtn = nomActionsBlock?.elements?.find(e => e.action_id === 'approve_nomination');
+assert(approveBtn !== undefined, 'buildNominationBlocks has approve_nomination button');
+assert(approveBtn?.style === 'primary', 'approve_nomination button has primary style');
+
+const rejectBtn = nomActionsBlock?.elements?.find(e => e.action_id === 'reject_nomination');
+assert(rejectBtn !== undefined, 'buildNominationBlocks has reject_nomination button');
+assert(rejectBtn?.style === 'danger', 'reject_nomination button has danger style');
+
+const approvePayload = JSON.parse(approveBtn.value);
+assert(approvePayload.nominationId === 'nom_test_001', 'approve button value encodes nominationId');
+const rejectPayload = JSON.parse(rejectBtn.value);
+assert(rejectPayload.nominationId === 'nom_test_001', 'reject button value encodes nominationId');
+
+const nomContextBlock = nomBlocks.find(b => b.type === 'context');
+assert(nomContextBlock !== undefined, 'buildNominationBlocks has context footer');
+assert(nomContextBlock.elements[0].text.includes('nom_test_001'), 'context footer includes nomination ID');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
