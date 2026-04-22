@@ -65,10 +65,9 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   if (kbResult?.text) userContent += `\n\n[KB RESULTS]\n${kbResult.text}\n[/KB RESULTS]`;
   const mcpServers = buildMcpServers();
 
-  // Select system prompt based on role. agentName is appended so Claude uses it in intro_message.
   const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
   const systemPrompt = agentName
-    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in intro_message.`
+    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in customer_message.`
     : basePrompt;
 
   const requestParams = {
