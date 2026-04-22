@@ -1,24 +1,17 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 
-/**
- * Tag → emoji + label mapping for agent step tags.
- */
-const TAG_DISPLAY = {
-  action: '🔵 `action`',
-  backend: '🟠 `backend`',
-  verify: '🟢 `verify`',
-  escalate: '🔴 `escalate`',
+const TAG_CIRCLE = {
+  action:   '🔵',
+  backend:  '🟠',
+  verify:   '🟢',
+  escalate: '🔴',
 };
 
 const CONFIDENCE_META = {
-  high:   { icon: '🟢', label: 'High',   note: 'steps are directly sourced' },
-  medium: { icon: '🟡', label: 'Medium', note: 'verify steps before actioning' },
-  low:    { icon: '🔴', label: 'Low',    note: 'no direct match — treat as a starting point' },
+  high:   { icon: '🟢', label: 'High'   },
+  medium: { icon: '🟡', label: 'Medium' },
+  low:    { icon: '🔴', label: 'Low'    },
 };
-
-function tagLabel(tag) {
-  return TAG_DISPLAY[tag] ?? `\`${tag}\``;
-}
 
 /**
  * Builds the Block Kit payload for a successful (non-accounting) response.
@@ -51,104 +44,79 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs) {
 
 export function buildResponseBlocks(data) {
   const blocks = [];
-
-  // ── Intro message (personality greeting) ────────────────────────────────
-  if (data.intro_message) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: data.intro_message },
-    });
-  }
-
-  // ── Header ──────────────────────────────────────────────────────────────
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
+  // 1. Header
   blocks.push({
     type: 'header',
-    text: {
-      type: 'plain_text',
-      text: `${conf.icon} ${data.issue_title}`,
-      emoji: true,
-    },
+    text: { type: 'plain_text', text: `${conf.icon} ${data.issue_title}`, emoji: true },
   });
-
   blocks.push({ type: 'divider' });
 
-  // ── Escalate decision (CSA only) ─────────────────────────────────────────
+  // 2. Diagnosis callout
+  const diag = data.findings_summary?.diagnosis;
+  const diagAction = data.findings_summary?.actions?.[0];
+  if (diag) {
+    let diagText = `*🔍 Root Cause*\n*${diag}*`;
+    if (diagAction) diagText += `\n${diagAction}`;
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: diagText } });
+  }
+
+  // 3. Routing signal (CSA only — present when escalate_decision is set)
   if (data.escalate_decision) {
     const ed = data.escalate_decision;
-    const icon = ed.should_escalate ? '🔴' : '🟢';
-    const decision = ed.should_escalate ? '*Escalate this case*' : '*Handle this yourself*';
-    let text = `${icon} ${decision}\n_${ed.reason}_`;
-    if (ed.should_escalate && ed.escalation_path) {
-      text += `\n*Escalation path:* ${ed.escalation_path}`;
+    const channel = data.channel_recommendation?.channel ?? 'ask-integrations';
+    const channelReason = data.channel_recommendation?.reason ?? ed.reason ?? '';
+    const suggestedPost = data.suggested_channel_post ?? '';
+
+    let routingText;
+    if (ed.should_escalate) {
+      routingText = `📢 *Post in #${channel}*\n_${channelReason}_`;
+      if (suggestedPost) routingText += `\n> ${suggestedPost}`;
+    } else if (data.confidence === 'low' || data.confidence === 'medium') {
+      routingText = `🔎 *Post to verify — not fully certain*\n_${conf.label} confidence · ${channelReason}_`;
+      if (suggestedPost) routingText += `\n> ${suggestedPost}`;
+    } else {
+      routingText = `✅ *You've got this — handle it yourself*\n_High confidence · no escalation needed_`;
     }
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
-    blocks.push({ type: 'divider' });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: routingText } });
   }
 
-  // ── Channel recommendation (CSA only) ────────────────────────────────────
-  if (data.channel_recommendation) {
-    const cr = data.channel_recommendation;
-    const icon = cr.channel === 'ks-integration' ? '💬' : '📢';
+  // 4. Customer talktrack
+  if (data.customer_message) {
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `${icon} *Post this in #${cr.channel}*\n_${cr.reason}_`,
-      },
-    });
-    blocks.push({ type: 'divider' });
-  }
-
-  // ── Section 1 — Agent Troubleshooting ───────────────────────────────────
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: '*🔧 Agent Troubleshooting*\n_Internal only — do not share with customer_',
-    },
-  });
-
-  const steps = (data.agent_steps ?? []).slice(0, 20); // guard against huge lists
-  for (const step of steps) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*${step.num}.* *${step.title}*  ${tagLabel(step.tag)}\n${step.detail}`,
-      },
+      text: { type: 'mrkdwn', text: `*💬 Message the customer*\n_"${data.customer_message}"_` },
     });
   }
 
-  blocks.push({ type: 'divider' });
-
-  // ── Section 2 — Bottom Line ──────────────────────────────────────────────────
-  if (data.findings_summary) {
-    const summary = data.findings_summary;
-    const actionLines = (summary.actions ?? []).map((a) => `• ${a}`).join('\n');
-    let summaryText = `*💡 Bottom Line*\n*${summary.diagnosis}*`;
-    if (actionLines) summaryText += `\n\n${actionLines}`;
-    if (summary.guidance) summaryText += `\n\n_${summary.guidance}_`;
-
+  // 5. Steps header + steps
+  const steps = (data.agent_steps ?? []).slice(0, 20);
+  if (steps.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: summaryText },
+      text: { type: 'mrkdwn', text: '*🔧 What you do*' },
     });
+    for (const step of steps) {
+      const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `${circle} *${step.num}. ${step.title}*  \`${step.tag}\`\n${step.detail}`,
+        },
+      });
+    }
   }
 
-  // ── Confidence context (small) ───────────────────────────────────────────────
-  const confCtx = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+  // 6. Context footer
   const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
   blocks.push({
     type: 'context',
-    elements: [{
-      type: 'mrkdwn',
-      text: `${confCtx.icon} *${confCtx.label} confidence* · Sources: ${sourcesText} · _${confCtx.note}_`,
-    }],
+    elements: [{ type: 'mrkdwn', text: `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}` }],
   });
 
-  // ── Action buttons ───────────────────────────────────────────────────────────
+  // 7. Action buttons
   const actionElements = [
     {
       type: 'button',
@@ -222,7 +190,7 @@ export function buildThinkingBlocks(query) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*🔍 Checking knowledge sources…*\n\nLooking into: _"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_\n\nChecking Confluence, Jira, and past Slack threads — this usually takes 20–40 seconds.`,
+        text: `*🔍 Checking…*\n_"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
       },
     },
     {
