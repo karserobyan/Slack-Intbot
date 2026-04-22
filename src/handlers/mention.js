@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext, queryChat } from '../claude/query.js';
+import { queryWithContext, queryChat, queryWithKnowledge } from '../claude/query.js';
 import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
@@ -14,6 +14,8 @@ import {
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
+import { getKnowledge } from '../slack/knowledge.js';
+import { nominateResponse } from '../slack/nominations.js';
 
 /**
  * Strips the bot mention (<@UXXXXXXX>) from the message text.
@@ -228,6 +230,54 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
+  // 2.5 — Tier 2: knowledge.md fast-lookup (no MCP, answer from stored knowledge)
+  try {
+    const knowledge = await getKnowledge();
+    if (knowledge) {
+      let fastResult = null;
+      try {
+        fastResult = await queryWithKnowledge(query, knowledge, { role, agentName });
+      } catch (err) {
+        console.warn('[mention] Knowledge fast-lookup failed, falling through:', err.message);
+      }
+
+      if (fastResult && !fastResult.clarifying_question && fastResult.confidence !== 'low') {
+        console.info(`[query] knowledge-hit confidence=${fastResult.confidence ?? 'unknown'} integration=${(fastResult.integration_type ?? 'unknown').slice(0, 50)}`);
+
+        fastResult._originalQuery = query;
+        if (role === 'csa') {
+          fastResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
+        }
+
+        if (thinkingTs) {
+          await client.chat.update({
+            channel: channelId,
+            ts: thinkingTs,
+            blocks: buildResponseBlocks(fastResult),
+            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
+          });
+        } else {
+          await client.chat.postMessage({
+            channel: channelId,
+            thread_ts: threadTs,
+            blocks: buildResponseBlocks(fastResult),
+            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
+          });
+        }
+
+        appendToHistory(threadTs, [
+          { role: 'user', content: query },
+          { role: 'assistant', content: summarizeResultForHistory(fastResult) },
+        ]);
+
+        return;
+      }
+      // Low confidence or clarifying question — fall through to full MCP search
+    }
+  } catch (err) {
+    console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
+  }
+
   // 4. Look up past corrections to inject as context
   let feedbackContext = '';
   try {
@@ -369,6 +419,33 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     { role: 'user', content: query },
     { role: 'assistant', content: summarizeResultForHistory(result) },
   ]);
+
+  // Nomination check — nominate high-quality bot responses for knowledge base
+  const KNOWLEDGE_MIN_MS = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);
+  const hasRefs = (result.slack_refs?.length > 0) || (result.atlassian_refs?.length > 0);
+  const noEscalation = result.escalate_decision?.should_escalate !== true;
+  const hasSteps = (result.agent_steps?.length ?? 0) > 0;
+
+  if (
+    (Date.now() - _queryStart) >= KNOWLEDGE_MIN_MS &&
+    hasRefs &&
+    noEscalation &&
+    hasSteps &&
+    !result.clarifying_question
+  ) {
+    const steps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+    const refs = [
+      ...(result.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
+      ...(result.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
+    ].filter(Boolean);
+
+    nominateResponse(client, {
+      integration: result.integration_type ?? 'General',
+      issueTitle: result.issue_title ?? query.slice(0, 80),
+      steps,
+      refs,
+    }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
+  }
 }
 
 /**
