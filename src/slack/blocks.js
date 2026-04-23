@@ -461,12 +461,13 @@ export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_ref
   };
 }
 
-export function buildRoutingButtons({ query, channelId, threadTs, userId }) {
+export function buildRoutingButtons({ query, channelId, threadTs, userId, isDm = false }) {
   const value = JSON.stringify({
     query:     (query ?? '').slice(0, 1800),
     channelId,
     threadTs,
     userId,
+    isDm,
   });
   return [
     {

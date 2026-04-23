@@ -48,6 +48,7 @@ export function registerDmHandler(app) {
               channelId: message.channel,
               threadTs,
               userId:    message.user,
+              isDm:      true,
             }),
             text: 'What kind of help do you need?',
           });

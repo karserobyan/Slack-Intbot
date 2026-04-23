@@ -488,6 +488,7 @@ export function registerMentionHandler(app) {
               channelId: event.channel,
               threadTs,
               userId:    event.user,
+              isDm:      false,
             }),
             text: 'What kind of help do you need?',
           });

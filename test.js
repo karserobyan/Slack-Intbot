@@ -876,6 +876,11 @@ assert(btnValue.query === 'Zapier not working', 'button value encodes query');
 assert(btnValue.channelId === 'C123', 'button value encodes channelId');
 assert(btnValue.threadTs === '111.222', 'button value encodes threadTs');
 assert(btnValue.userId === 'U456', 'button value encodes userId');
+assert(btnValue.isDm === false, 'button value encodes isDm (default false)');
+
+const dmBlocks = buildRoutingButtons({ query: 'test', channelId: 'D1', threadTs: '1', userId: 'U1', isDm: true });
+const dmValue = JSON.parse(dmBlocks[1].elements[0].value);
+assert(dmValue.isDm === true, 'button value encodes isDm: true when passed');
 
 const veryLongQuery = 'x'.repeat(2000);
 const longBlocks = buildRoutingButtons({ query: veryLongQuery, channelId: 'C1', threadTs: '1', userId: 'U1' });

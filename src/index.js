@@ -57,6 +57,7 @@ app.action('integration_question', async ({ ack, body, client, logger }) => {
     threadTs:  context.threadTs,
     client,
     userId:    context.userId,
+    isDm:      context.isDm ?? false,
   });
 });
 
@@ -112,6 +113,11 @@ app.view('audit_log_submission', async ({ ack, body, view, client, logger }) => 
     } else {
       await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text });
     }
+    // Mark thread as having history so follow-up messages skip routing buttons
+    appendToHistory(threadTs, [
+      { role: 'user',      content: `Audit log request: ${tenantName}` },
+      { role: 'assistant', content: `Audit log for ${tenantName}: ${result.summary ?? ''}` },
+    ]);
   } catch (err) {
     logger.error('[audit] queryAuditLog failed:', err.message);
     const errText = (err.message.includes('not configured') || err.message.includes('timed out'))
