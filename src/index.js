@@ -1,13 +1,12 @@
 import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
-import { registerMentionHandler } from './handlers/mention.js';
+import { registerMentionHandler, handleQuery } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks, buildAuditBlocks } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext, queryAuditLog } from './claude/query.js';
 import { buildAuditLogModal } from './slack/modal.js';
-import { handleQuery } from './handlers/mention.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
 import { approveNomination, rejectNomination } from './slack/nominations.js';
 
@@ -126,6 +125,9 @@ app.view('audit_log_submission', async ({ ack, body, view, client, logger }) => 
     }
   }
 });
+
+// ── Kibana link button — ack only, Slack handles the URL open client-side ─────
+app.action('view_in_kibana', async ({ ack }) => { await ack(); });
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
