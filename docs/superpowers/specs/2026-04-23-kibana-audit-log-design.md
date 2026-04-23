@@ -6,7 +6,7 @@ Add audit log querying to IntegrationsBot so agents can ask "who changed what, w
 
 ## Architecture
 
-Six files change or are created:
+These files change or are created:
 
 | File | What changes |
 |---|---|
@@ -72,7 +72,7 @@ New exported function alongside `queryWithContext()` and `queryChat()`.
 - Sends `AUDIT_LOG_PROMPT` as system prompt
 - User message: `"Tenant: {tenantName}\nTime range: {timeRange} days\nQuestion: {question}"`
 - Claude drives ES MCP tool calls (`search`, `esql`) to find audit entries
-- Returns parsed structured JSON
+- Parses Claude's response with a dedicated `parseAuditResponse()` helper (not `parseClaudeResponse` — the JSON schema is different)
 - Same timeout + AbortController pattern as `queryWithContext()`
 
 ## `AUDIT_LOG_PROMPT` — `src/claude/prompts.js`
@@ -99,8 +99,8 @@ Instructs Claude to:
       "reason": "Disabled during scheduled maintenance window"
     }
   ],
-  "confidence": "high | medium | low",
-  "kibana_url": "https://kibana.st.dev/app/discover"
+  "integration": "Zapier",
+  "confidence": "high | medium | low"
 }
 ```
 
@@ -124,7 +124,7 @@ Change rows use color-coded indicators:
 - 🟡 modifying (neutral change)
 - 🟢 enabling / increasing a value
 
-The "View in Kibana" button always links to `https://kibana.st.dev/app/discover` — Claude cannot construct a tenant-filtered deep link, so the button opens the base Discover page.
+The "View in Kibana" button always links to `https://kibana.st.dev/app/discover` — hardcoded in `buildAuditBlocks()`, not returned by Claude.
 
 ## Audit Index Schema Note
 
@@ -146,10 +146,10 @@ The MCP server is public HTTPS (no Teleport required). Auth uses a bearer token 
 - `ES_MCP_URL` not set → log request button still shows, but on submit bot replies: "Elasticsearch is not configured — ask your admin for `ES_MCP_URL` and `ES_MCP_TOKEN`."
 - No changes found for tenant → render "No changes found for {tenant} in the last {N} days."
 - Claude times out → same timeout error message as integration queries
-- `kibana_url` absent from Claude response → "View in Kibana" button is omitted silently
+
 
 ## What Does Not Change
 
 - Integration question flow (`handleQuery`, `queryWithContext`, `buildResponseBlocks`) — untouched
 - Thread follow-up flow (`queryChat`) — untouched
-- Routing buttons are only shown for new queries (`!hasHistory(threadTs)`) — follow-ups go straight to `queryChat` as before
+- Routing buttons are only shown for new queries (`!hasHistory(threadTs ?? ts)`) — follow-ups go straight to `queryChat` as before
