@@ -13,6 +13,7 @@ import {
   buildHelpBlocks,
   buildHelpDetailBlocks,
   buildSourcesModal,
+  buildRoutingButtons,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -852,6 +853,32 @@ assert(rejectPayload.nominationId === 'nom_test_001', 'reject button value encod
 const nomContextBlock = nomBlocks.find(b => b.type === 'context');
 assert(nomContextBlock !== undefined, 'buildNominationBlocks has context footer');
 assert(nomContextBlock.elements[0].text.includes('nom_test_001'), 'context footer includes nomination ID');
+
+// ── Routing Buttons ──────────────────────────────────────────────────────────
+console.log('\n🔹 Routing Buttons');
+
+const routingCtx = { query: 'Zapier not working', channelId: 'C123', threadTs: '111.222', userId: 'U456' };
+const routingBlocks = buildRoutingButtons(routingCtx);
+
+assert(routingBlocks.length === 2, 'buildRoutingButtons returns 2 blocks');
+assert(routingBlocks[0].type === 'section', 'routing block 0 is section');
+assert(routingBlocks[1].type === 'actions', 'routing block 1 is actions');
+
+const btns = routingBlocks[1].elements;
+assert(btns.length === 2, 'routing actions has 2 buttons');
+assert(btns[0].action_id === 'integration_question', 'first button action_id is integration_question');
+assert(btns[1].action_id === 'log_request', 'second button action_id is log_request');
+
+const btnValue = JSON.parse(btns[0].value);
+assert(btnValue.query === 'Zapier not working', 'button value encodes query');
+assert(btnValue.channelId === 'C123', 'button value encodes channelId');
+assert(btnValue.threadTs === '111.222', 'button value encodes threadTs');
+assert(btnValue.userId === 'U456', 'button value encodes userId');
+
+const veryLongQuery = 'x'.repeat(2000);
+const longBlocks = buildRoutingButtons({ query: veryLongQuery, channelId: 'C1', threadTs: '1', userId: 'U1' });
+const longValue = JSON.parse(longBlocks[1].elements[0].value);
+assert(longValue.query.length <= 1800, 'button value truncates long queries to 1800 chars');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
