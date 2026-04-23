@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts.js';
+import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse, summarizeResultForHistory, AUDIT_LOG_PROMPT, parseAuditResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { searchKnowledgeBase } from './kb-search.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
@@ -199,4 +199,59 @@ export async function queryWithKnowledge(userQuery, knowledgeContent, { role = '
   }
 
   return parseClaudeResponse(fullText);
+}
+
+/**
+ * Queries Claude with Elasticsearch MCP to fetch and analyze audit logs for a tenant.
+ * Claude drives its own ES searches — discovers the index, inspects mappings, then queries.
+ *
+ * @param {{ tenantName: string, question: string, timeRange: number }} params
+ * @returns {Promise<object>} Parsed audit result
+ */
+export async function queryAuditLog({ tenantName, question, timeRange }) {
+  if (!process.env.ES_MCP_URL) {
+    throw new Error('Elasticsearch is not configured — ask your admin for ES_MCP_URL and ES_MCP_TOKEN.');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const mcpServers = [{
+    type: 'url',
+    url: process.env.ES_MCP_URL,
+    name: 'elasticsearch',
+    ...(process.env.ES_MCP_TOKEN ? { authorization_token: process.env.ES_MCP_TOKEN } : {}),
+  }];
+
+  const userContent = `Tenant: ${tenantName}\nTime range: ${timeRange} days\nQuestion: ${question || 'Show recent changes'}`;
+
+  const requestParams = {
+    model: MODEL,
+    max_tokens: 4096,
+    system: AUDIT_LOG_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+    mcp_servers: mcpServers,
+    betas: ['mcp-client-2025-04-04'],
+  };
+
+  let fullText = '';
+
+  try {
+    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    fullText = response.content
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`Request timed out after ${Math.round(TIMEOUT_MS / 1000)}s — try rephrasing or being more specific.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const result = parseAuditResponse(fullText);
+  if (!result) throw new Error('Could not parse audit log response.');
+  return result;
 }
