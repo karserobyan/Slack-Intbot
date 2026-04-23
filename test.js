@@ -896,16 +896,20 @@ assert(meta.threadTs === '111.222', 'modal private_metadata encodes threadTs');
 const tenantBlock = modal.blocks.find(b => b.block_id === 'tenant_block');
 assert(tenantBlock !== undefined, 'modal has tenant_block');
 assert(tenantBlock.element.action_id === 'tenant_input', 'tenant_block has tenant_input action');
+assert(tenantBlock.optional !== true, 'tenant_block is required (not optional)');
 
 const questionBlock = modal.blocks.find(b => b.block_id === 'question_block');
 assert(questionBlock !== undefined, 'modal has question_block');
+assert(questionBlock.element.action_id === 'question_input', 'question_block element has question_input action_id');
 assert(questionBlock.optional === true, 'question_block is optional');
 
 const timeBlock = modal.blocks.find(b => b.block_id === 'time_range_block');
 assert(timeBlock !== undefined, 'modal has time_range_block');
+assert(timeBlock.optional === true, 'time_range_block is optional');
 assert(timeBlock.element.initial_option.value === '14', 'time_range default is 14 days');
 
 const options = timeBlock.element.options.map(o => o.value);
+assert(options.includes('14'), 'time_range has 14 day option');
 assert(options.includes('7'), 'time_range has 7 day option');
 assert(options.includes('30'), 'time_range has 30 day option');
 assert(options.includes('90'), 'time_range has 90 day option');
