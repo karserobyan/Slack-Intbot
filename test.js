@@ -914,6 +914,31 @@ assert(options.includes('7'), 'time_range has 7 day option');
 assert(options.includes('30'), 'time_range has 30 day option');
 assert(options.includes('90'), 'time_range has 90 day option');
 
+// ── parseAuditResponse ────────────────────────────────────────────────────────
+console.log('\n🔹 parseAuditResponse');
+
+import { parseAuditResponse } from './src/claude/prompts.js';
+
+const auditValidJson = `{"tenant":"Acme","time_range_days":14,"likely_cause":"API disabled","summary":"One change found.","changes":[{"timestamp":"2026-04-19T09:11:00Z","user":"Sarah","source":"Admin","field":"zapier_api_enabled","old_value":"true","new_value":"false","change_type":"disable"}],"confidence":"high"}`;
+
+const auditParsed = parseAuditResponse(auditValidJson);
+assert(auditParsed !== null, 'parseAuditResponse returns object for valid JSON');
+assert(auditParsed.tenant === 'Acme', 'parseAuditResponse extracts tenant');
+assert(auditParsed.changes.length === 1, 'parseAuditResponse extracts changes array');
+assert(auditParsed.changes[0].change_type === 'disable', 'parseAuditResponse extracts change_type');
+
+const auditWrapped = `Here is the result:\n\`\`\`json\n${auditValidJson}\n\`\`\``;
+const auditParsedWrapped = parseAuditResponse(auditWrapped);
+assert(auditParsedWrapped !== null, 'parseAuditResponse handles JSON wrapped in code block');
+assert(auditParsedWrapped.tenant === 'Acme', 'parseAuditResponse extracts tenant from wrapped JSON');
+
+const auditNoJson = parseAuditResponse('No results found.');
+assert(auditNoJson === null, 'parseAuditResponse returns null for non-JSON text');
+
+const auditEmptyChanges = parseAuditResponse('{"tenant":"X","time_range_days":14,"likely_cause":null,"summary":"None.","changes":[],"confidence":"high"}');
+assert(auditEmptyChanges !== null, 'parseAuditResponse handles empty changes array');
+assert(auditEmptyChanges.changes.length === 0, 'parseAuditResponse preserves empty changes array');
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
