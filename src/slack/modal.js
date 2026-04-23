@@ -1,3 +1,9 @@
+/**
+ * Builds the Slack modal for collecting audit log query parameters.
+ *
+ * @param {{ channelId: string, threadTs: string }} params
+ * @returns {object} Slack view payload for use with client.views.open()
+ */
 export function buildAuditLogModal({ channelId, threadTs }) {
   return {
     type: 'modal',
