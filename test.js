@@ -954,6 +954,8 @@ const auditActionsBlock = auditBlocks.find(b => b.type === 'actions');
 assert(auditActionsBlock !== undefined, 'buildAuditBlocks has actions block');
 const auditWrongBtn = auditActionsBlock.elements.find(e => e.action_id === 'wrong_answer_modal');
 assert(auditWrongBtn !== undefined, 'audit blocks has Wrong Answer button');
+const auditWrongBtnValue = JSON.parse(auditWrongBtn.value);
+assert('query' in auditWrongBtnValue && 'issueTitle' in auditWrongBtnValue && 'integrationType' in auditWrongBtnValue, 'wrong_answer_modal value has query/issueTitle/integrationType');
 const auditKibanaBtn = auditActionsBlock.elements.find(e => e.action_id === 'view_in_kibana');
 assert(auditKibanaBtn !== undefined, 'audit blocks has View in Kibana button');
 assert(auditKibanaBtn.url === 'https://kibana.st.dev/app/discover', 'Kibana button links to discover page');
