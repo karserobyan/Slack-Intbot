@@ -10,6 +10,7 @@ import {
   buildFollowUpBlocks,
   buildHelpBlocks,
   buildHelpDetailBlocks,
+  buildRoutingButtons,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
@@ -453,8 +454,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
  * @param {import('@slack/bolt').App} app
  */
 export function registerMentionHandler(app) {
-  // Lightweight dedup — prevents double-processing if Socket Mode reconnects
-  // mid-delivery and replays an in-flight event.
   const _inFlight = new Set();
 
   app.event('app_mention', async ({ event, client, logger }) => {
@@ -467,16 +466,42 @@ export function registerMentionHandler(app) {
     logger.info(`[mention] ${event.user} in ${event.channel}: ${event.text?.slice(0, 80)}`);
 
     try {
-      await handleQuery({
-        rawText: event.text ?? '',
-        channelId: event.channel,
-        threadTs: event.thread_ts ?? event.ts,
-        client,
-        userId: event.user,
-      });
+      const threadTs  = event.thread_ts ?? event.ts;
+      const stripped  = stripBotMention(event.text ?? '');
+      const isHelp    = stripped.toLowerCase() === 'help' || stripped.toLowerCase() === 'help detail';
+
+      if (isHelp || hasHistory(threadTs)) {
+        await handleQuery({
+          rawText:   event.text ?? '',
+          channelId: event.channel,
+          threadTs,
+          client,
+          userId:    event.user,
+        });
+      } else {
+        try {
+          await client.chat.postMessage({
+            channel:   event.channel,
+            thread_ts: threadTs,
+            blocks:    buildRoutingButtons({
+              query:     event.text ?? '',
+              channelId: event.channel,
+              threadTs,
+              userId:    event.user,
+              isDm:      false,
+            }),
+            text: 'What kind of help do you need?',
+          });
+        } catch (err) {
+          logger.error('[mention] Failed to post routing buttons:', err.message);
+          await client.chat.postMessage({
+            channel:   event.channel,
+            thread_ts: threadTs,
+            text:      'Something went wrong — please retry.',
+          }).catch(() => {});
+        }
+      }
     } finally {
-      // Remove after 60s — keeps the Set from growing forever while still
-      // covering Slack's retry window (well under 60s).
       setTimeout(() => _inFlight.delete(event.ts), 60_000);
     }
   });

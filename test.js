@@ -13,6 +13,8 @@ import {
   buildHelpBlocks,
   buildHelpDetailBlocks,
   buildSourcesModal,
+  buildRoutingButtons,
+  buildAuditBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -852,6 +854,150 @@ assert(rejectPayload.nominationId === 'nom_test_001', 'reject button value encod
 const nomContextBlock = nomBlocks.find(b => b.type === 'context');
 assert(nomContextBlock !== undefined, 'buildNominationBlocks has context footer');
 assert(nomContextBlock.elements[0].text.includes('nom_test_001'), 'context footer includes nomination ID');
+
+// ── Routing Buttons ──────────────────────────────────────────────────────────
+console.log('\n🔹 Routing Buttons');
+
+const routingCtx = { query: 'Zapier not working', channelId: 'C123', threadTs: '111.222', userId: 'U456' };
+const routingBlocks = buildRoutingButtons(routingCtx);
+
+assert(routingBlocks.length === 2, 'buildRoutingButtons returns 2 blocks');
+assert(routingBlocks[0].type === 'section', 'routing block 0 is section');
+assert(routingBlocks[1].type === 'actions', 'routing block 1 is actions');
+
+const btns = routingBlocks[1].elements;
+assert(btns.length === 2, 'routing actions has 2 buttons');
+assert(btns[0].action_id === 'integration_question', 'first button action_id is integration_question');
+assert(btns[1].action_id === 'log_request', 'second button action_id is log_request');
+assert(btns[1].value === btns[0].value, 'both buttons carry the same routing context');
+
+const btnValue = JSON.parse(btns[0].value);
+assert(btnValue.query === 'Zapier not working', 'button value encodes query');
+assert(btnValue.channelId === 'C123', 'button value encodes channelId');
+assert(btnValue.threadTs === '111.222', 'button value encodes threadTs');
+assert(btnValue.userId === 'U456', 'button value encodes userId');
+assert(btnValue.isDm === false, 'button value encodes isDm (default false)');
+
+const dmBlocks = buildRoutingButtons({ query: 'test', channelId: 'D1', threadTs: '1', userId: 'U1', isDm: true });
+const dmValue = JSON.parse(dmBlocks[1].elements[0].value);
+assert(dmValue.isDm === true, 'button value encodes isDm: true when passed');
+
+const veryLongQuery = 'x'.repeat(2000);
+const longBlocks = buildRoutingButtons({ query: veryLongQuery, channelId: 'C1', threadTs: '1', userId: 'U1' });
+const longValue = JSON.parse(longBlocks[1].elements[0].value);
+assert(longValue.query.length <= 1800, 'button value truncates long queries to 1800 chars');
+
+// ── Audit Log Modal ───────────────────────────────────────────────────────────
+import { buildAuditLogModal } from './src/slack/modal.js';
+
+const modal = buildAuditLogModal({ channelId: 'C123', threadTs: '111.222' });
+
+assert(modal.type === 'modal', 'buildAuditLogModal returns modal type');
+assert(modal.callback_id === 'audit_log_submission', 'modal callback_id is audit_log_submission');
+
+const meta = JSON.parse(modal.private_metadata);
+assert(meta.channelId === 'C123', 'modal private_metadata encodes channelId');
+assert(meta.threadTs === '111.222', 'modal private_metadata encodes threadTs');
+
+const tenantBlock = modal.blocks.find(b => b.block_id === 'tenant_block');
+assert(tenantBlock !== undefined, 'modal has tenant_block');
+assert(tenantBlock.element.action_id === 'tenant_input', 'tenant_block has tenant_input action');
+assert(tenantBlock.optional !== true, 'tenant_block is required (not optional)');
+
+const questionBlock = modal.blocks.find(b => b.block_id === 'question_block');
+assert(questionBlock !== undefined, 'modal has question_block');
+assert(questionBlock.element.action_id === 'question_input', 'question_block element has question_input action_id');
+assert(questionBlock.optional === true, 'question_block is optional');
+
+const timeBlock = modal.blocks.find(b => b.block_id === 'time_range_block');
+assert(timeBlock !== undefined, 'modal has time_range_block');
+assert(timeBlock.optional === true, 'time_range_block is optional');
+assert(timeBlock.element.initial_option.value === '14', 'time_range default is 14 days');
+
+const options = timeBlock.element.options.map(o => o.value);
+assert(options.includes('14'), 'time_range has 14 day option');
+assert(options.includes('7'), 'time_range has 7 day option');
+assert(options.includes('30'), 'time_range has 30 day option');
+assert(options.includes('90'), 'time_range has 90 day option');
+
+// ── buildAuditBlocks ──────────────────────────────────────────────────────────
+console.log('\n🔹 buildAuditBlocks');
+
+const auditData = {
+  tenant: 'Acme Corp',
+  time_range_days: 14,
+  likely_cause: 'Zapier API was disabled',
+  summary: 'One change found. API was disabled on Apr 19.',
+  changes: [
+    { timestamp: '2026-04-19T09:11:00Z', user: 'Sarah Lee', source: 'Admin Panel', field: 'zapier_api_enabled', old_value: 'true', new_value: 'false', change_type: 'disable' },
+    { timestamp: '2026-04-20T14:32:00Z', user: 'John Smith', source: 'API', field: 'webhook_url', new_value: 'https://hooks.zapier.com/new', change_type: 'modify' },
+  ],
+  integration: 'Zapier',
+  confidence: 'high',
+};
+
+const auditBlocks = buildAuditBlocks(auditData);
+
+const auditHeader = auditBlocks.find(b => b.type === 'header');
+assert(auditHeader !== undefined, 'buildAuditBlocks has header block');
+assert(auditHeader.text.text.includes('Acme Corp'), 'header includes tenant name');
+assert(auditHeader.text.text.includes('Audit Log'), 'header includes Audit Log');
+
+const auditCauseBlock = auditBlocks.find(b => b.text?.text?.includes('Likely cause'));
+assert(auditCauseBlock !== undefined, 'buildAuditBlocks renders likely_cause block');
+assert(auditCauseBlock.text.text.includes('Zapier API was disabled'), 'likely_cause block contains cause text');
+
+const auditChangeBlocks = auditBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('Sarah Lee'));
+assert(auditChangeBlocks.length === 1, 'buildAuditBlocks renders one block per change');
+assert(auditChangeBlocks[0].text.text.startsWith('🔴'), 'disable change starts with 🔴');
+
+const auditModifyBlock = auditBlocks.find(b => b.text?.text?.includes('John Smith'));
+assert(auditModifyBlock !== undefined, 'modify change renders');
+assert(auditModifyBlock.text.text.startsWith('🟡'), 'modify change starts with 🟡');
+
+const auditActionsBlock = auditBlocks.find(b => b.type === 'actions');
+assert(auditActionsBlock !== undefined, 'buildAuditBlocks has actions block');
+const auditWrongBtn = auditActionsBlock.elements.find(e => e.action_id === 'wrong_answer_modal');
+assert(auditWrongBtn !== undefined, 'audit blocks has Wrong Answer button');
+const auditWrongBtnValue = JSON.parse(auditWrongBtn.value);
+assert('query' in auditWrongBtnValue && 'issueTitle' in auditWrongBtnValue && 'integrationType' in auditWrongBtnValue, 'wrong_answer_modal value has query/issueTitle/integrationType');
+const auditKibanaBtn = auditActionsBlock.elements.find(e => e.action_id === 'view_in_kibana');
+assert(auditKibanaBtn !== undefined, 'audit blocks has View in Kibana button');
+assert(auditKibanaBtn.url === 'https://kibana.st.dev/app/discover', 'Kibana button links to discover page');
+
+const auditDivider = auditBlocks[auditBlocks.length - 1];
+assert(auditDivider.type === 'divider', 'buildAuditBlocks ends with divider');
+
+// Empty changes
+const auditEmptyResult = { tenant: 'Beta', time_range_days: 7, likely_cause: null, summary: 'No changes found.', changes: [], confidence: 'high' };
+const auditEmptyBlocks = buildAuditBlocks(auditEmptyResult);
+const auditEmptyChangeSections = auditEmptyBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('🔴'));
+assert(auditEmptyChangeSections.length === 0, 'buildAuditBlocks renders no change rows for empty changes');
+
+// ── parseAuditResponse ────────────────────────────────────────────────────────
+console.log('\n🔹 parseAuditResponse');
+
+import { parseAuditResponse } from './src/claude/prompts.js';
+
+const auditValidJson = `{"tenant":"Acme","time_range_days":14,"likely_cause":"API disabled","summary":"One change found.","changes":[{"timestamp":"2026-04-19T09:11:00Z","user":"Sarah","source":"Admin","field":"zapier_api_enabled","old_value":"true","new_value":"false","change_type":"disable"}],"confidence":"high"}`;
+
+const auditParsed = parseAuditResponse(auditValidJson);
+assert(auditParsed !== null, 'parseAuditResponse returns object for valid JSON');
+assert(auditParsed.tenant === 'Acme', 'parseAuditResponse extracts tenant');
+assert(auditParsed.changes.length === 1, 'parseAuditResponse extracts changes array');
+assert(auditParsed.changes[0].change_type === 'disable', 'parseAuditResponse extracts change_type');
+
+const auditWrapped = `Here is the result:\n\`\`\`json\n${auditValidJson}\n\`\`\``;
+const auditParsedWrapped = parseAuditResponse(auditWrapped);
+assert(auditParsedWrapped !== null, 'parseAuditResponse handles JSON wrapped in code block');
+assert(auditParsedWrapped.tenant === 'Acme', 'parseAuditResponse extracts tenant from wrapped JSON');
+
+const auditNoJson = parseAuditResponse('No results found.');
+assert(auditNoJson === null, 'parseAuditResponse returns null for non-JSON text');
+
+const auditEmptyChanges = parseAuditResponse('{"tenant":"X","time_range_days":14,"likely_cause":null,"summary":"None.","changes":[],"confidence":"high"}');
+assert(auditEmptyChanges !== null, 'parseAuditResponse handles empty changes array');
+assert(auditEmptyChanges.changes.length === 0, 'parseAuditResponse preserves empty changes array');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
