@@ -529,8 +529,9 @@ export function buildAuditBlocks(data) {
   for (const change of changes) {
     const circle = CHANGE_CIRCLE[change.change_type] ?? '🟡';
     const ts = change.timestamp
-      ? new Date(change.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+      ? new Date(change.timestamp).toLocaleString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC'
       : '';
+    const actor = change.user ?? 'Unknown';
     const source = change.source ? ` · via ${change.source}` : '';
     const oldNew = change.old_value && change.new_value
       ? `\`${change.field}\`  _${change.old_value}_ → *${change.new_value}*`
@@ -538,7 +539,7 @@ export function buildAuditBlocks(data) {
     const reason = change.reason ? `\n_${change.reason}_` : '';
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `${circle} *${ts}* · ${change.user}${source}\n${oldNew}${reason}` },
+      text: { type: 'mrkdwn', text: `${circle} *${ts}* · ${actor}${source}\n${oldNew}${reason}` },
     });
   }
 
