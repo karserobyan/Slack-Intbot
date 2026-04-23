@@ -26,20 +26,10 @@ export function registerDmHandler(app) {
 
     try {
       const threadTs = message.thread_ts ?? message.ts;
+      const isHelp   = (message.text ?? '').toLowerCase().trim() === 'help' ||
+                       (message.text ?? '').toLowerCase().trim() === 'help detail';
 
-      if (!hasHistory(threadTs)) {
-        await client.chat.postMessage({
-          channel: message.channel,
-          thread_ts: threadTs,
-          blocks: buildRoutingButtons({
-            query:     message.text ?? '',
-            channelId: message.channel,
-            threadTs,
-            userId:    message.user,
-          }),
-          text: 'What kind of help do you need?',
-        });
-      } else {
+      if (isHelp || hasHistory(threadTs)) {
         await handleQuery({
           rawText:   message.text ?? '',
           channelId: message.channel,
@@ -48,6 +38,26 @@ export function registerDmHandler(app) {
           userId:    message.user,
           isDm:      true,
         });
+      } else {
+        try {
+          await client.chat.postMessage({
+            channel:   message.channel,
+            thread_ts: threadTs,
+            blocks:    buildRoutingButtons({
+              query:     message.text ?? '',
+              channelId: message.channel,
+              threadTs,
+              userId:    message.user,
+            }),
+            text: 'What kind of help do you need?',
+          });
+        } catch (err) {
+          logger.error('[dm] Failed to post routing buttons:', err.message);
+          await client.chat.postMessage({
+            channel: message.channel,
+            text:    'Something went wrong — please retry.',
+          }).catch(() => {});
+        }
       }
     } finally {
       setTimeout(() => _inFlight.delete(message.ts), 60_000);
