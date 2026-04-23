@@ -881,6 +881,35 @@ const longBlocks = buildRoutingButtons({ query: veryLongQuery, channelId: 'C1', 
 const longValue = JSON.parse(longBlocks[1].elements[0].value);
 assert(longValue.query.length <= 1800, 'button value truncates long queries to 1800 chars');
 
+// ── Audit Log Modal ───────────────────────────────────────────────────────────
+import { buildAuditLogModal } from './src/slack/modal.js';
+
+const modal = buildAuditLogModal({ channelId: 'C123', threadTs: '111.222' });
+
+assert(modal.type === 'modal', 'buildAuditLogModal returns modal type');
+assert(modal.callback_id === 'audit_log_submission', 'modal callback_id is audit_log_submission');
+
+const meta = JSON.parse(modal.private_metadata);
+assert(meta.channelId === 'C123', 'modal private_metadata encodes channelId');
+assert(meta.threadTs === '111.222', 'modal private_metadata encodes threadTs');
+
+const tenantBlock = modal.blocks.find(b => b.block_id === 'tenant_block');
+assert(tenantBlock !== undefined, 'modal has tenant_block');
+assert(tenantBlock.element.action_id === 'tenant_input', 'tenant_block has tenant_input action');
+
+const questionBlock = modal.blocks.find(b => b.block_id === 'question_block');
+assert(questionBlock !== undefined, 'modal has question_block');
+assert(questionBlock.optional === true, 'question_block is optional');
+
+const timeBlock = modal.blocks.find(b => b.block_id === 'time_range_block');
+assert(timeBlock !== undefined, 'modal has time_range_block');
+assert(timeBlock.element.initial_option.value === '14', 'time_range default is 14 days');
+
+const options = timeBlock.element.options.map(o => o.value);
+assert(options.includes('7'), 'time_range has 7 day option');
+assert(options.includes('30'), 'time_range has 30 day option');
+assert(options.includes('90'), 'time_range has 90 day option');
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
