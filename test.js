@@ -868,6 +868,7 @@ const btns = routingBlocks[1].elements;
 assert(btns.length === 2, 'routing actions has 2 buttons');
 assert(btns[0].action_id === 'integration_question', 'first button action_id is integration_question');
 assert(btns[1].action_id === 'log_request', 'second button action_id is log_request');
+assert(btns[1].value === btns[0].value, 'both buttons carry the same routing context');
 
 const btnValue = JSON.parse(btns[0].value);
 assert(btnValue.query === 'Zapier not working', 'button value encodes query');
