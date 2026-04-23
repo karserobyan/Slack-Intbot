@@ -463,7 +463,7 @@ STEP 2 — Get the schema:
 Use get_mappings on the audit index to find exact field names for: tenant identifier, timestamp, user/actor, changed field name, old value, new value, source/tool used, reason.
 
 STEP 3 — Search for changes:
-Query for documents matching the tenant name within the time range (use @timestamp or equivalent). Sort by timestamp descending. Limit to 20 results.
+Query for documents matching the tenant name within the time range (use @timestamp or equivalent). Sort by timestamp descending. Limit to 20 results. If the user's question mentions a specific integration or field, prioritise matching those in your search.
 
 STEP 4 — Return ONLY this JSON, nothing else:
 
