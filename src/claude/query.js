@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse, summarizeResultForHistory, AUDIT_LOG_PROMPT, parseAuditResponse } from './prompts.js';
+import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse, AUDIT_LOG_PROMPT, parseAuditResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { searchKnowledgeBase } from './kb-search.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
