@@ -14,6 +14,7 @@ import {
   buildHelpDetailBlocks,
   buildSourcesModal,
   buildRoutingButtons,
+  buildAuditBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -913,6 +914,58 @@ assert(options.includes('14'), 'time_range has 14 day option');
 assert(options.includes('7'), 'time_range has 7 day option');
 assert(options.includes('30'), 'time_range has 30 day option');
 assert(options.includes('90'), 'time_range has 90 day option');
+
+// ── buildAuditBlocks ──────────────────────────────────────────────────────────
+console.log('\n🔹 buildAuditBlocks');
+
+const auditData = {
+  tenant: 'Acme Corp',
+  time_range_days: 14,
+  likely_cause: 'Zapier API was disabled',
+  summary: 'One change found. API was disabled on Apr 19.',
+  changes: [
+    { timestamp: '2026-04-19T09:11:00Z', user: 'Sarah Lee', source: 'Admin Panel', field: 'zapier_api_enabled', old_value: 'true', new_value: 'false', change_type: 'disable' },
+    { timestamp: '2026-04-20T14:32:00Z', user: 'John Smith', source: 'API', field: 'webhook_url', new_value: 'https://hooks.zapier.com/new', change_type: 'modify' },
+  ],
+  integration: 'Zapier',
+  confidence: 'high',
+};
+
+const auditBlocks = buildAuditBlocks(auditData);
+
+const auditHeader = auditBlocks.find(b => b.type === 'header');
+assert(auditHeader !== undefined, 'buildAuditBlocks has header block');
+assert(auditHeader.text.text.includes('Acme Corp'), 'header includes tenant name');
+assert(auditHeader.text.text.includes('Audit Log'), 'header includes Audit Log');
+
+const auditCauseBlock = auditBlocks.find(b => b.text?.text?.includes('Likely cause'));
+assert(auditCauseBlock !== undefined, 'buildAuditBlocks renders likely_cause block');
+assert(auditCauseBlock.text.text.includes('Zapier API was disabled'), 'likely_cause block contains cause text');
+
+const auditChangeBlocks = auditBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('Sarah Lee'));
+assert(auditChangeBlocks.length === 1, 'buildAuditBlocks renders one block per change');
+assert(auditChangeBlocks[0].text.text.startsWith('🔴'), 'disable change starts with 🔴');
+
+const auditModifyBlock = auditBlocks.find(b => b.text?.text?.includes('John Smith'));
+assert(auditModifyBlock !== undefined, 'modify change renders');
+assert(auditModifyBlock.text.text.startsWith('🟡'), 'modify change starts with 🟡');
+
+const auditActionsBlock = auditBlocks.find(b => b.type === 'actions');
+assert(auditActionsBlock !== undefined, 'buildAuditBlocks has actions block');
+const auditWrongBtn = auditActionsBlock.elements.find(e => e.action_id === 'wrong_answer_modal');
+assert(auditWrongBtn !== undefined, 'audit blocks has Wrong Answer button');
+const auditKibanaBtn = auditActionsBlock.elements.find(e => e.action_id === 'view_in_kibana');
+assert(auditKibanaBtn !== undefined, 'audit blocks has View in Kibana button');
+assert(auditKibanaBtn.url === 'https://kibana.st.dev/app/discover', 'Kibana button links to discover page');
+
+const auditDivider = auditBlocks[auditBlocks.length - 1];
+assert(auditDivider.type === 'divider', 'buildAuditBlocks ends with divider');
+
+// Empty changes
+const auditEmptyResult = { tenant: 'Beta', time_range_days: 7, likely_cause: null, summary: 'No changes found.', changes: [], confidence: 'high' };
+const auditEmptyBlocks = buildAuditBlocks(auditEmptyResult);
+const auditEmptyChangeSections = auditEmptyBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('🔴'));
+assert(auditEmptyChangeSections.length === 0, 'buildAuditBlocks renders no change rows for empty changes');
 
 // ── parseAuditResponse ────────────────────────────────────────────────────────
 console.log('\n🔹 parseAuditResponse');

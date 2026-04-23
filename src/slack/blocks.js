@@ -493,3 +493,95 @@ export function buildRoutingButtons({ query, channelId, threadTs, userId }) {
   ];
 }
 
+const CHANGE_CIRCLE = {
+  disable: '🔴',
+  enable:  '🟢',
+  modify:  '🟡',
+};
+
+export function buildAuditBlocks(data) {
+  const blocks = [];
+  const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+  const changes = data.changes ?? [];
+
+  // 1. Header
+  blocks.push({
+    type: 'header',
+    text: { type: 'plain_text', text: `📋 ${data.tenant} — Audit Log`, emoji: true },
+  });
+
+  // 2. Context — N changes · date range · integration
+  const integrationPart = data.integration ? ` · Integration: ${data.integration}` : '';
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: `${changes.length} changes · Last ${data.time_range_days} days${integrationPart}` }],
+  });
+
+  // 3. Likely cause
+  if (data.likely_cause) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `⚠️ *Likely cause:* ${data.likely_cause}` },
+    });
+  }
+
+  // 4. Change rows
+  for (const change of changes) {
+    const circle = CHANGE_CIRCLE[change.change_type] ?? '🟡';
+    const ts = change.timestamp
+      ? new Date(change.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+      : '';
+    const source = change.source ? ` · via ${change.source}` : '';
+    const oldNew = change.old_value && change.new_value
+      ? `\`${change.field}\`  _${change.old_value}_ → *${change.new_value}*`
+      : `\`${change.field}\` → *${change.new_value ?? 'updated'}*`;
+    const reason = change.reason ? `\n_${change.reason}_` : '';
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${circle} *${ts}* · ${change.user}${source}\n${oldNew}${reason}` },
+    });
+  }
+
+  // 5. Summary
+  if (data.summary) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: data.summary },
+    });
+  }
+
+  // 6. Context footer
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: `${conf.icon} ${conf.label} confidence · Elasticsearch audit index` }],
+  });
+
+  // 7. Actions
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+        action_id: 'wrong_answer_modal',
+        style: 'danger',
+        value: JSON.stringify({
+          query: `Audit log: ${data.tenant}`,
+          issueTitle: `Audit log for ${data.tenant}`,
+          integrationType: data.integration ?? '',
+        }),
+      },
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: '🔎 View in Kibana', emoji: true },
+        action_id: 'view_in_kibana',
+        url: 'https://kibana.st.dev/app/discover',
+      },
+    ],
+  });
+
+  blocks.push({ type: 'divider' });
+
+  return blocks;
+}
+
