@@ -17,23 +17,11 @@ import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { nominateResponse } from '../slack/nominations.js';
 
-/**
- * Strips the bot mention (<@UXXXXXXX>) from the message text.
- * @param {string} text
- * @returns {string}
- */
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
 }
 
-/**
- * Detects agent role from Slack profile title.
- * Returns 'csa' | 'specialist'. Defaults to 'csa' on any failure.
- *
- * @param {object} client - Slack WebClient
- * @param {string} userId - Slack user ID
- * @returns {Promise<{ role: string, agentName: string }>}
- */
+// Returns { role: 'csa' | 'specialist', agentName } from Slack profile. Defaults to 'csa' on failure.
 async function detectAgentRole(client, userId) {
   try {
     const res = await client.users.info({ user: userId });
@@ -54,20 +42,11 @@ async function detectAgentRole(client, userId) {
   }
 }
 
-/**
- * Core handler — shared by both mention.js and dm.js.
- * Posts a "thinking" placeholder, runs Claude, then updates the placeholder.
- *
- * @param {object} params
- * @param {string} params.rawText - Raw message text (may contain bot mention)
- * @param {string} params.channelId - Slack channel to post to
- * @param {string} params.threadTs - Thread timestamp to reply in
- * @param {object} params.client - Slack WebClient
- * @param {string} params.userId - Slack user ID who triggered the bot
- */
+// Core query handler — shared by mention.js and dm.js.
 export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
+  // 1. Empty query — greet and return early
   if (!query) {
     await client.chat.postMessage({
       channel: channelId,
@@ -77,7 +56,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // Rate limit — prevent a single user from spamming Claude calls
+  // 2. Rate limit — prevent spam
   if (!checkRateLimit(userId)) {
     const resetIn = rateLimitResetIn(userId);
     await client.chat.postMessage({
@@ -88,9 +67,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 1. Fast-path: accounting redirect (no Claude needed)
-  // Checked before history so follow-up messages about accounting topics
-  // get the redirect without an unnecessary Claude call.
+  // 3. Fast-path: accounting redirect (keyword match, no Claude)
   if (isAccountingTopic(query)) {
     await client.chat.postMessage({
       channel: channelId,
@@ -101,9 +78,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 1c. Help command — "@bot help" returns capability overview (all roles)
-  // plus a Specialist-only full reference via ephemeral.
-  // Checked before history so "help" in an active thread always shows help.
+  // 4. Help command — all roles, always bypasses history check
   if (query.toLowerCase() === 'help') {
     const { role } = await detectAgentRole(client, userId);
 
@@ -136,7 +111,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 1b. Follow-up path — thread has prior history, use conversational mode
+  // 5. Follow-up: active thread history → conversational mode
   if (hasHistory(threadTs)) {
     const history = getHistory(threadTs);
 
@@ -192,7 +167,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 2. Check cache
+  // 6. Cache lookup
   const cached = getCached(query);
   if (cached) {
     const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
@@ -211,7 +186,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 3. Detect role + post thinking placeholder in parallel (zero latency cost)
+  // 7. Role detection + thinking placeholder (parallel, zero latency)
   const [{ role, agentName }, thinkingResult] = await Promise.allSettled([
     detectAgentRole(client, userId),
     client.chat.postMessage({
@@ -230,7 +205,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
-  // 2.5 — Tier 2: knowledge.md fast-lookup (no MCP, answer from stored knowledge)
+  // 8. Tier 2: knowledge.md fast-lookup (no MCP, no cache miss)
   try {
     const knowledge = await getKnowledge();
     if (knowledge) {
@@ -278,7 +253,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
   }
 
-  // 4. Look up past corrections to inject as context
+  // 9. Feedback corrections context
   let feedbackContext = '';
   try {
     const corrections = await getRelevantFeedback(query);
@@ -300,8 +275,8 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     // feedback lookup failure is non-critical
   }
 
-  // 5. Call Claude with gathered context
-  const _queryStart = Date.now();
+  // 10. Full Claude query (MCP search — slowest path)
+  const queryStart = Date.now();
   let result;
   try {
     result = await queryWithContext(query + feedbackContext, { role, agentName });
@@ -327,9 +302,8 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 6. Attach original query for the feedback button, then cache
+  // 11. Attach query metadata + conditionally cache result
   result._originalQuery = query;
-  // For CSA responses, attach value for the "Show Specialist Detail" button
   if (role === 'csa') {
     result._showSpecialistValue = JSON.stringify({
       threadTs,
@@ -337,12 +311,10 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       query: query.slice(0, 800),
     });
   }
-  // Only cache full structured responses that took long enough to be worth caching.
-  // Quick responses are cheap to re-run; slow ones (deep multi-search) are worth keeping.
   const CACHE_MIN_MS = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
-  if (!result.clarifying_question && (Date.now() - _queryStart) >= CACHE_MIN_MS) setCached(query, result);
+  if (!result.clarifying_question && (Date.now() - queryStart) >= CACHE_MIN_MS) setCached(query, result);
 
-  // 7. If Claude itself decided it was an accounting topic (double-check via AI)
+  // 12. Accounting redirect from AI (double-check)
   if (result.is_accounting_topic) {
     const accountingBlocks = buildAccountingRedirectBlocks(query);
     if (thinkingTs) {
@@ -363,7 +335,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // 8a. If Claude needs clarification before answering fully — post question and wait
+  // 13. Clarifying question from AI
   if (result.clarifying_question) {
     const questionText = result.clarifying_question;
     if (thinkingTs) {
@@ -388,12 +360,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     return;
   }
 
-  // Log confidence + sources for live full responses (after accounting + clarifying-question paths have returned)
   const liveIntegration = (result.integration_type ?? 'unknown').slice(0, 50);
   const liveSources = (result.sources_used ?? []).join(',') || 'none';
   console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
-  // 8. Update the thinking placeholder with the real response
+  // 14. Deliver response
   const responseBlocks = buildResponseBlocks(result);
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
@@ -413,21 +384,20 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     });
   }
 
-  // Save initial exchange to conversation history for follow-up support.
-  // Placed here (after delivery) so accounting redirects never seed history.
+  // 15. Seed conversation history (after delivery so accounting redirects never seed history)
   appendToHistory(threadTs, [
     { role: 'user', content: query },
     { role: 'assistant', content: summarizeResultForHistory(result) },
   ]);
 
-  // Nomination check — nominate high-quality bot responses for knowledge base
+  // 16. Nominate for knowledge base
   const KNOWLEDGE_MIN_MS = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);
   const hasRefs = (result.slack_refs?.length > 0) || (result.atlassian_refs?.length > 0);
   const noEscalation = result.escalate_decision?.should_escalate !== true;
   const hasSteps = (result.agent_steps?.length ?? 0) > 0;
 
   if (
-    (Date.now() - _queryStart) >= KNOWLEDGE_MIN_MS &&
+    (Date.now() - queryStart) >= KNOWLEDGE_MIN_MS &&
     hasRefs &&
     noEscalation &&
     hasSteps &&
@@ -448,10 +418,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   }
 }
 
-/**
- * Registers the app_mention event handler on the Bolt app.
- * @param {import('@slack/bolt').App} app
- */
 export function registerMentionHandler(app) {
   const _inFlight = new Set();
 
