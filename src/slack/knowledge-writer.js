@@ -83,26 +83,32 @@ export async function hasIssueTitle(integration, title, filePath = DEFAULT_KB_FI
  * @returns {Promise<boolean>} true if written, false if skipped
  */
 export async function appendKbArticle(integration, url, title, snippet, filePath = DEFAULT_KB_FILE, client = null) {
-  let resolve;
-  const result = new Promise(r => { resolve = r; });
-  _writeQueue = _writeQueue.then(async () => {
-    if (await hasKbUrl(url, filePath)) { resolve(false); return; }
-    const line = `- [kb, ${today()}] ${title} — ${url} — ${snippet}`;
-    await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
-    resolve(true);
-    clearKnowledgeCache();
-    if (client && FEEDBACK_CHANNEL) {
-      await client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `📚 KB article auto-saved to knowledge.md: ${integration} — ${title}` })
-        .catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
-    }
-  }).catch((err) => {
-    console.error('[knowledge-writer] appendKbArticle failed:', err.message);
-    resolve(false);
-    if (client && FEEDBACK_CHANNEL) {
-      client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `⚠️ knowledge.md write failed: ${integration} — ${title}. ${err.message}` }).catch(() => {});
-    }
+  return new Promise((resolve) => {
+    _writeQueue = _writeQueue
+      .then(async () => {
+        if (await hasKbUrl(url, filePath)) { resolve(false); return; }
+        const line = `- [kb, ${today()}] ${title} — ${url} — ${snippet}`;
+        await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
+        resolve(true);
+        clearKnowledgeCache();
+        if (client && FEEDBACK_CHANNEL) {
+          await client.chat.postMessage({
+            channel: FEEDBACK_CHANNEL,
+            text: `📚 KB article auto-saved to knowledge.md: ${integration} — ${title}`,
+          }).catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
+        }
+      })
+      .catch((err) => {
+        console.error('[knowledge-writer] appendKbArticle failed:', err.message);
+        resolve(false);
+        if (client && FEEDBACK_CHANNEL) {
+          client.chat.postMessage({
+            channel: FEEDBACK_CHANNEL,
+            text: `⚠️ knowledge.md write failed: ${integration} — ${title}. ${err.message}`,
+          }).catch(() => {});
+        }
+      });
   });
-  return result;
 }
 
 /**
@@ -116,25 +122,31 @@ export async function appendKbArticle(integration, url, title, snippet, filePath
  * @returns {Promise<boolean>} true if written, false if skipped
  */
 export async function appendBotResponse(integration, issueTitle, steps, refs, filePath = DEFAULT_KB_FILE, client = null) {
-  let resolve;
-  const result = new Promise(r => { resolve = r; });
-  _writeQueue = _writeQueue.then(async () => {
-    if (await hasIssueTitle(integration, issueTitle, filePath)) { resolve(false); return; }
-    const refsText = refs.length > 0 ? ` Confirmed in ${refs.join(' + ')}.` : '';
-    const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;
-    await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
-    resolve(true);
-    clearKnowledgeCache();
-    if (client && FEEDBACK_CHANNEL) {
-      await client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `✅ Knowledge entry approved and saved: ${integration} — ${issueTitle}` })
-        .catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
-    }
-  }).catch((err) => {
-    console.error('[knowledge-writer] appendBotResponse failed:', err.message);
-    resolve(false);
-    if (client && FEEDBACK_CHANNEL) {
-      client.chat.postMessage({ channel: FEEDBACK_CHANNEL, text: `⚠️ knowledge.md write failed: ${integration} — ${issueTitle}. ${err.message}` }).catch(() => {});
-    }
+  return new Promise((resolve) => {
+    _writeQueue = _writeQueue
+      .then(async () => {
+        if (await hasIssueTitle(integration, issueTitle, filePath)) { resolve(false); return; }
+        const refsText = refs.length > 0 ? ` Confirmed in ${refs.join(' + ')}.` : '';
+        const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;
+        await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
+        resolve(true);
+        clearKnowledgeCache();
+        if (client && FEEDBACK_CHANNEL) {
+          await client.chat.postMessage({
+            channel: FEEDBACK_CHANNEL,
+            text: `✅ Knowledge entry approved and saved: ${integration} — ${issueTitle}`,
+          }).catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
+        }
+      })
+      .catch((err) => {
+        console.error('[knowledge-writer] appendBotResponse failed:', err.message);
+        resolve(false);
+        if (client && FEEDBACK_CHANNEL) {
+          client.chat.postMessage({
+            channel: FEEDBACK_CHANNEL,
+            text: `⚠️ knowledge.md write failed: ${integration} — ${issueTitle}. ${err.message}`,
+          }).catch(() => {});
+        }
+      });
   });
-  return result;
 }
