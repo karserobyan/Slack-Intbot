@@ -461,39 +461,6 @@ export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_ref
   };
 }
 
-export function buildRoutingButtons({ query, channelId, threadTs, userId, isDm = false }) {
-  const value = JSON.stringify({
-    query:     (query ?? '').slice(0, 1800),
-    channelId,
-    threadTs,
-    userId,
-    isDm,
-  });
-  return [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: '*What kind of help do you need?*' },
-    },
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '🔌 Integration Question', emoji: true },
-          action_id: 'integration_question',
-          value,
-        },
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: '📋 Log Request', emoji: true },
-          action_id: 'log_request',
-          value,
-        },
-      ],
-    },
-  ];
-}
-
 const CHANGE_CIRCLE = {
   disable: '🔴',
   enable:  '🟢',
@@ -586,4 +553,3 @@ export function buildAuditBlocks(data) {
 
   return blocks;
 }
-
