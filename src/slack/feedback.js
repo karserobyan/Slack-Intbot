@@ -188,7 +188,7 @@ export async function notifyFeedbackChannel(client, record) {
   _writeQueue = _writeQueue
     .then(async () => {
       const pending = await loadPending();
-      const idx = pending.findIndex(e => e.id === record.id);
+      const idx = pending.findIndex((e) => e.id === record.id);
       if (idx !== -1) {
         pending[idx].reviewMessageTs = messageTs;
         pending[idx].reviewChannelId = REVIEW_CHANNEL;
@@ -216,7 +216,7 @@ export async function approveFeedback(id) {
   _writeQueue = _writeQueue
     .then(async () => {
       const pending = await loadPending();
-      const idx = pending.findIndex(e => e.id === id);
+      const idx = pending.findIndex((e) => e.id === id);
       if (idx === -1) return; // Already processed — idempotent
 
       approved = pending[idx];
@@ -260,7 +260,7 @@ export async function rejectFeedback(id) {
   _writeQueue = _writeQueue
     .then(async () => {
       const pending = await loadPending();
-      const idx = pending.findIndex(e => e.id === id);
+      const idx = pending.findIndex((e) => e.id === id);
       if (idx === -1) return; // Already processed — idempotent
 
       rejected = pending[idx];
