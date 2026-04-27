@@ -163,7 +163,7 @@ app.action('view_sources_modal', async ({ ack, body, client, action }) => {
   });
 });
 
-// ── "Show Specialist Detail" button ──────────────────────────────────────
+// ── "Show Specialist Detail" button ──────────────────────────────────────────
 app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
   await ack();
 
@@ -272,7 +272,7 @@ app.view('feedback_submission', async ({ ack, body, view, client }) => {
   }
 });
 
-// ── Approve feedback ──────────────────────────────────────────────────────
+// ── Approve feedback ──────────────────────────────────────────────────────────
 app.action('approve_feedback', async ({ ack, body, client, action }) => {
   await ack();
 
@@ -315,7 +315,7 @@ app.action('approve_feedback', async ({ ack, body, client, action }) => {
   app.logger.info(`[feedback] ${feedbackId} approved by ${reviewerName}`);
 });
 
-// ── Reject feedback ───────────────────────────────────────────────────────
+// ── Reject feedback ───────────────────────────────────────────────────────────
 app.action('reject_feedback', async ({ ack, body, client, action }) => {
   await ack();
 
