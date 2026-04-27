@@ -3,3 +3,7 @@ node_modules/
 data/
 .worktrees/
 .superpowers/
+*.log
+npm-debug.log*
+.DS_Store
+*.local
