@@ -1,6 +1,6 @@
 # IntegrationsBot — ServiceTitan Integrations Support
 
-Internal Slack bot for ServiceTitan integrations support agents. Given a customer issue, the bot simultaneously searches Slack history, Confluence, Jira, and the ServiceTitan KB — then returns two outputs: step-by-step agent troubleshooting instructions and a ready-to-send customer email draft.
+Internal Slack bot for ServiceTitan integrations support agents. Given a customer issue, the bot searches Slack history, Confluence, Jira, and the ServiceTitan KB — then returns a structured response: escalation decision, step-by-step troubleshooting, a ready-to-paste customer message, and referenced sources.
 
 ---
 
@@ -10,9 +10,10 @@ Internal Slack bot for ServiceTitan integrations support agents. Given a custome
 2. The bot posts a "searching…" placeholder immediately
 3. A single Claude API call (with both MCP servers active simultaneously) searches all knowledge sources in parallel
 4. The placeholder is replaced with a structured Block Kit response:
-   - **🔧 Agent Troubleshooting** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
-   - **✉️ Customer Email Draft** — subject + body with a "Copy Email" button
-   - **📎 Sources** — which Slack threads, Confluence pages, and Jira tickets were referenced
+   - **Escalation signal** — should the CSA handle it or route to a specialist?
+   - **💬 Customer message** — ready-to-paste message for the customer ticket
+   - **🔧 Agent steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
+   - **📎 Sources** — Slack threads, Confluence pages, Jira tickets, and KB articles referenced
 
 Accounting integration topics (QuickBooks, Sage Intacct, NetSuite, Xero, etc.) are automatically redirected to `#ask-partner-enabled-accounting-integrations`.
 
@@ -82,10 +83,20 @@ npm start
 | `SLACK_SIGNING_SECRET` | ✅ | From Basic Information |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key |
 | `SLACK_APP_TOKEN` | Socket Mode only | App-level token (`xapp-...`) |
-| `ATLASSIAN_MCP_TOKEN` | Recommended | Atlassian API token for Confluence/Jira search |
-| `SLACK_MCP_TOKEN` | Optional | Defaults to `SLACK_BOT_TOKEN` if not set |
-| `PORT` | Optional | HTTP port (default: `3000`) |
-| `CACHE_TTL_MS` | Optional | Cache TTL in ms (default: `3600000` = 1 hour) |
+| `ATLASSIAN_MCP_TOKEN` | Recommended | Atlassian API token for Confluence/Jira MCP search |
+| `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
+| `GOOGLE_CSE_API_KEY` | Recommended | Google API key for ServiceTitan KB search |
+| `GOOGLE_CSE_ID` | Recommended | Custom Search Engine ID (scoped to `help.servicetitan.com`) |
+| `ES_MCP_URL` | Optional | Elasticsearch MCP server URL for audit log queries |
+| `ES_MCP_TOKEN` | Optional | Bearer token for the ES MCP server |
+| `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards |
+| `FEEDBACK_CHANNEL` | Optional | Alias for `FEEDBACK_REVIEW_CHANNEL_ID` (used internally for KB alerts) |
+| `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
+| `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |
+| `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
+| `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
+| `RATE_LIMIT_WINDOW_MS` | Optional | Rate limit window in ms (default: `60000` = 1 min) |
+| `PORT` | Optional | HTTP port when not using Socket Mode (default: `3000`) |
 | `LOG_LEVEL` | Optional | `info` or `debug` |
 
 ---
@@ -94,18 +105,29 @@ npm start
 
 ```
 src/
-├── index.js                  # Slack Bolt app — startup + action handlers
+├── index.js                     # Bolt app startup, all action/view handlers
 ├── handlers/
-│   ├── mention.js            # @mention handler + shared handleQuery()
-│   └── dm.js                 # Direct message handler
+│   ├── mention.js               # @mention handler + shared handleQuery()
+│   └── dm.js                    # Direct message handler
 ├── claude/
-│   ├── query.js              # Single Claude API call with both MCP servers
-│   └── prompts.js            # System prompt + JSON response parser
+│   ├── query.js                 # Claude API — queryWithContext, queryChat, queryAuditLog
+│   ├── prompts.js               # System prompts (CSA, Specialist, Chat, Audit) + parsers
+│   └── kb-search.js             # Google Custom Search KB lookup
 ├── slack/
-│   ├── blocks.js             # Block Kit builders (response, redirect, error, modal)
-│   └── cache.js              # In-memory LRU cache with TTL
+│   ├── blocks.js                # Block Kit builders (response, audit, modals, error)
+│   ├── cache.js                 # In-memory LRU response cache with TTL
+│   ├── conversation.js          # Per-thread history store for follow-up mode
+│   ├── feedback.js              # Wrong Answer feedback queue + moderation
+│   ├── knowledge.js             # knowledge.md loader with 5-min cache
+│   ├── knowledge-writer.js      # knowledge.md append with deduplication
+│   ├── modal.js                 # Audit log modal builder
+│   ├── nominations.js           # Bot-response nomination system
+│   └── routing-buttons.js       # Parked: routing buttons for DM entry point
 └── utils/
-    └── accounting-filter.js  # Keyword-based accounting topic detection
+    ├── accounting-filter.js     # Keyword-based accounting topic detection
+    └── rate-limiter.js          # Per-user rate limiter
+scripts/
+└── get-es-token.js              # One-time OAuth helper for ES MCP token
 ```
 
 ---
@@ -119,24 +141,44 @@ Claude returns a structured JSON object:
   "issue_title": "Zapier API Access Not Enabled",
   "integration_type": "Zapier",
   "is_accounting_topic": false,
+  "confidence": "high",
+  "customer_message": "Hey [Name], I can see the issue — Zapier API access hasn't been enabled for your tenant yet. Getting that sorted now.",
+  "escalate_decision": {
+    "should_escalate": false,
+    "reason": "CSA can resolve with a single backend enable — no specialist needed"
+  },
+  "channel_recommendation": {
+    "channel": "ks-integration",
+    "reason": "Known fix, 1-step resolution, high confidence"
+  },
   "agent_steps": [
     {
       "num": 1,
       "title": "Enable Zapier API access on the tenant",
-      "detail": "Go to the ST Admin portal > Tenant Settings > Integrations. Find the tenant by ID and enable Zapier API access under the Integrations tab.",
+      "detail": "In the ST Admin portal, locate the tenant and enable Zapier API access under the Integrations tab.",
       "tag": "backend"
+    },
+    {
+      "num": 2,
+      "title": "Verify the connection",
+      "detail": "Ask the customer to re-authenticate in Zapier and confirm the trigger fires.",
+      "tag": "verify"
     }
   ],
-  "customer_email": {
-    "subject": "Re: Zapier Integration Setup — ServiceTitan",
-    "body": "Hi [Customer Name],\n\nThank you for reaching out...",
-    "kb_links": [
-      { "label": "How to set up Zapier with ServiceTitan", "url": "https://help.servicetitan.com/how-to/zapier" }
-    ]
+  "findings_summary": {
+    "diagnosis": "Zapier cannot authenticate because API access was never enabled on this tenant.",
+    "actions": ["Enable Zapier API access", "Re-authenticate in Zapier"]
   },
-  "slack_refs": [...],
-  "atlassian_refs": [...],
-  "sources_used": ["slack", "confluence", "jira", "kb"]
+  "slack_refs": [
+    { "url": "https://servicetitan.slack.com/archives/...", "channel": "#ask-integrations", "title": "Zapier API access enable steps" }
+  ],
+  "atlassian_refs": [
+    { "type": "confluence", "url": "https://...", "title": "Zapier Integration Setup Guide" }
+  ],
+  "kb_refs": [
+    { "url": "https://help.servicetitan.com/...", "title": "Connecting Zapier to ServiceTitan", "snippet": "API access must be enabled before Zapier can authenticate." }
+  ],
+  "sources_used": ["slack", "confluence", "kb"]
 }
 ```
 
