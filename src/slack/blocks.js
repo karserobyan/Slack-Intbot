@@ -67,7 +67,7 @@ export function buildResponseBlocks(data) {
     } else if (data.confidence === 'low' || data.confidence === 'medium') {
       infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${reason}`;
     } else {
-      infoText = `✅ Handle yourself · ${conf.icon} High · ${reason}`;
+      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${reason}`;
     }
   } else {
     infoText = `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}`;
