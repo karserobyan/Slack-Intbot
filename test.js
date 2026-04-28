@@ -719,6 +719,10 @@ const withRefsActions = withRefsBlocks.find(b => b.type === 'actions');
 const sourcesBtn = withRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(sourcesBtn !== undefined, 'Sources button appears when refs present');
 assert(sourcesBtn?.value?.length <= 2000, 'Sources button value within 2000 chars');
+assert(sourcesBtn?.text?.text === '🔍 Diagnosis + Sources', 'Sources button text updated');
+const parsedSrcBtnValue = JSON.parse(sourcesBtn.value);
+assert('diagnosis' in parsedSrcBtnValue, 'Sources button value contains diagnosis field');
+assert(parsedSrcBtnValue.diagnosis !== null, 'Sources button value has non-null diagnosis when findings_summary present');
 
 // Sources button hidden when all ref arrays are empty
 const noRefsBlocks = buildResponseBlocks({

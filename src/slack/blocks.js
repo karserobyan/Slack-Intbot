@@ -23,7 +23,7 @@ const CONFIDENCE_META = {
 
 // Builds the Sources button JSON value, fitting as many refs as possible within
 // Slack's 2000-char button value limit. Tries 3 entries per type, falls back to 2 or 1.
-function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs) {
+function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis = null) {
   const capRef = (ref) => ({
     url:   (ref.url   ?? '').slice(0, 150),
     title: (ref.title ?? '').slice(0, 60),
@@ -31,15 +31,17 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs) {
     ...(ref.type    ? { type:    ref.type }                 : {}),
     ...(ref.snippet ? { snippet: ref.snippet.slice(0, 80) } : {}),
   });
+  const diagStr = diagnosis ? String(diagnosis).slice(0, 300) : null;
   for (let n = 3; n >= 1; n--) {
     const v = JSON.stringify({
+      diagnosis:      diagStr,
       slack_refs:     slack_refs.slice(0, n).map(capRef),
       atlassian_refs: atlassian_refs.slice(0, n).map(capRef),
       kb_refs:        kb_refs.slice(0, n).map(capRef),
     });
     if (v.length <= 1990) return v;
   }
-  return JSON.stringify({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
+  return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
 export function buildResponseBlocks(data) {
@@ -135,12 +137,13 @@ export function buildResponseBlocks(data) {
   if (totalRefs > 0) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: '📎 Sources', emoji: true },
+      text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
         data.slack_refs     ?? [],
         data.atlassian_refs ?? [],
         data.kb_refs        ?? [],
+        data.findings_summary?.diagnosis ?? null,
       ),
     });
   }
