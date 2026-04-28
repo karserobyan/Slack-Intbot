@@ -730,6 +730,14 @@ assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('📚 Knowledge B
 const emptyRefsModal = buildSourcesModal({ slack_refs: [], atlassian_refs: [], kb_refs: [] });
 assert(emptyRefsModal.blocks.some(b => b.text?.text?.includes('No specific sources')), 'empty refs modal shows fallback message');
 
+// Diagnosis-only modal (no refs) — fallback does NOT fire; Root Cause section is shown
+const diagnosisOnlyModal = buildSourcesModal({ diagnosis: 'Root cause text here' });
+assert(diagnosisOnlyModal.blocks.some(b => b.text?.text?.includes('🔍 Root Cause')), 'diagnosis-only modal shows Root Cause section');
+assert(!diagnosisOnlyModal.blocks.some(b => b.text?.text?.includes('No specific sources')), 'diagnosis-only modal does not show fallback message');
+
+// Confirm no Root Cause section when diagnosis is omitted
+assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('🔍 Root Cause')), 'no Root Cause section when diagnosis omitted');
+
 // Missing arrays default gracefully (no crash)
 const noArgsModal = buildSourcesModal({});
 assert(noArgsModal.type === 'modal', 'buildSourcesModal handles missing arrays without crash');

@@ -389,7 +389,7 @@ export function buildHelpDetailBlocks() {
  * Builds the Sources modal shown when an agent clicks 📎 Sources.
  * Groups refs by type: Slack, Atlassian (Confluence + Jira), Knowledge Base.
  *
- * @param {object} data - { slack_refs, atlassian_refs, kb_refs }
+ * @param {object} data - { diagnosis, slack_refs, atlassian_refs, kb_refs }
  * @returns {object} Slack modal view payload
  */
 export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian_refs = [], kb_refs = [] } = {}) {
