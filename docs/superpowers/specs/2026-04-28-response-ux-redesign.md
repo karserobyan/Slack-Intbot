@@ -160,12 +160,27 @@ Pass `diagnosis` into the `buildSourcesModal` call alongside the existing ref ar
 - All routing signal `.text.text.includes` pattern assertions — routing signal moves to info line
 
 ### `buildResponseBlocks` assertions to add
+
+Note: `sampleJson` has no `escalate_decision` (Specialist mode). Use a separate CSA fixture for routing signal assertions.
+
 ```js
+// Specialist info line (sampleJson — no escalate_decision)
 const infoLine = responseBlocks.find(b => b.type === 'context');
 assert(infoLine !== undefined, 'Compact info line is a context block');
-assert(infoLine.elements[0].text.includes('✅'), 'Info line: handle yourself signal present');
-assert(infoLine.elements[0].text.includes('High'), 'Info line: confidence label present');
-assert(infoLine.elements[0].text.includes('CSA can'), 'Info line: routing reason present');
+assert(infoLine.elements[0].text.includes('High'), 'Info line: confidence label present (Specialist)');
+assert(infoLine.elements[0].text.includes('Sources:'), 'Info line: sources label present (Specialist)');
+
+// CSA info line — requires escalate_decision in fixture
+const csaBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'high',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle with single backend enable' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle with single backend enable' },
+});
+const csaInfoLine = csaBlocks.find(b => b.type === 'context');
+assert(csaInfoLine.elements[0].text.includes('✅'), 'Info line: handle yourself signal (CSA high)');
+assert(csaInfoLine.elements[0].text.includes('High'), 'Info line: confidence label (CSA high)');
+assert(csaInfoLine.elements[0].text.includes('CSA can handle'), 'Info line: routing reason (CSA high)');
 
 // Ensure removed blocks are gone
 const noDiagBlock = responseBlocks.every(b => !b.text?.text?.includes('🔍 Root Cause'));
