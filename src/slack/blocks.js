@@ -55,44 +55,37 @@ export function buildResponseBlocks(data) {
   });
   blocks.push({ type: 'divider' });
 
-  // 2. Diagnosis callout
-  const diag = data.findings_summary?.diagnosis;
-  const diagAction = data.findings_summary?.actions?.[0];
-  if (diag) {
-    let diagText = `*🔍 Root Cause*\n*${diag}*`;
-    if (diagAction) diagText += `\n${diagAction}`;
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: diagText } });
-  }
-
-  // 3. Routing signal (CSA only — present when escalate_decision is set)
+  // 2. Compact info line
+  const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
+  let infoText;
   if (data.escalate_decision) {
     const ed = data.escalate_decision;
     const channel = data.channel_recommendation?.channel ?? 'ask-integrations';
-    const channelReason = data.channel_recommendation?.reason ?? ed.reason ?? '';
-    const suggestedPost = data.suggested_channel_post ?? '';
-
-    let routingText;
+    const reason = (data.channel_recommendation?.reason ?? ed.reason ?? '').slice(0, 120);
     if (ed.should_escalate) {
-      routingText = `📢 *Post in #${channel}*\n_${channelReason}_`;
-      if (suggestedPost) routingText += `\n> ${suggestedPost}`;
+      infoText = `📢 Post in #${channel} · ${conf.icon} ${conf.label} · ${reason}`;
     } else if (data.confidence === 'low' || data.confidence === 'medium') {
-      routingText = `🔎 *Post to verify — not fully certain*\n_${conf.label} confidence · ${channelReason}_`;
-      if (suggestedPost) routingText += `\n> ${suggestedPost}`;
+      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${reason}`;
     } else {
-      routingText = `✅ *You've got this — handle it yourself*\n_High confidence · no escalation needed_`;
+      infoText = `✅ Handle yourself · ${conf.icon} High · ${reason}`;
     }
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: routingText } });
+  } else {
+    infoText = `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}`;
   }
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: infoText }],
+  });
 
-  // 4. Customer talktrack
+  // 3. Customer message
   if (data.customer_message) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*💬 Message the customer*\n_"${data.customer_message}"_` },
+      text: { type: 'mrkdwn', text: `💬 _"${data.customer_message}"_` },
     });
   }
 
-  // 5. Steps header + steps
+  // 4. Steps header + steps
   const steps = (data.agent_steps ?? []).slice(0, 20);
   if (steps.length > 0) {
     blocks.push({
@@ -111,14 +104,7 @@ export function buildResponseBlocks(data) {
     }
   }
 
-  // 6. Context footer
-  const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}` }],
-  });
-
-  // 7. Action buttons
+  // 5. Action buttons
   const actionElements = [
     {
       type: 'button',

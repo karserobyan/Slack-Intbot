@@ -236,6 +236,23 @@ assert(responseBlocks[0].type === 'header', 'First block is header');
 assert(responseBlocks.some(b => b.type === 'divider'), 'Contains dividers');
 assert(responseBlocks.some(b => b.type === 'actions'), 'Contains action buttons');
 assert(responseBlocks.some(b => b.type === 'context'), 'Contains confidence context block');
+const infoLine = responseBlocks.find(b => b.type === 'context');
+assert(infoLine !== undefined, 'Compact info line is a context block');
+assert(infoLine.elements[0].text.includes('High'), 'Info line: confidence label present (Specialist mode)');
+assert(infoLine.elements[0].text.includes('Sources:'), 'Info line: sources label present (Specialist mode)');
+assert(infoLine.elements[0].text.includes('🟢'), 'Info line: confidence icon present');
+
+// CSA info line — escalate_decision present
+const csaHandleBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'high',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle with single backend enable' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle with single backend enable' },
+});
+const csaInfoLine = csaHandleBlocks.find(b => b.type === 'context');
+assert(csaInfoLine.elements[0].text.includes('✅'), 'Info line: ✅ signal for CSA handle yourself');
+assert(csaInfoLine.elements[0].text.includes('Handle yourself'), 'Info line: handle yourself text');
+assert(csaInfoLine.elements[0].text.includes('CSA can handle'), 'Info line: routing reason present');
 
 // Check header contains issue title
 const headerText = responseBlocks[0].text.text;
@@ -253,15 +270,15 @@ assert(stepBlocks[1].text.text.startsWith('🟠'), 'Backend step has orange circ
 assert(stepBlocks[2].text.text.startsWith('🟢'), 'Verify step has green circle');
 assert(stepBlocks[3].text.text.startsWith('🔴'), 'Escalate step has red circle');
 
-// Diagnosis callout
-const diagBlock = responseBlocks.find(b => b.text?.text?.includes('🔍 Root Cause'));
-assert(diagBlock !== undefined, 'Diagnosis callout renders with 🔍 Root Cause label');
-assert(diagBlock.text.text.includes('Zapier integration is failing'), 'Diagnosis callout contains diagnosis text');
+// Diagnosis no longer inline — moved to modal
+const noDiagBlock = responseBlocks.every(b => !b.text?.text?.includes('🔍 Root Cause'));
+assert(noDiagBlock, 'Diagnosis block is not inline in response (moved to modal)');
 
-// Customer talktrack
-const talktackBlock = responseBlocks.find(b => b.text?.text?.includes('💬 Message the customer'));
-assert(talktackBlock !== undefined, 'Customer talktrack renders with 💬 label');
-assert(talktackBlock.text.text.includes('Zapier connection was reset'), 'Talktrack contains customer_message text');
+// Customer message — label removed, just the message
+const talktackBlock = responseBlocks.find(b => b.text?.text?.includes('Zapier connection was reset'));
+assert(talktackBlock !== undefined, 'Customer message block present');
+assert(!talktackBlock.text.text.includes('Message the customer'), 'Customer message has no label text');
+assert(talktackBlock.text.text.startsWith('💬'), 'Customer message starts with 💬 emoji');
 
 // Steps header
 const stepsHeader = responseBlocks.find(b => b.text?.text === '*🔧 What you do*');
@@ -274,11 +291,12 @@ const handleYourselfBlocks = buildResponseBlocks({
   ...sampleJson,
   confidence: 'high',
   escalate_decision: { should_escalate: false, reason: 'CSA can handle this' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Quick sanity check' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle this' },
 });
-const handleBlock = handleYourselfBlocks.find(b => b.text?.text?.includes('✅'));
+const handleBlock = handleYourselfBlocks.find(b => b.type === 'context');
 assert(handleBlock !== undefined, 'Routing signal: handle yourself renders ✅');
-assert(handleBlock.text.text.includes("You've got this"), 'Routing signal: handle yourself text correct');
+assert(handleBlock.elements[0].text.includes('✅'), 'Routing signal: handle yourself has ✅ signal');
+assert(handleBlock.elements[0].text.includes('Handle yourself'), 'Routing signal: handle yourself text correct');
 
 // Post in channel — should_escalate: true
 const escalateRoutingBlocks = buildResponseBlocks({
@@ -288,37 +306,43 @@ const escalateRoutingBlocks = buildResponseBlocks({
   channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility needed' },
   suggested_channel_post: 'Anyone seen Zapier failing after migration for this tenant?',
 });
-const postBlock = escalateRoutingBlocks.find(b => b.text?.text?.includes('📢'));
+const postBlock = escalateRoutingBlocks.find(b => b.type === 'context');
 assert(postBlock !== undefined, 'Routing signal: post in channel renders 📢');
-assert(postBlock.text.text.includes('ask-integrations'), 'Routing signal: post in channel includes channel name');
-assert(postBlock.text.text.includes('Anyone seen Zapier failing'), 'Routing signal: post in channel includes suggested post');
+assert(postBlock.elements[0].text.includes('📢'), 'Routing signal: post in channel has 📢 signal');
+assert(postBlock.elements[0].text.includes('ask-integrations'), 'Routing signal: post in channel includes channel name');
 
 // Post to verify — low confidence
 const lowConfRoutingBlocks = buildResponseBlocks({
   ...sampleJson,
   confidence: 'low',
   escalate_decision: { should_escalate: false, reason: 'Worth verifying with team' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Check with team' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Worth verifying with team' },
   suggested_channel_post: 'Uncertain about this one — anyone confirm?',
 });
-const lowVerifyBlock = lowConfRoutingBlocks.find(b => b.text?.text?.includes('🔎'));
+const lowVerifyBlock = lowConfRoutingBlocks.find(b => b.type === 'context');
 assert(lowVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for low confidence');
-assert(lowVerifyBlock.text.text.includes('Post to verify'), 'Routing signal: post to verify text correct');
-assert(lowVerifyBlock.text.text.includes('Uncertain about this one'), 'Routing signal: post to verify includes suggested post');
+assert(lowVerifyBlock.elements[0].text.includes('🔎'), 'Routing signal: post to verify has 🔎 signal');
+assert(lowVerifyBlock.elements[0].text.includes('Post to verify'), 'Routing signal: post to verify text correct');
 
 // Post to verify — medium confidence
 const medConfRoutingBlocks = buildResponseBlocks({
   ...sampleJson,
   confidence: 'medium',
   escalate_decision: { should_escalate: false, reason: 'Partial match only' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Verify steps' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Partial match only' },
 });
-const medVerifyBlock = medConfRoutingBlocks.find(b => b.text?.text?.includes('🔎'));
+const medVerifyBlock = medConfRoutingBlocks.find(b => b.type === 'context');
 assert(medVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for medium confidence');
+assert(medVerifyBlock.elements[0].text.includes('🔎'), 'Routing signal: post to verify has 🔎 signal for medium');
 
 // No routing signal when escalate_decision absent (Specialist)
 const noRoutingBlocks = buildResponseBlocks({ ...sampleJson });
-const noRouting = noRoutingBlocks.find(b => ['✅', '📢', '🔎'].some(s => b.text?.text?.includes(s)));
+const noRouting = noRoutingBlocks.find(b =>
+  ['✅', '📢', '🔎'].some(s => {
+    const elemText = b.elements?.[0]?.text;
+    return b.text?.text?.includes(s) || (typeof elemText === 'string' && elemText.includes(s));
+  })
+);
 assert(noRouting === undefined, 'Routing signal: absent when no escalate_decision (Specialist mode)');
 
 // should_escalate wins over low confidence (escalation more urgent)
@@ -328,8 +352,9 @@ const escalatePlusLowBlocks = buildResponseBlocks({
   escalate_decision: { should_escalate: true, reason: 'Escalation needed' },
   channel_recommendation: { channel: 'ask-integrations', reason: 'Team needed' },
 });
-const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.text?.text?.includes('📢'));
+const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.type === 'context');
 assert(escalatePlusLowBlock !== undefined, 'Routing signal: should_escalate wins over low confidence');
+assert(escalatePlusLowBlock.elements[0].text.includes('📢'), 'Routing signal: 📢 shown when should_escalate true');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
