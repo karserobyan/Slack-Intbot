@@ -155,7 +155,7 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
 // ── "Sources" button — opens sources modal ───────────────────────────────────
 app.action('view_sources_modal', async ({ ack, body, client, action }) => {
   await ack();
-  let refsData = { slack_refs: [], atlassian_refs: [], kb_refs: [] };
+  let refsData = { diagnosis: null, slack_refs: [], atlassian_refs: [], kb_refs: [] };
   try { refsData = JSON.parse(action.value); } catch { /* show empty modal on bad JSON */ }
   await client.views.open({
     trigger_id: body.trigger_id,
