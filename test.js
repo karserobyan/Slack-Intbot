@@ -691,6 +691,7 @@ console.log('\n🔹 Sources Modal');
 
 // Modal with all three source types
 const fullRefsModal = buildSourcesModal({
+  diagnosis: 'Zapier cannot authenticate because API access was never enabled on this tenant.',
   slack_refs: [
     { url: 'https://slack.com/1', channel: '#ask-integrations', title: 'Zapier API not working' },
   ],
@@ -704,6 +705,9 @@ const fullRefsModal = buildSourcesModal({
 });
 assert(fullRefsModal.type === 'modal', 'buildSourcesModal returns modal type');
 assert(typeof fullRefsModal.title === 'object', 'modal has title');
+assert(fullRefsModal.title.text === '🔍 Diagnosis & Sources', 'modal title updated');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('🔍 Root Cause')), 'modal has diagnosis Root Cause section');
+assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('API access was never enabled')), 'modal diagnosis text present');
 assert(Array.isArray(fullRefsModal.blocks), 'modal has blocks array');
 assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('💬 Slack')), 'modal has Slack section');
 assert(fullRefsModal.blocks.some(b => b.text?.text?.includes('📄 Atlassian')), 'modal has Atlassian section');

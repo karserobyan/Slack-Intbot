@@ -392,8 +392,16 @@ export function buildHelpDetailBlocks() {
  * @param {object} data - { slack_refs, atlassian_refs, kb_refs }
  * @returns {object} Slack modal view payload
  */
-export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_refs = [] } = {}) {
+export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian_refs = [], kb_refs = [] } = {}) {
   const blocks = [];
+
+  if (diagnosis) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*🔍 Root Cause*\n${diagnosis}` },
+    });
+    blocks.push({ type: 'divider' });
+  }
 
   if (slack_refs.length > 0) {
     blocks.push({
@@ -444,7 +452,7 @@ export function buildSourcesModal({ slack_refs = [], atlassian_refs = [], kb_ref
   return {
     type: 'modal',
     callback_id: 'sources_view',
-    title: { type: 'plain_text', text: '📎 Sources', emoji: true },
+    title: { type: 'plain_text', text: '🔍 Diagnosis & Sources', emoji: true },
     close: { type: 'plain_text', text: 'Close', emoji: true },
     blocks,
   };
