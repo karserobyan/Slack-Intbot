@@ -13,15 +13,16 @@ import {
   buildHelpBlocks,
   buildHelpDetailBlocks,
   buildSourcesModal,
-  buildRoutingButtons,
   buildAuditBlocks,
 } from './src/slack/blocks.js';
+import { buildRoutingButtons } from './src/slack/routing-buttons.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks } from './src/slack/nominations.js';
+import { buildAuditLogModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -888,7 +889,7 @@ const longValue = JSON.parse(longBlocks[1].elements[0].value);
 assert(longValue.query.length <= 1800, 'button value truncates long queries to 1800 chars');
 
 // ── Audit Log Modal ───────────────────────────────────────────────────────────
-import { buildAuditLogModal } from './src/slack/modal.js';
+console.log('\n🔹 Audit Log Modal');
 
 const modal = buildAuditLogModal({ channelId: 'C123', threadTs: '111.222' });
 
