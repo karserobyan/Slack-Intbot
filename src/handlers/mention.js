@@ -176,7 +176,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      blocks: buildResponseBlocks(cached),
+      blocks: buildResponseBlocks(cached, { isDm }),
       text: `Troubleshooting steps for: ${cached.issue_title}`,
     });
     appendToHistory(threadTs, [
@@ -228,14 +228,14 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
           await client.chat.update({
             channel: channelId,
             ts: thinkingTs,
-            blocks: buildResponseBlocks(fastResult),
+            blocks: buildResponseBlocks(fastResult, { isDm }),
             text: `Troubleshooting steps for: ${fastResult.issue_title}`,
           });
         } else {
           await client.chat.postMessage({
             channel: channelId,
             thread_ts: threadTs,
-            blocks: buildResponseBlocks(fastResult),
+            blocks: buildResponseBlocks(fastResult, { isDm }),
             text: `Troubleshooting steps for: ${fastResult.issue_title}`,
           });
         }
@@ -365,7 +365,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
   // 14. Deliver response
-  const responseBlocks = buildResponseBlocks(result);
+  const responseBlocks = buildResponseBlocks(result, { isDm });
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
   if (thinkingTs) {

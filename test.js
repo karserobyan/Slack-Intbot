@@ -442,6 +442,16 @@ assert(noCopyEmail, 'No Copy Email button in any actions block');
 const noConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: undefined });
 assert(noConfBlocks.length > 0, 'Missing confidence field does not crash');
 
+// isDm: true appends New chat button; isDm: false (default) does not
+const isDmBlocks = buildResponseBlocks(sampleJson, { isDm: true });
+const dmActions = isDmBlocks.find(b => b.type === 'actions');
+assert(dmActions !== undefined, 'isDm response has actions block');
+assert(dmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: true appends new_chat button');
+assert(dmActions.elements.at(-1).text.text === '💬 New chat', 'New chat button is last in actions');
+
+const nonDmActions = responseBlocks.find(b => b.type === 'actions');
+assert(!nonDmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: false (default) has no new_chat button');
+
 // ── 3b. Welcome Card & Session Card ──────────────────────────────────────────
 console.log('\n🔹 Welcome Card & Session Card');
 

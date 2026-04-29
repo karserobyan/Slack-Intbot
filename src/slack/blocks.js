@@ -44,7 +44,7 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data) {
+export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
@@ -140,6 +140,15 @@ export function buildResponseBlocks(data) {
       text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
       action_id: 'show_specialist_detail',
       value: data._showSpecialistValue,
+    });
+  }
+
+  if (isDm) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+      action_id: 'new_chat',
+      value: 'new_chat',
     });
   }
 
