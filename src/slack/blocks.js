@@ -149,6 +149,48 @@ export function buildResponseBlocks(data) {
   return blocks;
 }
 
+export function buildWelcomeCard() {
+  return [
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: "*👋 Welcome to IntBot!*\nI diagnose integration issues and walk you through step-by-step fixes. Start a chat when you're ready." },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+          action_id: 'new_chat',
+          style: 'primary',
+          value: 'new_chat',
+        },
+      ],
+    },
+  ];
+}
+
+export function buildSessionCard() {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🟢 Integration chat*\nReady when you are.' },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '💬 Ask an integration question', emoji: true },
+          action_id: 'start_chat_thread',
+          value: 'start_chat_thread',
+        },
+      ],
+    },
+  ];
+}
+
 /**
  * Builds Block Kit blocks for the accounting topic redirect.
  */

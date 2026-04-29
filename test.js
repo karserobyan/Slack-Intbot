@@ -6,6 +6,8 @@
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
+  buildWelcomeCard,
+  buildSessionCard,
   buildAccountingRedirectBlocks,
   buildThinkingBlocks,
   buildErrorBlocks,
@@ -439,6 +441,26 @@ assert(noCopyEmail, 'No Copy Email button in any actions block');
 // unknown/missing confidence defaults to medium badge (no crash)
 const noConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: undefined });
 assert(noConfBlocks.length > 0, 'Missing confidence field does not crash');
+
+// ── 3b. Welcome Card & Session Card ──────────────────────────────────────────
+console.log('\n🔹 Welcome Card & Session Card');
+
+const welcomeBlocks = buildWelcomeCard();
+assert(Array.isArray(welcomeBlocks), 'buildWelcomeCard returns array');
+assert(welcomeBlocks.some(b => b.type === 'actions'), 'welcome card has actions block');
+const welcomeActions = welcomeBlocks.find(b => b.type === 'actions');
+assert(welcomeActions.elements[0].action_id === 'new_chat', 'welcome card button action_id is new_chat');
+assert(welcomeActions.elements[0].text.text === '💬 New chat', 'welcome card button text is 💬 New chat');
+assert(welcomeActions.elements[0].style === 'primary', 'welcome card button style is primary');
+assert(welcomeBlocks.some(b => b.text?.text?.includes('Welcome to IntBot')), 'welcome card contains welcome text');
+
+const sessionBlocks = buildSessionCard();
+assert(Array.isArray(sessionBlocks), 'buildSessionCard returns array');
+assert(sessionBlocks.some(b => b.text?.text?.includes('🟢 Integration chat')), 'session card has 🟢 Integration chat text');
+assert(sessionBlocks.some(b => b.type === 'actions'), 'session card has actions block');
+const sessionActions = sessionBlocks.find(b => b.type === 'actions');
+assert(sessionActions.elements[0].action_id === 'start_chat_thread', 'session card button action_id is start_chat_thread');
+assert(sessionActions.elements[0].text.text === '💬 Ask an integration question', 'session card button text correct');
 
 // ── 4. Cache ─────────────────────────────────────────────────────────────────
 console.log('\n🔹 Cache');
