@@ -6,7 +6,6 @@ import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinki
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext, queryAuditLog } from './claude/query.js';
-import { buildAuditLogModal } from './slack/modal.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
 import { approveNomination, rejectNomination } from './slack/nominations.js';
 
@@ -40,42 +39,6 @@ const app = new App({
 // ── Register event handlers ──────────────────────────────────────────────────
 registerMentionHandler(app);
 registerDmHandler(app);
-
-// ── Routing: Integration Question button ─────────────────────────────────────
-app.action('integration_question', async ({ ack, body, client, logger }) => {
-  await ack();
-  let context;
-  try {
-    context = JSON.parse(body.actions[0].value);
-  } catch {
-    logger.error('[routing] Failed to parse integration_question value');
-    return;
-  }
-  await handleQuery({
-    rawText:   context.query,
-    channelId: context.channelId,
-    threadTs:  context.threadTs,
-    client,
-    userId:    context.userId,
-    isDm:      context.isDm ?? false,
-  });
-});
-
-// ── Routing: Log Request button — opens audit modal ───────────────────────────
-app.action('log_request', async ({ ack, body, client, logger }) => {
-  await ack();
-  let context;
-  try {
-    context = JSON.parse(body.actions[0].value);
-  } catch {
-    logger.error('[routing] Failed to parse log_request value');
-    return;
-  }
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildAuditLogModal({ channelId: context.channelId, threadTs: context.threadTs }),
-  });
-});
 
 // ── Audit log modal submission ────────────────────────────────────────────────
 app.view('audit_log_submission', async ({ ack, body, view, client, logger }) => {

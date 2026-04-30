@@ -6,6 +6,8 @@
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
+  buildWelcomeCard,
+  buildSessionCard,
   buildAccountingRedirectBlocks,
   buildThinkingBlocks,
   buildErrorBlocks,
@@ -15,7 +17,6 @@ import {
   buildSourcesModal,
   buildAuditBlocks,
 } from './src/slack/blocks.js';
-import { buildRoutingButtons } from './src/slack/routing-buttons.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
@@ -439,6 +440,36 @@ assert(noCopyEmail, 'No Copy Email button in any actions block');
 // unknown/missing confidence defaults to medium badge (no crash)
 const noConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: undefined });
 assert(noConfBlocks.length > 0, 'Missing confidence field does not crash');
+
+// isDm: true appends New chat button; isDm: false (default) does not
+const isDmBlocks = buildResponseBlocks(sampleJson, { isDm: true });
+const dmActions = isDmBlocks.find(b => b.type === 'actions');
+assert(dmActions !== undefined, 'isDm response has actions block');
+assert(dmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: true appends new_chat button');
+assert(dmActions.elements.at(-1).text.text === '💬 New chat', 'New chat button is last in actions');
+
+const nonDmActions = responseBlocks.find(b => b.type === 'actions');
+assert(!nonDmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: false (default) has no new_chat button');
+
+// ── 3b. Welcome Card & Session Card ──────────────────────────────────────────
+console.log('\n🔹 Welcome Card & Session Card');
+
+const welcomeBlocks = buildWelcomeCard();
+assert(Array.isArray(welcomeBlocks), 'buildWelcomeCard returns array');
+assert(welcomeBlocks.some(b => b.type === 'actions'), 'welcome card has actions block');
+const welcomeActions = welcomeBlocks.find(b => b.type === 'actions');
+assert(welcomeActions.elements[0].action_id === 'new_chat', 'welcome card button action_id is new_chat');
+assert(welcomeActions.elements[0].text.text === '💬 New chat', 'welcome card button text is 💬 New chat');
+assert(welcomeActions.elements[0].style === 'primary', 'welcome card button style is primary');
+assert(welcomeBlocks.some(b => b.text?.text?.includes('Welcome to IntBot')), 'welcome card contains welcome text');
+
+const sessionBlocks = buildSessionCard();
+assert(Array.isArray(sessionBlocks), 'buildSessionCard returns array');
+assert(sessionBlocks.some(b => b.text?.text?.includes('🟢 Integration chat')), 'session card has 🟢 Integration chat text');
+assert(sessionBlocks.some(b => b.type === 'actions'), 'session card has actions block');
+const sessionActions = sessionBlocks.find(b => b.type === 'actions');
+assert(sessionActions.elements[0].action_id === 'start_chat_thread', 'session card button action_id is start_chat_thread');
+assert(sessionActions.elements[0].text.text === '💬 Ask an integration question', 'session card button text correct');
 
 // ── 4. Cache ─────────────────────────────────────────────────────────────────
 console.log('\n🔹 Cache');
@@ -896,38 +927,6 @@ assert(rejectPayload.nominationId === 'nom_test_001', 'reject button value encod
 const nomContextBlock = nomBlocks.find(b => b.type === 'context');
 assert(nomContextBlock !== undefined, 'buildNominationBlocks has context footer');
 assert(nomContextBlock.elements[0].text.includes('nom_test_001'), 'context footer includes nomination ID');
-
-// ── Routing Buttons ──────────────────────────────────────────────────────────
-console.log('\n🔹 Routing Buttons');
-
-const routingCtx = { query: 'Zapier not working', channelId: 'C123', threadTs: '111.222', userId: 'U456' };
-const routingBlocks = buildRoutingButtons(routingCtx);
-
-assert(routingBlocks.length === 2, 'buildRoutingButtons returns 2 blocks');
-assert(routingBlocks[0].type === 'section', 'routing block 0 is section');
-assert(routingBlocks[1].type === 'actions', 'routing block 1 is actions');
-
-const btns = routingBlocks[1].elements;
-assert(btns.length === 2, 'routing actions has 2 buttons');
-assert(btns[0].action_id === 'integration_question', 'first button action_id is integration_question');
-assert(btns[1].action_id === 'log_request', 'second button action_id is log_request');
-assert(btns[1].value === btns[0].value, 'both buttons carry the same routing context');
-
-const btnValue = JSON.parse(btns[0].value);
-assert(btnValue.query === 'Zapier not working', 'button value encodes query');
-assert(btnValue.channelId === 'C123', 'button value encodes channelId');
-assert(btnValue.threadTs === '111.222', 'button value encodes threadTs');
-assert(btnValue.userId === 'U456', 'button value encodes userId');
-assert(btnValue.isDm === false, 'button value encodes isDm (default false)');
-
-const dmBlocks = buildRoutingButtons({ query: 'test', channelId: 'D1', threadTs: '1', userId: 'U1', isDm: true });
-const dmValue = JSON.parse(dmBlocks[1].elements[0].value);
-assert(dmValue.isDm === true, 'button value encodes isDm: true when passed');
-
-const veryLongQuery = 'x'.repeat(2000);
-const longBlocks = buildRoutingButtons({ query: veryLongQuery, channelId: 'C1', threadTs: '1', userId: 'U1' });
-const longValue = JSON.parse(longBlocks[1].elements[0].value);
-assert(longValue.query.length <= 1800, 'button value truncates long queries to 1800 chars');
 
 // ── Audit Log Modal ───────────────────────────────────────────────────────────
 console.log('\n🔹 Audit Log Modal');

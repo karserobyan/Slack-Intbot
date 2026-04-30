@@ -44,7 +44,7 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data) {
+export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
@@ -143,10 +143,61 @@ export function buildResponseBlocks(data) {
     });
   }
 
+  if (isDm) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+      action_id: 'new_chat',
+      value: 'new_chat',
+    });
+  }
+
   blocks.push({ type: 'actions', elements: actionElements });
   blocks.push({ type: 'divider' });
 
   return blocks;
+}
+
+export function buildWelcomeCard() {
+  return [
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: "*👋 Welcome to IntBot!*\nI diagnose integration issues and walk you through step-by-step fixes. Start a chat when you're ready." },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+          action_id: 'new_chat',
+          style: 'primary',
+          value: 'new_chat',
+        },
+      ],
+    },
+  ];
+}
+
+export function buildSessionCard() {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🟢 Integration chat*\nReady when you are.' },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '💬 Ask an integration question', emoji: true },
+          action_id: 'start_chat_thread',
+          value: 'start_chat_thread',
+        },
+      ],
+    },
+  ];
 }
 
 /**
