@@ -10,7 +10,7 @@ const anthropic = new Anthropic({
 
 const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
 
-const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-20250514';
+const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 
 /**
  * Builds the MCP servers array based on available tokens.
