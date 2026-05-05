@@ -325,11 +325,11 @@ export function buildFeedbackModal(context) {
  * @param {string} text - Claude's plain text follow-up reply
  * @returns {Array} Slack blocks array
  */
-export function buildFollowUpBlocks(text) {
+export function buildFollowUpBlocks(text, { label = 'Follow-up' } = {}) {
   return [
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_Follow-up_' }],
+      elements: [{ type: 'mrkdwn', text: `_${label}_` }],
     },
     {
       type: 'section',
@@ -602,6 +602,77 @@ export function buildAuditBlocks(data) {
   return blocks;
 }
 
-export function buildChatResolutionBlocks(_data) {
-  return [];
+const CHAT_TAG_CIRCLE = { action: '🔵', backend: '🟠', verify: '🟢', escalate: '🔴' };
+const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
+
+export function buildChatResolutionBlocks(data) {
+  const blocks = [];
+  const isEscalation = data.escalate === true;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: isEscalation ? '🔴 *Needs escalation*' : '✅ *Root cause found*' }],
+  });
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${data.title}*\n_${data.diagnosis}_` },
+  });
+
+  if (isEscalation && data.escalation_path) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${data.escalation_path}` }],
+    });
+  }
+
+  for (const step of (data.steps ?? []).slice(0, 10)) {
+    const circle = CHAT_TAG_CIRCLE[step.tag] ?? '⚪';
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${circle} \`${step.tag}\` ${step.text}` },
+    });
+  }
+
+  const chips = (data.refs ?? [])
+    .map(r => CHAT_SOURCE_LABEL[r.source])
+    .filter(Boolean);
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `_Verified: ${chips.join('  ·  ')}_` }],
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  const actionElements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '👎 Wrong', emoji: true },
+      action_id: 'wrong_answer_modal',
+      style: 'danger',
+      value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
+    },
+  ];
+
+  if (isEscalation && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
+    });
+  }
+
+  actionElements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+    action_id: 'new_chat',
+    value: 'new_chat',
+  });
+
+  blocks.push({ type: 'actions', elements: actionElements });
+
+  return blocks;
 }
