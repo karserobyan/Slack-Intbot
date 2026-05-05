@@ -601,3 +601,7 @@ export function buildAuditBlocks(data) {
 
   return blocks;
 }
+
+export function buildChatResolutionBlocks(_data) {
+  return [];
+}

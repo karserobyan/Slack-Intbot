@@ -54,3 +54,7 @@ export function buildAuditLogModal({ channelId, threadTs }) {
     ],
   };
 }
+
+export function buildChannelPostModal(_params) {
+  return {};
+}

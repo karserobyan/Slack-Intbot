@@ -110,19 +110,24 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   return result;
 }
 
-/**
- * Conversational follow-up query — uses thread history, returns plain text.
- * Uses MCP tools so Claude can search for new information if the agent provides
- * a new angle, error code, or additional context.
- * Aborts automatically after TIMEOUT_MS.
- *
- * @param {string} userQuery - The agent's follow-up message
- * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
- * @returns {Promise<string>} Plain text response
- */
-export async function queryChat(userQuery, history) {
+export function parseChatResponse(text) {
+  try {
+    const trimmed = text.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '');
+    const obj = JSON.parse(trimmed);
+    if (obj.state === 'diagnosing' || obj.state === 'resolved') return obj;
+  } catch {
+    // fall through
+  }
+  return { state: 'diagnosing', acknowledgement: '', question: text };
+}
+
+export async function queryChat(userQuery, history, { kbContext = null } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const systemPrompt = kbContext
+    ? `${CHAT_SYSTEM_PROMPT}\n\n[KB RESULTS]\n${kbContext}\n[/KB RESULTS]`
+    : CHAT_SYSTEM_PROMPT;
 
   const messages = [...history, { role: 'user', content: userQuery }];
   const mcpServers = buildMcpServers();
@@ -130,7 +135,7 @@ export async function queryChat(userQuery, history) {
   const requestParams = {
     model: MODEL,
     max_tokens: 2048,
-    system: CHAT_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages,
     ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
     betas: ['mcp-client-2025-04-04'],
@@ -153,7 +158,7 @@ export async function queryChat(userQuery, history) {
     clearTimeout(timer);
   }
 
-  return fullText;
+  return parseChatResponse(fullText);
 }
 
 /**
