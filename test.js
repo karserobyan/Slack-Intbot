@@ -1236,7 +1236,7 @@ assert(chipsBlock.elements[0].text.includes('📖 KB'), 'KB chip present when kb
 
 // No chips when all ref arrays are empty
 const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [], escalate_decision: { should_escalate: false, reason: 'x' } });
-const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
+const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence') || b.elements[0].text?.includes('📄 Jira') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
 assert(noChipsBlock === undefined, 'no chips context block when all ref arrays empty');
 
 // Channel post button present when should_escalate:true and suggested_channel_post set
