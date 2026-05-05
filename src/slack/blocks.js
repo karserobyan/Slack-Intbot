@@ -77,6 +77,25 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     elements: [{ type: 'mrkdwn', text: infoText }],
   });
 
+  if (data.findings_summary?.diagnosis) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `🔍 _${data.findings_summary.diagnosis}_` }],
+    });
+  }
+
+  const chips = [];
+  if ((data.atlassian_refs ?? []).some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if ((data.atlassian_refs ?? []).some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if ((data.slack_refs    ?? []).length > 0)                          chips.push('💬 Slack');
+  if ((data.kb_refs       ?? []).length > 0)                          chips.push('📖 KB');
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
+    });
+  }
+
   // 3. Customer message
   if (data.customer_message) {
     blocks.push({
@@ -140,6 +159,15 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
       action_id: 'show_specialist_detail',
       value: data._showSpecialistValue,
+    });
+  }
+
+  if (data.escalate_decision?.should_escalate && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
     });
   }
 
