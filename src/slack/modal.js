@@ -55,6 +55,20 @@ export function buildAuditLogModal({ channelId, threadTs }) {
   };
 }
 
-export function buildChannelPostModal(_params) {
-  return {};
+export function buildChannelPostModal(text) {
+  return {
+    type: 'modal',
+    title: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+    close:  { type: 'plain_text', text: 'Close', emoji: true },
+    blocks: [
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '_Select all and copy — then paste in the appropriate channel._' }],
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text },
+      },
+    ],
+  };
 }
