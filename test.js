@@ -16,14 +16,16 @@ import {
   buildHelpDetailBlocks,
   buildSourcesModal,
   buildAuditBlocks,
+  buildChatResolutionBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
+import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks } from './src/slack/nominations.js';
-import { buildAuditLogModal } from './src/slack/modal.js';
+import { buildAuditLogModal, buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -1039,6 +1041,244 @@ assert(auditNoJson === null, 'parseAuditResponse returns null for non-JSON text'
 const auditEmptyChanges = parseAuditResponse('{"tenant":"X","time_range_days":14,"likely_cause":null,"summary":"None.","changes":[],"confidence":"high"}');
 assert(auditEmptyChanges !== null, 'parseAuditResponse handles empty changes array');
 assert(auditEmptyChanges.changes.length === 0, 'parseAuditResponse preserves empty changes array');
+
+// ── 16. parseChatResponse ─────────────────────────────────────────────────────
+console.log('\n🔹 parseChatResponse');
+
+// Valid diagnosing JSON
+const diagnosingJson = '{"state":"diagnosing","acknowledgement":"Got it — that rules out auth.","question":"Has the customer tried reconnecting Zapier from scratch?"}';
+const parsedDiag = parseChatResponse(diagnosingJson);
+assert(parsedDiag.state === 'diagnosing', 'parseChatResponse: diagnosing state parsed');
+assert(parsedDiag.acknowledgement === 'Got it — that rules out auth.', 'parseChatResponse: acknowledgement parsed');
+assert(parsedDiag.question === 'Has the customer tried reconnecting Zapier from scratch?', 'parseChatResponse: question parsed');
+
+// Valid resolved JSON (no escalation)
+const resolvedJson = '{"state":"resolved","title":"Stale Zapier Auth Token","diagnosis":"Enabling API access invalidates existing tokens.","steps":[{"tag":"action","text":"Disconnect Zapier."},{"tag":"verify","text":"Confirm sync resumes."}],"escalate":false,"escalation_path":null,"suggested_channel_post":null,"refs":[{"source":"confluence","title":"Zapier Setup Guide"}]}';
+const parsedResolved = parseChatResponse(resolvedJson);
+assert(parsedResolved.state === 'resolved', 'parseChatResponse: resolved state parsed');
+assert(parsedResolved.title === 'Stale Zapier Auth Token', 'parseChatResponse: title parsed');
+assert(parsedResolved.diagnosis === 'Enabling API access invalidates existing tokens.', 'parseChatResponse: diagnosis parsed');
+assert(Array.isArray(parsedResolved.steps), 'parseChatResponse: steps is array');
+assert(parsedResolved.steps.length === 2, 'parseChatResponse: correct step count');
+assert(parsedResolved.escalate === false, 'parseChatResponse: escalate false');
+assert(Array.isArray(parsedResolved.refs), 'parseChatResponse: refs is array');
+
+// Valid resolved JSON with escalation
+const escalateJson = '{"state":"resolved","title":"Enterprise Tier Required","diagnosis":"Backend config needed.","steps":[{"tag":"escalate","text":"Escalate via Live Assist."}],"escalate":true,"escalation_path":"Live Assist → Integrations Specialist","suggested_channel_post":"Customer needs escalation — please assist.","refs":[]}';
+const parsedEscalate = parseChatResponse(escalateJson);
+assert(parsedEscalate.escalate === true, 'parseChatResponse: escalate true');
+assert(parsedEscalate.escalation_path === 'Live Assist → Integrations Specialist', 'parseChatResponse: escalation_path parsed');
+assert(parsedEscalate.suggested_channel_post === 'Customer needs escalation — please assist.', 'parseChatResponse: suggested_channel_post parsed');
+
+// JSON wrapped in markdown fences
+const fencedJson = '```json\n{"state":"diagnosing","acknowledgement":"OK.","question":"Is sync still failing?"}\n```';
+const parsedFenced = parseChatResponse(fencedJson);
+assert(parsedFenced.state === 'diagnosing', 'parseChatResponse: strips markdown fences');
+assert(parsedFenced.question === 'Is sync still failing?', 'parseChatResponse: question parsed from fenced JSON');
+
+// Plain text fallback
+const parsedFallback = parseChatResponse('This is plain text, not JSON.');
+assert(parsedFallback.state === 'diagnosing', 'parseChatResponse: plain text → diagnosing state');
+assert(parsedFallback.acknowledgement === '', 'parseChatResponse: plain text → empty acknowledgement');
+assert(parsedFallback.question === 'This is plain text, not JSON.', 'parseChatResponse: plain text → question field holds raw text');
+
+// Invalid JSON object (valid JSON but wrong schema)
+const parsedWrongSchema = parseChatResponse('{"foo":"bar"}');
+assert(parsedWrongSchema.state === 'diagnosing', 'parseChatResponse: wrong-schema JSON → fallback to diagnosing');
+
+// ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
+console.log('\n🔹 buildFollowUpBlocks — label param');
+
+const followUpDefault = buildFollowUpBlocks('Some text');
+const followUpDefaultCtx = followUpDefault.find(b => b.type === 'context');
+assert(followUpDefaultCtx.elements[0].text === '_Follow-up_', 'buildFollowUpBlocks: default label is Follow-up');
+
+const followUpLabeled = buildFollowUpBlocks('Diagnosing text', { label: 'Diagnosing…' });
+const followUpLabeledCtx = followUpLabeled.find(b => b.type === 'context');
+assert(followUpLabeledCtx.elements[0].text === '_Diagnosing…_', 'buildFollowUpBlocks: custom label rendered');
+assert(followUpLabeled.find(b => b.type === 'section').text.text === 'Diagnosing text', 'buildFollowUpBlocks: text unchanged with label');
+
+// ── 18. buildChatResolutionBlocks ─────────────────────────────────────────────
+console.log('\n🔹 buildChatResolutionBlocks');
+
+const resolvedData = {
+  state: 'resolved',
+  title: 'Stale Zapier Auth Token',
+  diagnosis: 'Enabling API access invalidates existing tokens — re-auth required.',
+  steps: [
+    { tag: 'action', text: 'Disconnect Zapier in account settings.' },
+    { tag: 'action', text: 'Re-authenticate from scratch.' },
+    { tag: 'verify', text: 'Confirm sync resumes.' },
+  ],
+  escalate: false,
+  escalation_path: null,
+  suggested_channel_post: null,
+  refs: [
+    { source: 'confluence', title: 'Zapier Setup Guide' },
+    { source: 'slack', title: 'Zapier token issue thread' },
+  ],
+};
+
+const chatResBlocks = buildChatResolutionBlocks(resolvedData);
+assert(Array.isArray(chatResBlocks), 'buildChatResolutionBlocks returns array');
+assert(chatResBlocks.length > 0, 'buildChatResolutionBlocks returns non-empty array');
+
+// Badge
+const resBadge = chatResBlocks[0];
+assert(resBadge.type === 'context', 'first block is context (badge)');
+assert(resBadge.elements[0].text.includes('Root cause found'), 'resolved badge: Root cause found');
+assert(!resBadge.elements[0].text.includes('Needs escalation'), 'resolved badge: no escalation text');
+
+// Title + diagnosis
+const resTitleBlock = chatResBlocks[1];
+assert(resTitleBlock.type === 'section', 'second block is section');
+assert(resTitleBlock.text.text.includes('Stale Zapier Auth Token'), 'title block has title');
+assert(resTitleBlock.text.text.includes('Enabling API access invalidates'), 'title block has diagnosis');
+
+// Steps
+const resStepBlocks = chatResBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('`action`'));
+assert(resStepBlocks.length === 2, 'buildChatResolutionBlocks renders 2 action steps');
+const verifyStep = chatResBlocks.find(b => b.type === 'section' && b.text?.text?.includes('`verify`'));
+assert(verifyStep !== undefined, 'buildChatResolutionBlocks renders verify step');
+
+// Source chips
+const resChipBlock = chatResBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
+assert(resChipBlock !== undefined, 'buildChatResolutionBlocks renders source chips');
+assert(resChipBlock.elements[0].text.includes('Confluence'), 'source chips include Confluence');
+assert(resChipBlock.elements[0].text.includes('Slack'), 'source chips include Slack');
+
+// Actions
+const resActions = chatResBlocks.find(b => b.type === 'actions');
+assert(resActions !== undefined, 'buildChatResolutionBlocks has actions block');
+const resWrongBtn = resActions.elements.find(e => e.action_id === 'wrong_answer_modal');
+assert(resWrongBtn !== undefined, 'buildChatResolutionBlocks has wrong_answer_modal button');
+const resNewChatBtn = resActions.elements.find(e => e.action_id === 'new_chat');
+assert(resNewChatBtn !== undefined, 'buildChatResolutionBlocks has new_chat button');
+const resChannelPostBtn = resActions.elements.find(e => e.action_id === 'copy_channel_post');
+assert(resChannelPostBtn === undefined, 'no copy_channel_post button when escalate: false');
+
+// Escalation state
+const escalationData = {
+  state: 'resolved',
+  title: 'Enterprise Tier Required',
+  diagnosis: 'This tenant requires backend config only available to Specialists.',
+  steps: [
+    { tag: 'action', text: 'Collect error details from customer.' },
+    { tag: 'escalate', text: 'Escalate via Live Assist → Integrations Specialist.' },
+  ],
+  escalate: true,
+  escalation_path: 'Live Assist → Integrations Specialist',
+  suggested_channel_post: 'Customer has Enterprise tier issue — escalating now.',
+  refs: [{ source: 'kb', title: 'Enterprise Tier Config' }],
+};
+
+const escBlocks = buildChatResolutionBlocks(escalationData);
+const escBadge = escBlocks[0];
+assert(escBadge.elements[0].text.includes('Needs escalation'), 'escalation badge: Needs escalation');
+
+const escPathBlock = escBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Escalation path:'));
+assert(escPathBlock !== undefined, 'escalation path context block rendered');
+assert(escPathBlock.elements[0].text.includes('Live Assist → Integrations Specialist'), 'escalation path text correct');
+
+const escActions = escBlocks.find(b => b.type === 'actions');
+const escChannelPostBtn = escActions.elements.find(e => e.action_id === 'copy_channel_post');
+assert(escChannelPostBtn !== undefined, 'copy_channel_post button present when escalate: true');
+assert(escChannelPostBtn.value === 'Customer has Enterprise tier issue — escalating now.', 'copy_channel_post value is suggested_channel_post');
+const escNewChatBtn = escActions.elements.find(e => e.action_id === 'new_chat');
+assert(escNewChatBtn !== undefined, 'new_chat button still present in escalation state');
+
+// No chips when refs is empty
+const noRefsData = { ...resolvedData, refs: [] };
+const noRefsChatBlocks = buildChatResolutionBlocks(noRefsData);
+const noRefsChip = noRefsChatBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
+assert(noRefsChip === undefined, 'no source chips when refs is empty');
+
+// ── 19. buildChannelPostModal ─────────────────────────────────────────────────
+console.log('\n🔹 buildChannelPostModal');
+
+const cpModal = buildChannelPostModal('Anyone seen Zapier failing after enabling API access? Need a hand here.');
+assert(cpModal.type === 'modal', 'buildChannelPostModal returns modal');
+assert(cpModal.title.text === '📋 Channel post', 'modal title is 📋 Channel post');
+assert(!('submit' in cpModal), 'buildChannelPostModal has no submit button (view-only)');
+assert(cpModal.close.text === 'Close', 'modal has Close button');
+const cpSection = cpModal.blocks.find(b => b.type === 'section');
+assert(cpSection !== undefined, 'modal has section block');
+assert(cpSection.text.text === 'Anyone seen Zapier failing after enabling API access? Need a hand here.', 'modal section contains the provided text');
+const cpContext = cpModal.blocks.find(b => b.type === 'context');
+assert(cpContext !== undefined, 'modal has context block with instructions');
+assert(cpContext.elements[0].text.includes('Select all and copy'), 'instructions say to select and copy');
+
+// ── 20. buildResponseBlocks — diagnosis + chips + channel post button ──────────
+console.log('\n🔹 buildResponseBlocks — new fields');
+
+// Diagnosis line present when findings_summary.diagnosis is set
+const withDiagBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
+});
+const diagBlock = withDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
+assert(diagBlock !== undefined, 'diagnosis context block present when findings_summary.diagnosis set');
+assert(diagBlock.elements[0].text.includes('Zapier integration is failing'), 'diagnosis text is from findings_summary.diagnosis');
+assert(diagBlock.elements[0].text.includes('_'), 'diagnosis text is italicised with markdown');
+
+// Diagnosis line absent when findings_summary is missing
+const noDiagBlocks = buildResponseBlocks({ ...sampleJson, findings_summary: undefined, escalate_decision: { should_escalate: false, reason: 'x' } });
+const noDiagBlock2 = noDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
+assert(noDiagBlock2 === undefined, 'no diagnosis block when findings_summary missing');
+
+// Source chips: Confluence chip when atlassian_refs has confluence entry
+const chipsBlocks = buildResponseBlocks({ ...sampleJson, escalate_decision: { should_escalate: false, reason: 'x' } });
+const chipsBlock = chipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence'));
+assert(chipsBlock !== undefined, 'Confluence chip present when atlassian_refs has confluence');
+assert(chipsBlock.elements[0].text.includes('📄 Jira'), 'Jira chip present when atlassian_refs has jira');
+assert(chipsBlock.elements[0].text.includes('💬 Slack'), 'Slack chip present when slack_refs non-empty');
+assert(chipsBlock.elements[0].text.includes('📖 KB'), 'KB chip present when kb_refs non-empty');
+
+// No chips when all ref arrays are empty
+const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [], escalate_decision: { should_escalate: false, reason: 'x' } });
+const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
+assert(noChipsBlock === undefined, 'no chips context block when all ref arrays empty');
+
+// Channel post button present when should_escalate:true and suggested_channel_post set
+const channelPostBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility' },
+  suggested_channel_post: 'Anyone seen this Zapier issue?',
+});
+const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
+const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(cpBtn !== undefined, 'copy_channel_post button present when should_escalate and suggested_channel_post set');
+assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is suggested_channel_post');
+
+// Channel post button absent when should_escalate:false
+const noCpBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: false, reason: 'CSA handles' },
+  suggested_channel_post: 'This should not appear.',
+});
+const noCpActionsBlock = noCpBlocks.find(b => b.type === 'actions');
+const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(noCpBtn === undefined, 'copy_channel_post button absent when should_escalate: false');
+
+// Channel post button absent when suggested_channel_post missing
+const noCpNoTextBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'x' },
+  suggested_channel_post: undefined,
+});
+const noCpNoTextBtn = noCpNoTextBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(noCpNoTextBtn === undefined, 'copy_channel_post button absent when suggested_channel_post missing');
+
+// new_chat button still last when isDm + escalation + channel post
+const fullDmBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'x' },
+  suggested_channel_post: 'Post this.',
+}, { isDm: true });
+const fullDmActions = fullDmBlocks.find(b => b.type === 'actions');
+assert(fullDmActions.elements.at(-1).action_id === 'new_chat', 'new_chat button is last even with channel post + isDm');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
