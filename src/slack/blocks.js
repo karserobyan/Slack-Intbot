@@ -602,7 +602,6 @@ export function buildAuditBlocks(data) {
   return blocks;
 }
 
-const CHAT_TAG_CIRCLE = { action: '🔵', backend: '🟠', verify: '🟢', escalate: '🔴' };
 const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
 
 export function buildChatResolutionBlocks(data) {
@@ -627,7 +626,7 @@ export function buildChatResolutionBlocks(data) {
   }
 
   for (const step of (data.steps ?? []).slice(0, 10)) {
-    const circle = CHAT_TAG_CIRCLE[step.tag] ?? '⚪';
+    const circle = TAG_CIRCLE[step.tag] ?? '⚪';
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: `${circle} \`${step.tag}\` ${step.text}` },
@@ -649,7 +648,7 @@ export function buildChatResolutionBlocks(data) {
   const actionElements = [
     {
       type: 'button',
-      text: { type: 'plain_text', text: '👎 Wrong', emoji: true },
+      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
       action_id: 'wrong_answer_modal',
       style: 'danger',
       value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
