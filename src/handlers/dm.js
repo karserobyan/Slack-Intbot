@@ -5,6 +5,7 @@ export function registerDmHandler(app) {
   const _inFlight         = new Set();
   const _welcomed         = new Set();
   const _promptedSessions = new Set();
+  const _activeSessions   = new Set();
 
   // Post standing welcome card the first time a user opens the bot
   app.event('app_home_opened', async ({ event, client, logger }) => {
@@ -29,11 +30,13 @@ export function registerDmHandler(app) {
     await ack();
     const channelId = body.channel.id;
     try {
-      await client.chat.postMessage({
+      const sessionMsg = await client.chat.postMessage({
         channel: channelId,
         blocks:  buildSessionCard(),
         text:    '🟢 Integration chat — ready when you are.',
       });
+      _activeSessions.add(sessionMsg.ts);
+      setTimeout(() => _activeSessions.delete(sessionMsg.ts), 7 * 24 * 3_600_000);
     } catch (err) {
       logger.error('[dm] Failed to post session card:', err.message);
     }
@@ -47,6 +50,7 @@ export function registerDmHandler(app) {
     if (_promptedSessions.has(sessionTs)) return;
     _promptedSessions.add(sessionTs);
     setTimeout(() => _promptedSessions.delete(sessionTs), 86_400_000);
+    _activeSessions.add(sessionTs);
     try {
       await client.chat.postMessage({
         channel:   channelId,
@@ -55,7 +59,7 @@ export function registerDmHandler(app) {
       });
     } catch (err) {
       logger.error('[dm] Failed to post thread prompt:', err.message);
-      _promptedSessions.delete(sessionTs); // allow retry
+      _promptedSessions.delete(sessionTs);
     }
   });
 
@@ -63,6 +67,8 @@ export function registerDmHandler(app) {
   app.message(async ({ message, client, logger }) => {
     if (message.channel_type !== 'im') return;
     if (message.subtype === 'bot_message' || message.bot_id) return;
+
+    logger.info(`[dm] Message: ts=${message.ts} thread_ts=${message.thread_ts ?? 'none'} channel_type=${message.channel_type} subtype=${message.subtype ?? 'none'}`);
 
     if (_inFlight.has(message.ts)) {
       logger.warn(`[dm] Duplicate event ${message.ts} — skipping`);
@@ -74,8 +80,12 @@ export function registerDmHandler(app) {
     const channelId = message.channel;
 
     try {
-      // Thread reply — route directly to the AI
-      if (message.thread_ts && message.thread_ts !== message.ts) {
+      const isThreadReply =
+        (message.thread_ts && message.thread_ts !== message.ts) ||
+        _activeSessions.has(message.thread_ts);
+
+      if (isThreadReply) {
+        logger.info(`[dm] Thread reply: ts=${message.ts} thread_ts=${message.thread_ts} channel=${message.channel}`);
         await handleQuery({
           rawText:  message.text ?? '',
           channelId,
@@ -103,6 +113,8 @@ export function registerDmHandler(app) {
         text:    '🟢 Integration chat — ready when you are.',
       });
       const sessionTs = sessionMsg.ts;
+      _activeSessions.add(sessionTs);
+      setTimeout(() => _activeSessions.delete(sessionTs), 7 * 24 * 3_600_000);
       _promptedSessions.add(sessionTs);
       setTimeout(() => _promptedSessions.delete(sessionTs), 86_400_000);
 

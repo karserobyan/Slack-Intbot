@@ -8,6 +8,7 @@ import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext, queryAuditLog } from './claude/query.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
 import { approveNomination, rejectNomination } from './slack/nominations.js';
+import { buildChannelPostModal } from './slack/modal.js';
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -124,6 +125,19 @@ app.action('view_sources_modal', async ({ ack, body, client, action }) => {
     trigger_id: body.trigger_id,
     view: buildSourcesModal(refsData),
   });
+});
+
+// ── "Channel post" button — opens copy-paste modal ───────────────────────────
+app.action('copy_channel_post', async ({ ack, body, client, logger }) => {
+  await ack();
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: buildChannelPostModal(body.actions[0].value),
+    });
+  } catch (err) {
+    logger.error('[index] Failed to open channel post modal:', err.message);
+  }
 });
 
 // ── "Show Specialist Detail" button ──────────────────────────────────────────
