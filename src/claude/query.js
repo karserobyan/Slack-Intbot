@@ -112,7 +112,8 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
 
 export function parseChatResponse(text) {
   try {
-    const trimmed = text.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '');
+    const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/i;
+    const trimmed = fenced.test(text.trim()) ? text.trim().replace(fenced, '$1') : text.trim();
     const obj = JSON.parse(trimmed);
     if (obj.state === 'diagnosing' || obj.state === 'resolved') return obj;
   } catch {
