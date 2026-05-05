@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
-import { registerMentionHandler, handleQuery } from './handlers/mention.js';
+import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks, buildAuditBlocks } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';

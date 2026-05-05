@@ -56,6 +56,7 @@ export function buildAuditLogModal({ channelId, threadTs }) {
 }
 
 export function buildChannelPostModal(text) {
+  const safeText = text || '_No channel post text was generated._';
   return {
     type: 'modal',
     title: { type: 'plain_text', text: '📋 Channel post', emoji: true },
@@ -67,7 +68,7 @@ export function buildChannelPostModal(text) {
       },
       {
         type: 'section',
-        text: { type: 'mrkdwn', text },
+        text: { type: 'mrkdwn', text: safeText },
       },
     ],
   };
