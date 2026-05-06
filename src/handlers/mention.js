@@ -452,7 +452,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     hasSteps &&
     !result.clarifying_question
   ) {
-    const steps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+    const agentSteps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
     const refs = [
       ...(result.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
       ...(result.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
@@ -461,7 +461,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     nominateResponse(client, {
       integration: result.integration_type ?? 'General',
       issueTitle: result.issue_title ?? query.slice(0, 80),
-      steps,
+      steps: agentSteps,
       refs,
     }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
   }
