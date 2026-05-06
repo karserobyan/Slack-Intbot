@@ -17,6 +17,7 @@ import {
   buildSourcesModal,
   buildAuditBlocks,
   buildChatResolutionBlocks,
+  buildProgressBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -1279,6 +1280,82 @@ const fullDmBlocks = buildResponseBlocks({
 }, { isDm: true });
 const fullDmActions = fullDmBlocks.find(b => b.type === 'actions');
 assert(fullDmActions.elements.at(-1).action_id === 'new_chat', 'new_chat button is last even with channel post + isDm');
+
+// ── buildProgressBlocks ───────────────────────────────────────────────────────
+console.log('\n🔹 buildProgressBlocks');
+
+// Basic structure — empty steps
+const progEmpty = buildProgressBlocks('Zapier stopped syncing', []);
+assert(Array.isArray(progEmpty), 'buildProgressBlocks returns array');
+assert(progEmpty.length === 2, 'buildProgressBlocks returns 2 blocks');
+assert(progEmpty[0].type === 'section', 'first block is section');
+assert(progEmpty[0].text.type === 'mrkdwn', 'section uses mrkdwn');
+assert(progEmpty[0].text.text.includes('🔍 Checking'), 'header includes 🔍 Checking');
+assert(progEmpty[0].text.text.includes('Zapier stopped syncing'), 'query shown in block');
+assert(progEmpty[1].type === 'context', 'second block is context');
+
+// Query truncation at 120 chars
+const longQueryProg = 'A'.repeat(200);
+const progLong = buildProgressBlocks(longQueryProg, []);
+assert(progLong[0].text.text.includes('…'), 'long query truncated with ellipsis');
+assert(!progLong[0].text.text.includes('A'.repeat(125)), 'query capped at 120 chars');
+
+// tool_start step → ⟳ Confluence  searching…
+const progStart = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_start', count: null },
+]);
+assert(progStart[0].text.text.includes('⟳'), 'tool_start shows ⟳');
+assert(progStart[0].text.text.includes('Confluence'), 'tool name is capitalized');
+assert(progStart[0].text.text.toLowerCase().includes('searching'), 'tool_start shows searching');
+
+// tool_done count > 0 → ✓ Confluence  · 3 results
+const progDone3 = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_done', count: 3 },
+]);
+assert(progDone3[0].text.text.includes('✓'), 'tool_done count > 0 shows ✓');
+assert(progDone3[0].text.text.includes('3 results'), 'count > 0 shows N results');
+
+// tool_done count === 1 → singular "result"
+const progDone1 = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_done', count: 1 },
+]);
+assert(progDone1[0].text.text.includes('1 result'), 'count 1 uses singular "result"');
+assert(!progDone1[0].text.text.includes('1 results'), 'count 1 does not say "1 results"');
+
+// tool_done count === 0 → –  Jira  · 0 results (no ✓)
+const progZero = buildProgressBlocks('test', [
+  { tool: 'jira', phase: 'tool_done', count: 0 },
+]);
+assert(progZero[0].text.text.includes('–'), 'tool_done count 0 shows dash');
+assert(progZero[0].text.text.includes('0 results'), 'tool_done count 0 shows 0 results');
+assert(!progZero[0].text.text.includes('✓'), 'tool_done count 0 does not show ✓');
+
+// tool_done count === null → ✓ Slack (no count text)
+const progNullCount = buildProgressBlocks('test', [
+  { tool: 'slack', phase: 'tool_done', count: null },
+]);
+assert(progNullCount[0].text.text.includes('✓'), 'tool_done null count still shows ✓');
+assert(!progNullCount[0].text.text.includes('results'), 'tool_done null count shows no count text');
+
+// writing step → ✏️ Writing answer…
+const progWriting = buildProgressBlocks('test', [
+  { tool: null, phase: 'writing', count: null },
+]);
+assert(progWriting[0].text.text.includes('✏️'), 'writing step shows ✏️');
+assert(progWriting[0].text.text.toLowerCase().includes('writing'), 'writing step contains writing text');
+
+// Multi-step: confluence done, jira 0, slack 1, writing
+const progMulti = buildProgressBlocks('Zapier stopped syncing after API access enabled', [
+  { tool: 'confluence', phase: 'tool_done', count: 3 },
+  { tool: 'jira',       phase: 'tool_done', count: 0 },
+  { tool: 'slack',      phase: 'tool_done', count: 1 },
+  { tool: null,         phase: 'writing',   count: null },
+]);
+const multiText = progMulti[0].text.text;
+assert(multiText.includes('✓') && multiText.includes('Confluence'), 'multi: confluence done ✓');
+assert(multiText.includes('–') && multiText.includes('Jira'),       'multi: jira 0 shows –');
+assert(multiText.includes('Slack') && multiText.includes('1 result'), 'multi: slack 1 result');
+assert(multiText.includes('✏️'), 'multi: writing step present');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
