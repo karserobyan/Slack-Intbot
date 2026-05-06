@@ -77,6 +77,25 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     elements: [{ type: 'mrkdwn', text: infoText }],
   });
 
+  if (data.findings_summary?.diagnosis) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `🔍 _${data.findings_summary.diagnosis}_` }],
+    });
+  }
+
+  const chips = [];
+  if ((data.atlassian_refs ?? []).some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if ((data.atlassian_refs ?? []).some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if ((data.slack_refs    ?? []).length > 0)                          chips.push('💬 Slack');
+  if ((data.kb_refs       ?? []).length > 0)                          chips.push('📖 KB');
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
+    });
+  }
+
   // 3. Customer message
   if (data.customer_message) {
     blocks.push({
@@ -140,6 +159,15 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
       action_id: 'show_specialist_detail',
       value: data._showSpecialistValue,
+    });
+  }
+
+  if (data.escalate_decision?.should_escalate && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
     });
   }
 
@@ -325,11 +353,11 @@ export function buildFeedbackModal(context) {
  * @param {string} text - Claude's plain text follow-up reply
  * @returns {Array} Slack blocks array
  */
-export function buildFollowUpBlocks(text) {
+export function buildFollowUpBlocks(text, { label = 'Follow-up' } = {}) {
   return [
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_Follow-up_' }],
+      elements: [{ type: 'mrkdwn', text: `_${label}_` }],
     },
     {
       type: 'section',
@@ -598,6 +626,80 @@ export function buildAuditBlocks(data) {
   });
 
   blocks.push({ type: 'divider' });
+
+  return blocks;
+}
+
+const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
+
+export function buildChatResolutionBlocks(data) {
+  const blocks = [];
+  const isEscalation = data.escalate === true;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: isEscalation ? '🔴 *Needs escalation*' : '✅ *Root cause found*' }],
+  });
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${data.title}*\n_${data.diagnosis}_` },
+  });
+
+  if (isEscalation && data.escalation_path) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${data.escalation_path}` }],
+    });
+  }
+
+  for (const step of (data.steps ?? []).slice(0, 10)) {
+    const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${circle} \`${step.tag}\` ${step.text}` },
+    });
+  }
+
+  const chips = (data.refs ?? [])
+    .map(r => CHAT_SOURCE_LABEL[r.source])
+    .filter(Boolean);
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `_Verified: ${chips.join('  ·  ')}_` }],
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  const actionElements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+      action_id: 'wrong_answer_modal',
+      style: 'danger',
+      value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
+    },
+  ];
+
+  if (isEscalation && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
+    });
+  }
+
+  actionElements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+    action_id: 'new_chat',
+    value: 'new_chat',
+  });
+
+  blocks.push({ type: 'actions', elements: actionElements });
 
   return blocks;
 }

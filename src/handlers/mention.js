@@ -10,12 +10,14 @@ import {
   buildFollowUpBlocks,
   buildHelpBlocks,
   buildHelpDetailBlocks,
+  buildChatResolutionBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { nominateResponse } from '../slack/nominations.js';
+import { searchKnowledgeBase } from '../claude/kb-search.js';
 
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
@@ -115,7 +117,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   if (hasHistory(threadTs)) {
     const history = getHistory(threadTs);
 
-    // Post thinking placeholder
     let thinkingTs;
     try {
       const thinkingMsg = await client.chat.postMessage({
@@ -129,9 +130,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       console.error('[mention] Failed to post thinking message:', err.message);
     }
 
-    let replyText;
+    let chatResult;
     try {
-      replyText = await queryChat(query, history);
+      const [kbFetch] = await Promise.allSettled([searchKnowledgeBase(query)]);
+      const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
+      chatResult = await queryChat(query, history, { kbContext });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
       const errText = 'Something went wrong — please retry or escalate manually.';
@@ -143,26 +146,25 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       return;
     }
 
-    // Append this exchange to history
+    let blocks, plainText;
+    if (chatResult.state === 'resolved') {
+      blocks = buildChatResolutionBlocks(chatResult);
+      plainText = `${chatResult.title} — ${chatResult.diagnosis}`;
+    } else {
+      const text = [chatResult.acknowledgement, chatResult.question].filter(Boolean).join('\n\n');
+      blocks = buildFollowUpBlocks(text, { label: 'Diagnosing…' });
+      plainText = text;
+    }
+
     appendToHistory(threadTs, [
-      { role: 'user', content: query },
-      { role: 'assistant', content: replyText },
+      { role: 'user',      content: query },
+      { role: 'assistant', content: plainText },
     ]);
 
     if (thinkingTs) {
-      await client.chat.update({
-        channel: channelId,
-        ts: thinkingTs,
-        blocks: buildFollowUpBlocks(replyText),
-        text: replyText.slice(0, 200),
-      });
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
     } else {
-      await client.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        blocks: buildFollowUpBlocks(replyText),
-        text: replyText.slice(0, 200),
-      });
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
     }
     return;
   }
