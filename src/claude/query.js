@@ -51,15 +51,6 @@ function normalizeTool(name) {
   return (name ?? '').slice(0, 20);
 }
 
-function extractResultCount(content) {
-  try {
-    const obj = JSON.parse(content);
-    const arr = obj.results ?? obj.items ?? obj.messages ?? obj.pages ?? [];
-    return Array.isArray(arr) ? arr.length : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Calls Claude with MCP tools for Atlassian and Slack search.
@@ -104,7 +95,6 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
     const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
 
     if (onProgress) {
-      const pendingToolNames = [];
       let writingFired = false;
 
       stream.on('streamEvent', (event) => {
@@ -113,18 +103,19 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
         try {
           if (cb.type === 'tool_use') {
             const tool = normalizeTool(cb.name);
-            pendingToolNames.push(tool);
             Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
-          } else if (cb.type === 'tool_result') {
-            const tool = pendingToolNames.shift();
-            if (tool != null) {
-              const count = extractResultCount(typeof cb.content === 'string' ? cb.content : '');
-              Promise.resolve(onProgress({ phase: 'tool_done', tool, count })).catch(() => {});
-            }
           } else if (cb.type === 'text' && !writingFired) {
             writingFired = true;
             Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
           }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
         } catch {}
       });
     }
