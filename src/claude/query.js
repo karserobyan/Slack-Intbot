@@ -43,6 +43,24 @@ function buildMcpServers() {
   return servers;
 }
 
+function normalizeTool(name) {
+  const n = (name ?? '').toLowerCase();
+  if (/confluence/.test(n)) return 'confluence';
+  if (/^jira/.test(n)) return 'jira';
+  if (/slack/.test(n)) return 'slack';
+  return (name ?? '').slice(0, 20);
+}
+
+function extractResultCount(content) {
+  try {
+    const obj = JSON.parse(content);
+    const arr = obj.results ?? obj.items ?? obj.messages ?? obj.pages ?? [];
+    return Array.isArray(arr) ? arr.length : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Calls Claude with MCP tools for Atlassian and Slack search.
  * Claude drives its own searches — no pre-fetching on our side.
@@ -51,7 +69,7 @@ function buildMcpServers() {
  * @param {string} userQuery - The agent's question or customer issue
  * @returns {Promise<object>} Parsed structured response
  */
-export async function queryWithContext(userQuery, { role = 'csa', agentName = null } = {}) {
+export async function queryWithContext(userQuery, { role = 'csa', agentName = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -83,7 +101,35 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    if (onProgress) {
+      const pendingToolNames = [];
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            const tool = normalizeTool(cb.name);
+            pendingToolNames.push(tool);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'tool_result') {
+            const tool = pendingToolNames.shift();
+            if (tool != null) {
+              const count = extractResultCount(typeof cb.content === 'string' ? cb.content : '');
+              Promise.resolve(onProgress({ phase: 'tool_done', tool, count })).catch(() => {});
+            }
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
