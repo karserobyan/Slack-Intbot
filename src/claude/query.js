@@ -51,7 +51,6 @@ function normalizeTool(name) {
   return (name ?? '').slice(0, 20);
 }
 
-
 /**
  * Calls Claude with MCP tools for Atlassian and Slack search.
  * Claude drives its own searches — no pre-fetching on our side.
