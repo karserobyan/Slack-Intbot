@@ -159,7 +159,17 @@ export function parseChatResponse(text) {
   return { state: 'diagnosing', acknowledgement: '', question: text };
 }
 
-export async function queryChat(userQuery, history, { kbContext = null } = {}) {
+/**
+ * Conversational follow-up query — uses thread history, returns plain text.
+ * Uses MCP tools so Claude can search for new information if the agent provides
+ * a new angle, error code, or additional context.
+ * Aborts automatically after TIMEOUT_MS.
+ *
+ * @param {string} userQuery - The agent's follow-up message
+ * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
+ * @returns {Promise<string>} Plain text response
+ */
+export async function queryChat(userQuery, history, { kbContext = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -182,7 +192,35 @@ export async function queryChat(userQuery, history, { kbContext = null } = {}) {
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    if (onProgress) {
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            const tool = normalizeTool(cb.name);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
