@@ -66,7 +66,7 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   if (onProgress) Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
   const [knowledge, kbResult] = await Promise.all([
     getKnowledge().catch(() => null),
-    searchKnowledgeBase(userQuery),
+    searchKnowledgeBase(userQuery).catch(() => null),
   ]);
   if (onProgress) Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbResult?.refs?.length ?? null })).catch(() => {});
 

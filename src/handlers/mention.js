@@ -190,7 +190,12 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     ]);
 
     if (thinkingTs) {
-      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
+      try {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
+      } catch (err) {
+        console.error('[mention] chat.update failed (follow-up), falling back to postMessage:', err.message);
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
+      }
     } else {
       await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
     }
@@ -422,19 +427,14 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
   if (thinkingTs) {
-    await client.chat.update({
-      channel: channelId,
-      ts: thinkingTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    try {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
+    } catch (err) {
+      console.error('[mention] chat.update failed, falling back to postMessage:', err.message);
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+    }
   } else {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
   }
 
   // 15. Seed conversation history (after delivery so accounting redirects never seed history)

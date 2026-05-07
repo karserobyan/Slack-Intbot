@@ -34,14 +34,21 @@ export async function searchKnowledgeBase(query) {
 
   let data;
   try {
-    const response = await fetch(url.toString());
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 8_000);
+    let response;
+    try {
+      response = await fetch(url.toString(), { signal: abort.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) {
       console.warn(`[kb-search] Google API returned ${response.status} — skipping KB search`);
       return null;
     }
     data = await response.json();
   } catch (err) {
-    console.warn('[kb-search] Fetch or JSON parse failed:', err.message);
+    console.warn('[kb-search] Fetch failed:', err.name === 'AbortError' ? 'timed out after 8s' : err.message);
     return null;
   }
 
