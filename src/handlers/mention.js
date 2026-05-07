@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext, queryChat, queryWithKnowledge } from '../claude/query.js';
+import { queryWithContext, queryChat } from '../claude/query.js';
 import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
@@ -16,7 +16,6 @@ import {
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
-import { getKnowledge } from '../slack/knowledge.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { searchKnowledgeBase } from '../claude/kb-search.js';
 
@@ -240,55 +239,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
-  // 8. Tier 2: knowledge.md fast-lookup (no MCP, no cache miss)
-  try {
-    const knowledge = await getKnowledge();
-    if (knowledge) {
-      let fastResult = null;
-      try {
-        fastResult = await queryWithKnowledge(query, knowledge, { role, agentName });
-      } catch (err) {
-        console.warn('[mention] Knowledge fast-lookup failed, falling through:', err.message);
-      }
-
-      if (fastResult && !fastResult.clarifying_question && fastResult.confidence !== 'low') {
-        console.info(`[query] knowledge-hit confidence=${fastResult.confidence ?? 'unknown'} integration=${(fastResult.integration_type ?? 'unknown').slice(0, 50)}`);
-
-        fastResult._originalQuery = query;
-        if (role === 'csa') {
-          fastResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
-        }
-
-        if (thinkingTs) {
-          await client.chat.update({
-            channel: channelId,
-            ts: thinkingTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        } else {
-          await client.chat.postMessage({
-            channel: channelId,
-            thread_ts: threadTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        }
-
-        appendToHistory(threadTs, [
-          { role: 'user', content: query },
-          { role: 'assistant', content: summarizeResultForHistory(fastResult) },
-        ]);
-
-        return;
-      }
-      // Low confidence or clarifying question — fall through to full MCP search
-    }
-  } catch (err) {
-    console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
-  }
-
-  // 9. Feedback corrections context
+  // 8. Feedback corrections context
   let feedbackContext = '';
   try {
     const corrections = await getRelevantFeedback(query);
