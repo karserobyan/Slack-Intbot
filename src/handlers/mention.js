@@ -474,6 +474,7 @@ export function registerMentionHandler(app) {
   const _inFlight = new Set();
 
   app.event('app_mention', async ({ event, client, logger }) => {
+    if (event.channel_type === 'im' || event.channel.startsWith('D')) return;
     if (_inFlight.has(event.ts)) {
       logger.warn(`[mention] Duplicate event ${event.ts} — skipping`);
       return;

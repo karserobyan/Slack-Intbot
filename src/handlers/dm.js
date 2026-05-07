@@ -6,6 +6,7 @@ export function registerDmHandler(app) {
   const _welcomed         = new Set();
   const _promptedSessions = new Set();
   const _activeSessions   = new Set();
+  const _latestSession    = new Map(); // channelId → most recent sessionTs
 
   // Post standing welcome card the first time a user opens the bot
   app.event('app_home_opened', async ({ event, client, logger }) => {
@@ -35,8 +36,13 @@ export function registerDmHandler(app) {
         blocks:  buildSessionCard(),
         text:    '🟢 Integration chat — ready when you are.',
       });
-      _activeSessions.add(sessionMsg.ts);
-      setTimeout(() => _activeSessions.delete(sessionMsg.ts), 7 * 24 * 3_600_000);
+      const newTs = sessionMsg.ts;
+      _activeSessions.add(newTs);
+      _latestSession.set(channelId, newTs);
+      setTimeout(() => {
+        _activeSessions.delete(newTs);
+        if (_latestSession.get(channelId) === newTs) _latestSession.delete(channelId);
+      }, 7 * 24 * 3_600_000);
     } catch (err) {
       logger.error('[dm] Failed to post session card:', err.message);
     }
@@ -97,7 +103,21 @@ export function registerDmHandler(app) {
         return;
       }
 
-      // Top-level DM — fallback: welcome (if first contact) → session card → prompt → answer
+      // Top-level DM — route to existing session if one exists
+      const existingTs = _latestSession.get(channelId);
+      if (existingTs) {
+        await handleQuery({
+          rawText:  message.text ?? '',
+          channelId,
+          threadTs: existingTs,
+          client,
+          userId,
+          isDm: true,
+        });
+        return;
+      }
+
+      // No existing session — first contact: welcome → session card → prompt → answer
       if (!_welcomed.has(userId)) {
         _welcomed.add(userId);
         await client.chat.postMessage({
@@ -114,7 +134,11 @@ export function registerDmHandler(app) {
       });
       const sessionTs = sessionMsg.ts;
       _activeSessions.add(sessionTs);
-      setTimeout(() => _activeSessions.delete(sessionTs), 7 * 24 * 3_600_000);
+      _latestSession.set(channelId, sessionTs);
+      setTimeout(() => {
+        _activeSessions.delete(sessionTs);
+        if (_latestSession.get(channelId) === sessionTs) _latestSession.delete(channelId);
+      }, 7 * 24 * 3_600_000);
       _promptedSessions.add(sessionTs);
       setTimeout(() => _promptedSessions.delete(sessionTs), 86_400_000);
 
