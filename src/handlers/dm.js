@@ -5,8 +5,16 @@ export function registerDmHandler(app) {
   const _inFlight         = new Set();
   const _welcomed         = new Set();
   const _promptedSessions = new Set();
-  const _activeSessions   = new Set();
-  const _latestSession    = new Map(); // channelId → most recent sessionTs
+  const _latestSession    = new Map(); // channelId → current sessionTs (one at a time)
+
+  const SESSION_TTL = 7 * 24 * 3_600_000;
+
+  function openSession(channelId, sessionTs) {
+    _latestSession.set(channelId, sessionTs);
+    setTimeout(() => {
+      if (_latestSession.get(channelId) === sessionTs) _latestSession.delete(channelId);
+    }, SESSION_TTL);
+  }
 
   // Post standing welcome card the first time a user opens the bot
   app.event('app_home_opened', async ({ event, client, logger }) => {
@@ -22,11 +30,11 @@ export function registerDmHandler(app) {
       });
     } catch (err) {
       logger.error(`[dm] Failed to post welcome card to ${userId}:`, err.message);
-      _welcomed.delete(userId); // allow retry on next open
+      _welcomed.delete(userId);
     }
   });
 
-  // "New chat" button — post a fresh session card to the DM channel
+  // "New chat" button — post a fresh session card; all future messages go here
   app.action('new_chat', async ({ ack, body, client, logger }) => {
     await ack();
     const channelId = body.channel.id;
@@ -36,13 +44,7 @@ export function registerDmHandler(app) {
         blocks:  buildSessionCard(),
         text:    '🟢 Integration chat — ready when you are.',
       });
-      const newTs = sessionMsg.ts;
-      _activeSessions.add(newTs);
-      _latestSession.set(channelId, newTs);
-      setTimeout(() => {
-        _activeSessions.delete(newTs);
-        if (_latestSession.get(channelId) === newTs) _latestSession.delete(channelId);
-      }, 7 * 24 * 3_600_000);
+      openSession(channelId, sessionMsg.ts);
     } catch (err) {
       logger.error('[dm] Failed to post session card:', err.message);
     }
@@ -56,7 +58,6 @@ export function registerDmHandler(app) {
     if (_promptedSessions.has(sessionTs)) return;
     _promptedSessions.add(sessionTs);
     setTimeout(() => _promptedSessions.delete(sessionTs), 86_400_000);
-    _activeSessions.add(sessionTs);
     try {
       await client.chat.postMessage({
         channel:   channelId,
@@ -69,12 +70,10 @@ export function registerDmHandler(app) {
     }
   });
 
-  // DM message handler — thread replies go to handleQuery; top-level triggers fallback
+  // DM message handler — everything routes to the one active session
   app.message(async ({ message, client, logger }) => {
     if (message.channel_type !== 'im') return;
     if (message.subtype === 'bot_message' || message.bot_id) return;
-
-    logger.info(`[dm] Message: ts=${message.ts} thread_ts=${message.thread_ts ?? 'none'} channel_type=${message.channel_type} subtype=${message.subtype ?? 'none'}`);
 
     if (_inFlight.has(message.ts)) {
       logger.warn(`[dm] Duplicate event ${message.ts} — skipping`);
@@ -86,16 +85,13 @@ export function registerDmHandler(app) {
     const channelId = message.channel;
 
     try {
-      const isThreadReply =
-        (message.thread_ts && message.thread_ts !== message.ts) ||
-        _activeSessions.has(message.thread_ts);
+      const sessionTs = _latestSession.get(channelId);
 
-      if (isThreadReply) {
-        logger.info(`[dm] Thread reply: ts=${message.ts} thread_ts=${message.thread_ts} channel=${message.channel}`);
+      if (sessionTs) {
         await handleQuery({
           rawText:  message.text ?? '',
           channelId,
-          threadTs: message.thread_ts,
+          threadTs: sessionTs,
           client,
           userId,
           isDm: true,
@@ -103,21 +99,7 @@ export function registerDmHandler(app) {
         return;
       }
 
-      // Top-level DM — route to existing session if one exists
-      const existingTs = _latestSession.get(channelId);
-      if (existingTs) {
-        await handleQuery({
-          rawText:  message.text ?? '',
-          channelId,
-          threadTs: existingTs,
-          client,
-          userId,
-          isDm: true,
-        });
-        return;
-      }
-
-      // No existing session — first contact: welcome → session card → prompt → answer
+      // No session — first contact: welcome → session card → prompt → answer
       if (!_welcomed.has(userId)) {
         _welcomed.add(userId);
         await client.chat.postMessage({
@@ -132,26 +114,21 @@ export function registerDmHandler(app) {
         blocks:  buildSessionCard(),
         text:    '🟢 Integration chat — ready when you are.',
       });
-      const sessionTs = sessionMsg.ts;
-      _activeSessions.add(sessionTs);
-      _latestSession.set(channelId, sessionTs);
-      setTimeout(() => {
-        _activeSessions.delete(sessionTs);
-        if (_latestSession.get(channelId) === sessionTs) _latestSession.delete(channelId);
-      }, 7 * 24 * 3_600_000);
-      _promptedSessions.add(sessionTs);
-      setTimeout(() => _promptedSessions.delete(sessionTs), 86_400_000);
+      const newSessionTs = sessionMsg.ts;
+      openSession(channelId, newSessionTs);
+      _promptedSessions.add(newSessionTs);
+      setTimeout(() => _promptedSessions.delete(newSessionTs), 86_400_000);
 
       await client.chat.postMessage({
         channel:   channelId,
-        thread_ts: sessionTs,
+        thread_ts: newSessionTs,
         text:      'What integration issue are you working on? 👇',
       });
 
       await handleQuery({
         rawText:  message.text ?? '',
         channelId,
-        threadTs: sessionTs,
+        threadTs: newSessionTs,
         client,
         userId,
         isDm: true,
