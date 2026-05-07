@@ -156,8 +156,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
     let chatResult;
     try {
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
       const [kbFetch] = await Promise.allSettled([searchKnowledgeBase(query)]);
       const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
+      const kbCount = kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null;
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbCount })).catch(() => {});
       chatResult = await queryChat(query, history, { kbContext, onProgress });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
