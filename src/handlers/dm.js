@@ -86,12 +86,15 @@ export function registerDmHandler(app) {
 
     try {
       const sessionTs = _latestSession.get(channelId);
+      const isThreadReply = message.thread_ts && message.thread_ts !== message.ts;
 
-      if (sessionTs) {
+      if (sessionTs || isThreadReply) {
+        const threadTs = sessionTs ?? message.thread_ts;
+        if (!sessionTs) openSession(channelId, threadTs); // re-anchor after restart
         await handleQuery({
           rawText:  message.text ?? '',
           channelId,
-          threadTs: sessionTs,
+          threadTs,
           client,
           userId,
           isDm: true,
@@ -99,7 +102,7 @@ export function registerDmHandler(app) {
         return;
       }
 
-      // No session — first contact: welcome → session card → prompt → answer
+      // No session, not a thread reply — first contact: welcome → session card → prompt → answer
       if (!_welcomed.has(userId)) {
         _welcomed.add(userId);
         await client.chat.postMessage({
