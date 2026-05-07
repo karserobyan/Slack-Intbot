@@ -49,8 +49,9 @@ async function detectAgentRole(client, userId) {
 export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
-  // 1. Empty query — greet and return early
+  // 1. Empty query — greet and return early (silent in DMs, session card already guides the user)
   if (!query) {
+    if (isDm) return;
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,

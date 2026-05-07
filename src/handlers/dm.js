@@ -73,7 +73,7 @@ export function registerDmHandler(app) {
   // DM message handler — everything routes to the one active session
   app.message(async ({ message, client, logger }) => {
     if (message.channel_type !== 'im') return;
-    if (message.subtype === 'bot_message' || message.bot_id) return;
+    if (message.subtype || message.bot_id) return;
 
     if (_inFlight.has(message.ts)) {
       logger.warn(`[dm] Duplicate event ${message.ts} — skipping`);
