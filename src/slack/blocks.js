@@ -252,18 +252,15 @@ export function buildAccountingRedirectBlocks(query) {
 /**
  * Builds a "thinking…" placeholder block shown while Claude is working.
  */
-export function buildThinkingBlocks(query) {
+export function buildThinkingBlocks(_query) {
   return [
     {
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*🔍 Checking…*\n_"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
-      },
+      text: { type: 'mrkdwn', text: '*⚙️ Looking into this…*' },
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }],
+      elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }],
     },
   ];
 }
@@ -708,21 +705,25 @@ function capitalizeFirst(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-export function buildProgressBlocks(query, steps) {
-  const truncated = query.length > 120 ? query.slice(0, 120) + '…' : query;
-  let text = `*🔍 Checking…*\n_"${truncated}"_`;
+const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' };
+function toolLabel(name) {
+  return TOOL_LABEL[(name ?? '').toLowerCase()] ?? capitalizeFirst(name);
+}
+
+export function buildProgressBlocks(_query, steps) {
+  let text = '*⚙️ Looking into this…*';
 
   for (const step of steps) {
     if (step.phase === 'writing') {
       text += '\n✏️ _Writing answer…_';
     } else if (step.phase === 'tool_start') {
-      text += `\n⟳ ${capitalizeFirst(step.tool)}  _searching…_`;
+      text += `\n⟳ ${toolLabel(step.tool)}  _searching…_`;
     } else if (step.phase === 'tool_done') {
-      const label = capitalizeFirst(step.tool);
+      const label = toolLabel(step.tool);
       if (step.count === null) {
         text += `\n✓ ${label}`;
       } else if (step.count === 0) {
-        text += `\n–  ${label}  · 0 results`;
+        text += `\n–  ${label}  · no results`;
       } else {
         const countLabel = step.count === 1 ? '1 result' : `${step.count} results`;
         text += `\n✓ ${label}  · ${countLabel}`;
@@ -732,6 +733,6 @@ export function buildProgressBlocks(query, steps) {
 
   return [
     { type: 'section', text: { type: 'mrkdwn', text } },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }] },
   ];
 }

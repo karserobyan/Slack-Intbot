@@ -368,7 +368,7 @@ assert(redirectBlocks[0].text.text.includes('#ask-partner-enabled-accounting-int
 // Thinking blocks
 const thinkingBlocks = buildThinkingBlocks('Zapier not working');
 assert(thinkingBlocks.length === 2, 'Thinking has 2 blocks');
-assert(thinkingBlocks[0].text.text.includes('Checking'), 'Thinking shows checking message');
+assert(thinkingBlocks[0].text.text.includes('Looking into this'), 'Thinking shows looking-into-this message');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -1290,15 +1290,8 @@ assert(Array.isArray(progEmpty), 'buildProgressBlocks returns array');
 assert(progEmpty.length === 2, 'buildProgressBlocks returns 2 blocks');
 assert(progEmpty[0].type === 'section', 'first block is section');
 assert(progEmpty[0].text.type === 'mrkdwn', 'section uses mrkdwn');
-assert(progEmpty[0].text.text.includes('🔍 Checking'), 'header includes 🔍 Checking');
-assert(progEmpty[0].text.text.includes('Zapier stopped syncing'), 'query shown in block');
+assert(progEmpty[0].text.text.includes('⚙️ Looking into this'), 'header includes ⚙️ Looking into this');
 assert(progEmpty[1].type === 'context', 'second block is context');
-
-// Query truncation at 120 chars
-const longQueryProg = 'A'.repeat(200);
-const progLong = buildProgressBlocks(longQueryProg, []);
-assert(progLong[0].text.text.includes('…'), 'long query truncated with ellipsis');
-assert(!progLong[0].text.text.includes('A'.repeat(125)), 'query capped at 120 chars');
 
 // tool_start step → ⟳ Confluence  searching…
 const progStart = buildProgressBlocks('test', [
@@ -1322,12 +1315,12 @@ const progDone1 = buildProgressBlocks('test', [
 assert(progDone1[0].text.text.includes('1 result'), 'count 1 uses singular "result"');
 assert(!progDone1[0].text.text.includes('1 results'), 'count 1 does not say "1 results"');
 
-// tool_done count === 0 → –  Jira  · 0 results (no ✓)
+// tool_done count === 0 → –  Jira  · no results (no ✓)
 const progZero = buildProgressBlocks('test', [
   { tool: 'jira', phase: 'tool_done', count: 0 },
 ]);
 assert(progZero[0].text.text.includes('–'), 'tool_done count 0 shows dash');
-assert(progZero[0].text.text.includes('0 results'), 'tool_done count 0 shows 0 results');
+assert(progZero[0].text.text.includes('no results'), 'tool_done count 0 shows no results');
 assert(!progZero[0].text.text.includes('✓'), 'tool_done count 0 does not show ✓');
 
 // tool_done count === null → ✓ Slack (no count text)
