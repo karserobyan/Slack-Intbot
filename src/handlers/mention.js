@@ -11,6 +11,7 @@ import {
   buildHelpBlocks,
   buildHelpDetailBlocks,
   buildChatResolutionBlocks,
+  buildProgressBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
@@ -130,11 +131,37 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       console.error('[mention] Failed to post thinking message:', err.message);
     }
 
+    const steps = [];
+    let lastUpdateMs = 0;
+    const onProgress = async (event) => {
+      if (event.phase === 'tool_start') {
+        steps.push({ tool: event.tool, phase: 'tool_start', count: null });
+      } else if (event.phase === 'tool_done') {
+        const existing = steps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+        if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+      } else if (event.phase === 'writing') {
+        steps.push({ tool: null, phase: 'writing', count: null });
+      }
+      const now = Date.now();
+      if (thinkingTs && now - lastUpdateMs >= 1000) {
+        lastUpdateMs = now;
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          blocks: buildProgressBlocks(query, steps),
+          text: 'Thinking…',
+        }).catch(() => {});
+      }
+    };
+
     let chatResult;
     try {
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
       const [kbFetch] = await Promise.allSettled([searchKnowledgeBase(query)]);
       const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
-      chatResult = await queryChat(query, history, { kbContext });
+      const kbCount = kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null;
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbCount })).catch(() => {});
+      chatResult = await queryChat(query, history, { kbContext, onProgress });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
       const errText = 'Something went wrong — please retry or escalate manually.';
@@ -279,9 +306,32 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   // 10. Full Claude query (MCP search — slowest path)
   const queryStart = Date.now();
+  const steps = [];
+  let lastUpdateMs = 0;
+  const onProgress = async (event) => {
+    if (event.phase === 'tool_start') {
+      steps.push({ tool: event.tool, phase: 'tool_start', count: null });
+    } else if (event.phase === 'tool_done') {
+      const existing = steps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+      if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+    } else if (event.phase === 'writing') {
+      steps.push({ tool: null, phase: 'writing', count: null });
+    }
+    const now = Date.now();
+    if (thinkingTs && now - lastUpdateMs >= 1000) {
+      lastUpdateMs = now;
+      await client.chat.update({
+        channel: channelId,
+        ts: thinkingTs,
+        blocks: buildProgressBlocks(query, steps),
+        text: 'Checking…',
+      }).catch(() => {});
+    }
+  };
+
   let result;
   try {
-    result = await queryWithContext(query + feedbackContext, { role, agentName });
+    result = await queryWithContext(query + feedbackContext, { role, agentName, onProgress });
   } catch (err) {
     console.error('[mention] Claude query failed:', err.message);
 
@@ -405,7 +455,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     hasSteps &&
     !result.clarifying_question
   ) {
-    const steps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+    const agentSteps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
     const refs = [
       ...(result.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
       ...(result.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
@@ -414,7 +464,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     nominateResponse(client, {
       integration: result.integration_type ?? 'General',
       issueTitle: result.issue_title ?? query.slice(0, 80),
-      steps,
+      steps: agentSteps,
       refs,
     }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
   }

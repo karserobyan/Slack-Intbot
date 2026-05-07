@@ -43,6 +43,14 @@ function buildMcpServers() {
   return servers;
 }
 
+function normalizeTool(name) {
+  const n = (name ?? '').toLowerCase();
+  if (/confluence/.test(n)) return 'confluence';
+  if (/^jira/.test(n)) return 'jira';
+  if (/slack/.test(n)) return 'slack';
+  return (name ?? '').slice(0, 20);
+}
+
 /**
  * Calls Claude with MCP tools for Atlassian and Slack search.
  * Claude drives its own searches — no pre-fetching on our side.
@@ -51,15 +59,16 @@ function buildMcpServers() {
  * @param {string} userQuery - The agent's question or customer issue
  * @returns {Promise<object>} Parsed structured response
  */
-export async function queryWithContext(userQuery, { role = 'csa', agentName = null } = {}) {
+export async function queryWithContext(userQuery, { role = 'csa', agentName = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  // Run team knowledge fetch and KB search in parallel
+  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
   const [knowledge, kbResult] = await Promise.all([
     getKnowledge().catch(() => null),
     searchKnowledgeBase(userQuery),
   ]);
+  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbResult?.refs?.length ?? null })).catch(() => {});
 
   let userContent = `Issue: ${userQuery}`;
   if (knowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
@@ -83,7 +92,35 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    if (onProgress) {
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            const tool = normalizeTool(cb.name);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
@@ -122,7 +159,17 @@ export function parseChatResponse(text) {
   return { state: 'diagnosing', acknowledgement: '', question: text };
 }
 
-export async function queryChat(userQuery, history, { kbContext = null } = {}) {
+/**
+ * Conversational follow-up query — uses thread history, returns plain text.
+ * Uses MCP tools so Claude can search for new information if the agent provides
+ * a new angle, error code, or additional context.
+ * Aborts automatically after TIMEOUT_MS.
+ *
+ * @param {string} userQuery - The agent's follow-up message
+ * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
+ * @returns {Promise<string>} Plain text response
+ */
+export async function queryChat(userQuery, history, { kbContext = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -145,7 +192,35 @@ export async function queryChat(userQuery, history, { kbContext = null } = {}) {
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    if (onProgress) {
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            const tool = normalizeTool(cb.name);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)

@@ -703,3 +703,35 @@ export function buildChatResolutionBlocks(data) {
 
   return blocks;
 }
+
+function capitalizeFirst(s) {
+  return s ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
+export function buildProgressBlocks(query, steps) {
+  const truncated = query.length > 120 ? query.slice(0, 120) + '…' : query;
+  let text = `*🔍 Checking…*\n_"${truncated}"_`;
+
+  for (const step of steps) {
+    if (step.phase === 'writing') {
+      text += '\n✏️ _Writing answer…_';
+    } else if (step.phase === 'tool_start') {
+      text += `\n⟳ ${capitalizeFirst(step.tool)}  _searching…_`;
+    } else if (step.phase === 'tool_done') {
+      const label = capitalizeFirst(step.tool);
+      if (step.count === null) {
+        text += `\n✓ ${label}`;
+      } else if (step.count === 0) {
+        text += `\n–  ${label}  · 0 results`;
+      } else {
+        const countLabel = step.count === 1 ? '1 result' : `${step.count} results`;
+        text += `\n✓ ${label}  · ${countLabel}`;
+      }
+    }
+  }
+
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }] },
+  ];
+}
