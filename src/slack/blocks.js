@@ -256,7 +256,10 @@ export function buildThinkingBlocks(_query) {
   return [
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: '*⚙️ Looking into this…*' },
+      text: {
+        type: 'mrkdwn',
+        text: '*⚙️ Looking into this…*\n○ Team KB\n○ Confluence\n○ Jira\n○ Slack',
+      },
     },
     {
       type: 'context',
@@ -706,33 +709,50 @@ function capitalizeFirst(s) {
 }
 
 const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' };
-function toolLabel(name) {
-  return TOOL_LABEL[(name ?? '').toLowerCase()] ?? capitalizeFirst(name);
-}
+const KNOWN_TOOLS = ['kb', 'confluence', 'jira', 'slack'];
 
 export function buildProgressBlocks(_query, steps) {
-  let text = '*⚙️ Looking into this…*';
+  // Compute current status for each tool from the steps array
+  const toolStatus = {};
+  let isWriting = false;
 
   for (const step of steps) {
+    const tool = (step.tool ?? '').toLowerCase();
     if (step.phase === 'writing') {
-      text += '\n✏️ _Writing answer…_';
+      isWriting = true;
     } else if (step.phase === 'tool_start') {
-      text += `\n⟳ ${toolLabel(step.tool)}  _searching…_`;
+      toolStatus[tool] = { phase: 'searching' };
     } else if (step.phase === 'tool_done') {
-      const label = toolLabel(step.tool);
-      if (step.count === null) {
-        text += `\n✓ ${label}`;
-      } else if (step.count === 0) {
-        text += `\n–  ${label}  · no results`;
+      toolStatus[tool] = { phase: 'done', count: step.count };
+    }
+  }
+
+  const lines = ['*⚙️ Looking into this…*'];
+
+  for (const tool of KNOWN_TOOLS) {
+    const label = TOOL_LABEL[tool];
+    const status = toolStatus[tool];
+    if (!status) {
+      lines.push(`○ ${label}`);
+    } else if (status.phase === 'searching') {
+      lines.push(`⟳ ${label}  _searching…_`);
+    } else {
+      // done
+      if (status.count === null) {
+        lines.push(`✓ ${label}`);
+      } else if (status.count === 0) {
+        lines.push(`–  ${label}  · no results`);
       } else {
-        const countLabel = step.count === 1 ? '1 result' : `${step.count} results`;
-        text += `\n✓ ${label}  · ${countLabel}`;
+        const countLabel = status.count === 1 ? '1 result' : `${status.count} results`;
+        lines.push(`✓ ${label}  · ${countLabel}`);
       }
     }
   }
 
+  if (isWriting) lines.push('✏️ _Writing answer…_');
+
   return [
-    { type: 'section', text: { type: 'mrkdwn', text } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
     { type: 'context', elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }] },
   ];
 }
