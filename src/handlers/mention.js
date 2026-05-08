@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext, queryChat, queryWithKnowledge } from '../claude/query.js';
+import { queryWithContext, queryChat } from '../claude/query.js';
 import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
@@ -16,7 +16,6 @@ import {
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
-import { getKnowledge } from '../slack/knowledge.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { searchKnowledgeBase } from '../claude/kb-search.js';
 
@@ -49,8 +48,9 @@ async function detectAgentRole(client, userId) {
 export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
-  // 1. Empty query — greet and return early
+  // 1. Empty query — greet and return early (silent in DMs, session card already guides the user)
   if (!query) {
+    if (isDm) return;
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -189,7 +189,12 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     ]);
 
     if (thinkingTs) {
-      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
+      try {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
+      } catch (err) {
+        console.error('[mention] chat.update failed (follow-up), falling back to postMessage:', err.message);
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
+      }
     } else {
       await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
     }
@@ -202,10 +207,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
+    const { role: cachedRole } = await detectAgentRole(client, userId);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      blocks: buildResponseBlocks(cached, { isDm }),
+      blocks: buildResponseBlocks(cached, { isDm, role: cachedRole }),
       text: `Troubleshooting steps for: ${cached.issue_title}`,
     });
     appendToHistory(threadTs, [
@@ -234,55 +240,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
-  // 8. Tier 2: knowledge.md fast-lookup (no MCP, no cache miss)
-  try {
-    const knowledge = await getKnowledge();
-    if (knowledge) {
-      let fastResult = null;
-      try {
-        fastResult = await queryWithKnowledge(query, knowledge, { role, agentName });
-      } catch (err) {
-        console.warn('[mention] Knowledge fast-lookup failed, falling through:', err.message);
-      }
-
-      if (fastResult && !fastResult.clarifying_question && fastResult.confidence !== 'low') {
-        console.info(`[query] knowledge-hit confidence=${fastResult.confidence ?? 'unknown'} integration=${(fastResult.integration_type ?? 'unknown').slice(0, 50)}`);
-
-        fastResult._originalQuery = query;
-        if (role === 'csa') {
-          fastResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
-        }
-
-        if (thinkingTs) {
-          await client.chat.update({
-            channel: channelId,
-            ts: thinkingTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        } else {
-          await client.chat.postMessage({
-            channel: channelId,
-            thread_ts: threadTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        }
-
-        appendToHistory(threadTs, [
-          { role: 'user', content: query },
-          { role: 'assistant', content: summarizeResultForHistory(fastResult) },
-        ]);
-
-        return;
-      }
-      // Low confidence or clarifying question — fall through to full MCP search
-    }
-  } catch (err) {
-    console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
-  }
-
-  // 9. Feedback corrections context
+  // 8. Feedback corrections context
   let feedbackContext = '';
   try {
     const corrections = await getRelevantFeedback(query);
@@ -417,23 +375,18 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
   // 14. Deliver response
-  const responseBlocks = buildResponseBlocks(result, { isDm });
+  const responseBlocks = buildResponseBlocks(result, { isDm, role });
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
   if (thinkingTs) {
-    await client.chat.update({
-      channel: channelId,
-      ts: thinkingTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    try {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
+    } catch (err) {
+      console.error('[mention] chat.update failed, falling back to postMessage:', err.message);
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+    }
   } else {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
   }
 
   // 15. Seed conversation history (after delivery so accounting redirects never seed history)
@@ -474,6 +427,7 @@ export function registerMentionHandler(app) {
   const _inFlight = new Set();
 
   app.event('app_mention', async ({ event, client, logger }) => {
+    if (event.channel_type === 'im' || event.channel.startsWith('D')) return;
     if (_inFlight.has(event.ts)) {
       logger.warn(`[mention] Duplicate event ${event.ts} — skipping`);
       return;

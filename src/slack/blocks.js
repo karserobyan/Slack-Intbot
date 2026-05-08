@@ -44,9 +44,19 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false } = {}) {
+export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+
+  const slackRefs     = data.slack_refs     ?? [];
+  const atlassianRefs = data.atlassian_refs ?? [];
+  const kbRefs        = data.kb_refs        ?? [];
+
+  // Sensitive refs are hidden from CSAs; Specialists see everything
+  const isSpecialist  = role === 'specialist';
+  const visibleSlack      = isSpecialist ? slackRefs     : slackRefs.filter(r => !r.sensitive);
+  const visibleAtlassian  = isSpecialist ? atlassianRefs : atlassianRefs.filter(r => !r.sensitive);
+  const hiddenCount   = (slackRefs.length - visibleSlack.length) + (atlassianRefs.length - visibleAtlassian.length);
 
   // 1. Header
   blocks.push({
@@ -85,10 +95,11 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   }
 
   const chips = [];
-  if ((data.atlassian_refs ?? []).some(r => r.type === 'confluence')) chips.push('📄 Confluence');
-  if ((data.atlassian_refs ?? []).some(r => r.type === 'jira'))       chips.push('📄 Jira');
-  if ((data.slack_refs    ?? []).length > 0)                          chips.push('💬 Slack');
-  if ((data.kb_refs       ?? []).length > 0)                          chips.push('📖 KB');
+  if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if (visibleSlack.length > 0)                             chips.push('💬 Slack');
+  if (kbRefs.length > 0)                                   chips.push('📖 KB');
+  if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
   if (chips.length > 0) {
     blocks.push({
       type: 'context',
@@ -138,16 +149,16 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     },
   ];
 
-  const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
-  if (totalRefs > 0) {
+  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + kbRefs.length;
+  if (totalVisibleRefs > 0) {
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
-        data.slack_refs     ?? [],
-        data.atlassian_refs ?? [],
-        data.kb_refs        ?? [],
+        visibleSlack,
+        visibleAtlassian,
+        kbRefs,
         data.findings_summary?.diagnosis ?? null,
       ),
     });
@@ -252,18 +263,18 @@ export function buildAccountingRedirectBlocks(query) {
 /**
  * Builds a "thinking…" placeholder block shown while Claude is working.
  */
-export function buildThinkingBlocks(query) {
+export function buildThinkingBlocks(_query) {
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*🔍 Checking…*\n_"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
+        text: '*⚙️ Looking into this…*\n○ Team KB\n○ Confluence\n○ Jira\n○ Slack',
       },
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }],
+      elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }],
     },
   ];
 }
@@ -708,30 +719,51 @@ function capitalizeFirst(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-export function buildProgressBlocks(query, steps) {
-  const truncated = query.length > 120 ? query.slice(0, 120) + '…' : query;
-  let text = `*🔍 Checking…*\n_"${truncated}"_`;
+const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' };
+const KNOWN_TOOLS = ['kb', 'confluence', 'jira', 'slack'];
+
+export function buildProgressBlocks(_query, steps) {
+  // Compute current status for each tool from the steps array
+  const toolStatus = {};
+  let isWriting = false;
 
   for (const step of steps) {
+    const tool = (step.tool ?? '').toLowerCase();
     if (step.phase === 'writing') {
-      text += '\n✏️ _Writing answer…_';
+      isWriting = true;
     } else if (step.phase === 'tool_start') {
-      text += `\n⟳ ${capitalizeFirst(step.tool)}  _searching…_`;
+      toolStatus[tool] = { phase: 'searching' };
     } else if (step.phase === 'tool_done') {
-      const label = capitalizeFirst(step.tool);
-      if (step.count === null) {
-        text += `\n✓ ${label}`;
-      } else if (step.count === 0) {
-        text += `\n–  ${label}  · 0 results`;
+      toolStatus[tool] = { phase: 'done', count: step.count };
+    }
+  }
+
+  const lines = ['*⚙️ Looking into this…*'];
+
+  for (const tool of KNOWN_TOOLS) {
+    const label = TOOL_LABEL[tool];
+    const status = toolStatus[tool];
+    if (!status) {
+      lines.push(`○ ${label}`);
+    } else if (status.phase === 'searching') {
+      lines.push(`⟳ ${label}  _searching…_`);
+    } else {
+      // done
+      if (status.count === null) {
+        lines.push(`✓ ${label}`);
+      } else if (status.count === 0) {
+        lines.push(`–  ${label}  · no results`);
       } else {
-        const countLabel = step.count === 1 ? '1 result' : `${step.count} results`;
-        text += `\n✓ ${label}  · ${countLabel}`;
+        const countLabel = status.count === 1 ? '1 result' : `${status.count} results`;
+        lines.push(`✓ ${label}  · ${countLabel}`);
       }
     }
   }
 
+  if (isWriting) lines.push('✏️ _Writing answer…_');
+
   return [
-    { type: 'section', text: { type: 'mrkdwn', text } },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }] },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }] },
   ];
 }
