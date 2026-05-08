@@ -192,7 +192,7 @@ app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
   }
 
   result._originalQuery = query;
-  const responseBlocks = buildResponseBlocks(result);
+  const responseBlocks = buildResponseBlocks(result, { role: 'specialist' });
   const fallbackText = `Specialist view: ${result.issue_title}`;
 
   if (thinkingTs) {

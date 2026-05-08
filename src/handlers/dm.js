@@ -5,16 +5,6 @@ export function registerDmHandler(app) {
   const _inFlight         = new Set();
   const _welcomed         = new Set();
   const _promptedSessions = new Set();
-  const _latestSession    = new Map(); // channelId → current sessionTs (one at a time)
-
-  const SESSION_TTL = 7 * 24 * 3_600_000;
-
-  function openSession(channelId, sessionTs) {
-    _latestSession.set(channelId, sessionTs);
-    setTimeout(() => {
-      if (_latestSession.get(channelId) === sessionTs) _latestSession.delete(channelId);
-    }, SESSION_TTL);
-  }
 
   // Post standing welcome card the first time a user opens the bot
   app.event('app_home_opened', async ({ event, client, logger }) => {
@@ -34,17 +24,16 @@ export function registerDmHandler(app) {
     }
   });
 
-  // "New chat" button — post a fresh session card; all future messages go here
+  // "New chat" button — post a fresh session card
   app.action('new_chat', async ({ ack, body, client, logger }) => {
     await ack();
     const channelId = body.channel.id;
     try {
-      const sessionMsg = await client.chat.postMessage({
+      await client.chat.postMessage({
         channel: channelId,
         blocks:  buildSessionCard(),
         text:    '🟢 Integration chat — ready when you are.',
       });
-      openSession(channelId, sessionMsg.ts);
     } catch (err) {
       logger.error('[dm] Failed to post session card:', err.message);
     }
@@ -70,7 +59,7 @@ export function registerDmHandler(app) {
     }
   });
 
-  // DM message handler — everything routes to the one active session
+  // DM message handler — top-level message starts a new thread, reply continues its thread
   app.message(async ({ message, client, logger }) => {
     if (message.channel_type !== 'im') return;
     if (message.subtype || message.bot_id) return;
@@ -83,55 +72,14 @@ export function registerDmHandler(app) {
 
     const userId    = message.user;
     const channelId = message.channel;
+    const isThreadReply = !!message.thread_ts && message.thread_ts !== message.ts;
+    const threadTs  = isThreadReply ? message.thread_ts : message.ts;
 
     try {
-      const sessionTs = _latestSession.get(channelId);
-      const isThreadReply = message.thread_ts && message.thread_ts !== message.ts;
-
-      if (sessionTs || isThreadReply) {
-        const threadTs = sessionTs ?? message.thread_ts;
-        if (!sessionTs) openSession(channelId, threadTs); // re-anchor after restart
-        await handleQuery({
-          rawText:  message.text ?? '',
-          channelId,
-          threadTs,
-          client,
-          userId,
-          isDm: true,
-        });
-        return;
-      }
-
-      // No session, not a thread reply — first contact: welcome → session card → prompt → answer
-      if (!_welcomed.has(userId)) {
-        _welcomed.add(userId);
-        await client.chat.postMessage({
-          channel: channelId,
-          blocks:  buildWelcomeCard(),
-          text:    "👋 Welcome to IntBot!",
-        });
-      }
-
-      const sessionMsg = await client.chat.postMessage({
-        channel: channelId,
-        blocks:  buildSessionCard(),
-        text:    '🟢 Integration chat — ready when you are.',
-      });
-      const newSessionTs = sessionMsg.ts;
-      openSession(channelId, newSessionTs);
-      _promptedSessions.add(newSessionTs);
-      setTimeout(() => _promptedSessions.delete(newSessionTs), 86_400_000);
-
-      await client.chat.postMessage({
-        channel:   channelId,
-        thread_ts: newSessionTs,
-        text:      'What integration issue are you working on? 👇',
-      });
-
       await handleQuery({
         rawText:  message.text ?? '',
         channelId,
-        threadTs: newSessionTs,
+        threadTs,
         client,
         userId,
         isDm: true,

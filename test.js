@@ -360,6 +360,57 @@ const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.type === 'context
 assert(escalatePlusLowBlock !== undefined, 'Routing signal: should_escalate wins over low confidence');
 assert(escalatePlusLowBlock.elements[0].text.includes('📢'), 'Routing signal: 📢 shown when should_escalate true');
 
+// ── Sensitivity filtering ────────────────────────────────────────────────────
+const sensitiveData = {
+  ...sampleJson,
+  slack_refs: [
+    { url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#escalations', title: 'Internal escalation notes', sensitive: true },
+    { url: 'https://servicetitan.slack.com/archives/C2/p2', channel: '#integrations', title: 'Public Zapier thread' },
+  ],
+  atlassian_refs: [
+    { type: 'confluence', url: 'https://wiki/internal', title: 'Internal runbook', sensitive: true },
+    { type: 'confluence', url: 'https://wiki/public', title: 'Public Zapier guide' },
+  ],
+  kb_refs: [{ url: 'https://help.servicetitan.com/zapier', title: 'Zapier Setup', snippet: 'Enable API access...' }],
+  findings_summary: { diagnosis: 'Zapier API access not enabled.' },
+};
+
+// CSA: sensitive refs hidden, public refs visible, hint shown
+const csaSensBlocks = buildResponseBlocks(sensitiveData, { role: 'csa' });
+const csaChipBlock = csaSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
+assert(csaChipBlock !== undefined, 'sensitivity CSA: public Slack chip shown');
+assert(csaChipBlock.elements[0].text.includes('📄 Confluence'), 'sensitivity CSA: public Confluence chip shown');
+assert(csaChipBlock.elements[0].text.includes('_+2 specialist-only_'), 'sensitivity CSA: specialist-only hint shown');
+const csaSrcBtn = csaSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(csaSrcBtn !== undefined, 'sensitivity CSA: sources button present for visible refs');
+const csaSrcVal = JSON.parse(csaSrcBtn.value);
+assert(csaSrcVal.slack_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Slack ref');
+assert(csaSrcVal.atlassian_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Atlassian ref');
+assert(csaSrcVal.slack_refs[0].title === 'Public Zapier thread', 'sensitivity CSA: correct Slack ref in button');
+
+// Specialist: all refs visible, no hint
+const specSensBlocks = buildResponseBlocks(sensitiveData, { role: 'specialist' });
+const specChipBlock = specSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
+assert(specChipBlock !== undefined, 'sensitivity Specialist: Slack chip shown');
+assert(!specChipBlock.elements[0].text.includes('specialist-only'), 'sensitivity Specialist: no specialist-only hint');
+const specSrcBtn = specSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+const specSrcVal = JSON.parse(specSrcBtn.value);
+assert(specSrcVal.slack_refs.length === 2, 'sensitivity Specialist: sources button contains all Slack refs');
+assert(specSrcVal.atlassian_refs.length === 2, 'sensitivity Specialist: sources button contains all Atlassian refs');
+
+// No visible refs for CSA when all are sensitive — sources button absent
+const allSensitiveData = {
+  ...sampleJson,
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#esc', title: 'Internal', sensitive: true }],
+  atlassian_refs: [],
+  kb_refs: [],
+};
+const csaAllSensBlocks = buildResponseBlocks(allSensitiveData, { role: 'csa' });
+const csaAllSensSrcBtn = csaAllSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(csaAllSensSrcBtn === undefined, 'sensitivity CSA: sources button absent when all refs are sensitive');
+const csaAllSensChip = csaAllSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('specialist-only'));
+assert(csaAllSensChip !== undefined, 'sensitivity CSA: specialist-only hint still shown when all refs sensitive');
+
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
 assert(redirectBlocks.length === 2, 'Redirect has 2 blocks');
@@ -1086,6 +1137,13 @@ assert(parsedFallback.question === 'This is plain text, not JSON.', 'parseChatRe
 // Invalid JSON object (valid JSON but wrong schema)
 const parsedWrongSchema = parseChatResponse('{"foo":"bar"}');
 assert(parsedWrongSchema.state === 'diagnosing', 'parseChatResponse: wrong-schema JSON → fallback to diagnosing');
+
+// JSON embedded in surrounding prose (Claude adds preamble/postamble after tool use)
+const proseWrapped = 'Here is my analysis:\n{"state":"diagnosing","acknowledgement":"Got it.","question":"Has the webhook been reconfigured?"}\nLet me know if you need more.';
+const parsedProse = parseChatResponse(proseWrapped);
+assert(parsedProse.state === 'diagnosing', 'parseChatResponse: extracts JSON from surrounding prose');
+assert(parsedProse.acknowledgement === 'Got it.', 'parseChatResponse: acknowledgement correct from prose-wrapped JSON');
+assert(parsedProse.question === 'Has the webhook been reconfigured?', 'parseChatResponse: question correct from prose-wrapped JSON');
 
 // ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
 console.log('\n🔹 buildFollowUpBlocks — label param');

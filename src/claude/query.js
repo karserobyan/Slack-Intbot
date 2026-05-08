@@ -46,7 +46,7 @@ function buildMcpServers() {
 function normalizeTool(name) {
   const n = (name ?? '').toLowerCase();
   if (/confluence/.test(n)) return 'confluence';
-  if (/^jira/.test(n)) return 'jira';
+  if (/jira/.test(n)) return 'jira';
   if (/slack/.test(n)) return 'slack';
   return (name ?? '').slice(0, 20);
 }
@@ -94,6 +94,8 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   try {
     const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
 
+    const toolsUsed = [];
+
     if (onProgress) {
       let writingFired = false;
 
@@ -102,6 +104,7 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
         const cb = event.content_block;
         try {
           if (cb.type === 'tool_use') {
+            toolsUsed.push(cb.name);
             const tool = normalizeTool(cb.name);
             Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
           } else if (cb.type === 'text' && !writingFired) {
@@ -121,6 +124,11 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
     }
 
     const response = await stream.finalMessage();
+    if (toolsUsed.length > 0) {
+      console.info('[query] tools called:', toolsUsed.join(', '));
+    } else {
+      console.warn('[query] no MCP tools called — Claude answered without searching');
+    }
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
@@ -148,13 +156,14 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
 }
 
 export function parseChatResponse(text) {
-  try {
-    const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/i;
-    const trimmed = fenced.test(text.trim()) ? text.trim().replace(fenced, '$1') : text.trim();
-    const obj = JSON.parse(trimmed);
-    if (obj.state === 'diagnosing' || obj.state === 'resolved') return obj;
-  } catch {
-    // fall through
+  const t = text.trim();
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start !== -1 && end !== -1) {
+    try {
+      const obj = JSON.parse(t.slice(start, end + 1));
+      if (obj.state === 'diagnosing' || obj.state === 'resolved') return obj;
+    } catch {}
   }
   return { state: 'diagnosing', acknowledgement: '', question: text };
 }

@@ -207,10 +207,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
+    const { role: cachedRole } = await detectAgentRole(client, userId);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      blocks: buildResponseBlocks(cached, { isDm }),
+      blocks: buildResponseBlocks(cached, { isDm, role: cachedRole }),
       text: `Troubleshooting steps for: ${cached.issue_title}`,
     });
     appendToHistory(threadTs, [
@@ -374,7 +375,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
   // 14. Deliver response
-  const responseBlocks = buildResponseBlocks(result, { isDm });
+  const responseBlocks = buildResponseBlocks(result, { isDm, role });
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
   if (thinkingTs) {

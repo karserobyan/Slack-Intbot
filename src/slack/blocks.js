@@ -44,9 +44,19 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false } = {}) {
+export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+
+  const slackRefs     = data.slack_refs     ?? [];
+  const atlassianRefs = data.atlassian_refs ?? [];
+  const kbRefs        = data.kb_refs        ?? [];
+
+  // Sensitive refs are hidden from CSAs; Specialists see everything
+  const isSpecialist  = role === 'specialist';
+  const visibleSlack      = isSpecialist ? slackRefs     : slackRefs.filter(r => !r.sensitive);
+  const visibleAtlassian  = isSpecialist ? atlassianRefs : atlassianRefs.filter(r => !r.sensitive);
+  const hiddenCount   = (slackRefs.length - visibleSlack.length) + (atlassianRefs.length - visibleAtlassian.length);
 
   // 1. Header
   blocks.push({
@@ -85,10 +95,11 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   }
 
   const chips = [];
-  if ((data.atlassian_refs ?? []).some(r => r.type === 'confluence')) chips.push('📄 Confluence');
-  if ((data.atlassian_refs ?? []).some(r => r.type === 'jira'))       chips.push('📄 Jira');
-  if ((data.slack_refs    ?? []).length > 0)                          chips.push('💬 Slack');
-  if ((data.kb_refs       ?? []).length > 0)                          chips.push('📖 KB');
+  if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if (visibleSlack.length > 0)                             chips.push('💬 Slack');
+  if (kbRefs.length > 0)                                   chips.push('📖 KB');
+  if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
   if (chips.length > 0) {
     blocks.push({
       type: 'context',
@@ -138,16 +149,16 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     },
   ];
 
-  const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
-  if (totalRefs > 0) {
+  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + kbRefs.length;
+  if (totalVisibleRefs > 0) {
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
-        data.slack_refs     ?? [],
-        data.atlassian_refs ?? [],
-        data.kb_refs        ?? [],
+        visibleSlack,
+        visibleAtlassian,
+        kbRefs,
         data.findings_summary?.diagnosis ?? null,
       ),
     });
