@@ -16,14 +16,17 @@ import {
   buildHelpDetailBlocks,
   buildSourcesModal,
   buildAuditBlocks,
+  buildChatResolutionBlocks,
+  buildProgressBlocks,
 } from './src/slack/blocks.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
+import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks } from './src/slack/nominations.js';
-import { buildAuditLogModal } from './src/slack/modal.js';
+import { buildAuditLogModal, buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -357,6 +360,57 @@ const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.type === 'context
 assert(escalatePlusLowBlock !== undefined, 'Routing signal: should_escalate wins over low confidence');
 assert(escalatePlusLowBlock.elements[0].text.includes('📢'), 'Routing signal: 📢 shown when should_escalate true');
 
+// ── Sensitivity filtering ────────────────────────────────────────────────────
+const sensitiveData = {
+  ...sampleJson,
+  slack_refs: [
+    { url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#escalations', title: 'Internal escalation notes', sensitive: true },
+    { url: 'https://servicetitan.slack.com/archives/C2/p2', channel: '#integrations', title: 'Public Zapier thread' },
+  ],
+  atlassian_refs: [
+    { type: 'confluence', url: 'https://wiki/internal', title: 'Internal runbook', sensitive: true },
+    { type: 'confluence', url: 'https://wiki/public', title: 'Public Zapier guide' },
+  ],
+  kb_refs: [{ url: 'https://help.servicetitan.com/zapier', title: 'Zapier Setup', snippet: 'Enable API access...' }],
+  findings_summary: { diagnosis: 'Zapier API access not enabled.' },
+};
+
+// CSA: sensitive refs hidden, public refs visible, hint shown
+const csaSensBlocks = buildResponseBlocks(sensitiveData, { role: 'csa' });
+const csaChipBlock = csaSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
+assert(csaChipBlock !== undefined, 'sensitivity CSA: public Slack chip shown');
+assert(csaChipBlock.elements[0].text.includes('📄 Confluence'), 'sensitivity CSA: public Confluence chip shown');
+assert(csaChipBlock.elements[0].text.includes('_+2 specialist-only_'), 'sensitivity CSA: specialist-only hint shown');
+const csaSrcBtn = csaSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(csaSrcBtn !== undefined, 'sensitivity CSA: sources button present for visible refs');
+const csaSrcVal = JSON.parse(csaSrcBtn.value);
+assert(csaSrcVal.slack_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Slack ref');
+assert(csaSrcVal.atlassian_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Atlassian ref');
+assert(csaSrcVal.slack_refs[0].title === 'Public Zapier thread', 'sensitivity CSA: correct Slack ref in button');
+
+// Specialist: all refs visible, no hint
+const specSensBlocks = buildResponseBlocks(sensitiveData, { role: 'specialist' });
+const specChipBlock = specSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
+assert(specChipBlock !== undefined, 'sensitivity Specialist: Slack chip shown');
+assert(!specChipBlock.elements[0].text.includes('specialist-only'), 'sensitivity Specialist: no specialist-only hint');
+const specSrcBtn = specSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+const specSrcVal = JSON.parse(specSrcBtn.value);
+assert(specSrcVal.slack_refs.length === 2, 'sensitivity Specialist: sources button contains all Slack refs');
+assert(specSrcVal.atlassian_refs.length === 2, 'sensitivity Specialist: sources button contains all Atlassian refs');
+
+// No visible refs for CSA when all are sensitive — sources button absent
+const allSensitiveData = {
+  ...sampleJson,
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#esc', title: 'Internal', sensitive: true }],
+  atlassian_refs: [],
+  kb_refs: [],
+};
+const csaAllSensBlocks = buildResponseBlocks(allSensitiveData, { role: 'csa' });
+const csaAllSensSrcBtn = csaAllSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(csaAllSensSrcBtn === undefined, 'sensitivity CSA: sources button absent when all refs are sensitive');
+const csaAllSensChip = csaAllSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('specialist-only'));
+assert(csaAllSensChip !== undefined, 'sensitivity CSA: specialist-only hint still shown when all refs sensitive');
+
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
 assert(redirectBlocks.length === 2, 'Redirect has 2 blocks');
@@ -365,7 +419,7 @@ assert(redirectBlocks[0].text.text.includes('#ask-partner-enabled-accounting-int
 // Thinking blocks
 const thinkingBlocks = buildThinkingBlocks('Zapier not working');
 assert(thinkingBlocks.length === 2, 'Thinking has 2 blocks');
-assert(thinkingBlocks[0].text.text.includes('Checking'), 'Thinking shows checking message');
+assert(thinkingBlocks[0].text.text.includes('Looking into this'), 'Thinking shows looking-into-this message');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -1039,6 +1093,320 @@ assert(auditNoJson === null, 'parseAuditResponse returns null for non-JSON text'
 const auditEmptyChanges = parseAuditResponse('{"tenant":"X","time_range_days":14,"likely_cause":null,"summary":"None.","changes":[],"confidence":"high"}');
 assert(auditEmptyChanges !== null, 'parseAuditResponse handles empty changes array');
 assert(auditEmptyChanges.changes.length === 0, 'parseAuditResponse preserves empty changes array');
+
+// ── 16. parseChatResponse ─────────────────────────────────────────────────────
+console.log('\n🔹 parseChatResponse');
+
+// Valid diagnosing JSON
+const diagnosingJson = '{"state":"diagnosing","acknowledgement":"Got it — that rules out auth.","question":"Has the customer tried reconnecting Zapier from scratch?"}';
+const parsedDiag = parseChatResponse(diagnosingJson);
+assert(parsedDiag.state === 'diagnosing', 'parseChatResponse: diagnosing state parsed');
+assert(parsedDiag.acknowledgement === 'Got it — that rules out auth.', 'parseChatResponse: acknowledgement parsed');
+assert(parsedDiag.question === 'Has the customer tried reconnecting Zapier from scratch?', 'parseChatResponse: question parsed');
+
+// Valid resolved JSON (no escalation)
+const resolvedJson = '{"state":"resolved","title":"Stale Zapier Auth Token","diagnosis":"Enabling API access invalidates existing tokens.","steps":[{"tag":"action","text":"Disconnect Zapier."},{"tag":"verify","text":"Confirm sync resumes."}],"escalate":false,"escalation_path":null,"suggested_channel_post":null,"refs":[{"source":"confluence","title":"Zapier Setup Guide"}]}';
+const parsedResolved = parseChatResponse(resolvedJson);
+assert(parsedResolved.state === 'resolved', 'parseChatResponse: resolved state parsed');
+assert(parsedResolved.title === 'Stale Zapier Auth Token', 'parseChatResponse: title parsed');
+assert(parsedResolved.diagnosis === 'Enabling API access invalidates existing tokens.', 'parseChatResponse: diagnosis parsed');
+assert(Array.isArray(parsedResolved.steps), 'parseChatResponse: steps is array');
+assert(parsedResolved.steps.length === 2, 'parseChatResponse: correct step count');
+assert(parsedResolved.escalate === false, 'parseChatResponse: escalate false');
+assert(Array.isArray(parsedResolved.refs), 'parseChatResponse: refs is array');
+
+// Valid resolved JSON with escalation
+const escalateJson = '{"state":"resolved","title":"Enterprise Tier Required","diagnosis":"Backend config needed.","steps":[{"tag":"escalate","text":"Escalate via Live Assist."}],"escalate":true,"escalation_path":"Live Assist → Integrations Specialist","suggested_channel_post":"Customer needs escalation — please assist.","refs":[]}';
+const parsedEscalate = parseChatResponse(escalateJson);
+assert(parsedEscalate.escalate === true, 'parseChatResponse: escalate true');
+assert(parsedEscalate.escalation_path === 'Live Assist → Integrations Specialist', 'parseChatResponse: escalation_path parsed');
+assert(parsedEscalate.suggested_channel_post === 'Customer needs escalation — please assist.', 'parseChatResponse: suggested_channel_post parsed');
+
+// JSON wrapped in markdown fences
+const fencedJson = '```json\n{"state":"diagnosing","acknowledgement":"OK.","question":"Is sync still failing?"}\n```';
+const parsedFenced = parseChatResponse(fencedJson);
+assert(parsedFenced.state === 'diagnosing', 'parseChatResponse: strips markdown fences');
+assert(parsedFenced.question === 'Is sync still failing?', 'parseChatResponse: question parsed from fenced JSON');
+
+// Plain text fallback
+const parsedFallback = parseChatResponse('This is plain text, not JSON.');
+assert(parsedFallback.state === 'diagnosing', 'parseChatResponse: plain text → diagnosing state');
+assert(parsedFallback.acknowledgement === '', 'parseChatResponse: plain text → empty acknowledgement');
+assert(parsedFallback.question === 'This is plain text, not JSON.', 'parseChatResponse: plain text → question field holds raw text');
+
+// Invalid JSON object (valid JSON but wrong schema)
+const parsedWrongSchema = parseChatResponse('{"foo":"bar"}');
+assert(parsedWrongSchema.state === 'diagnosing', 'parseChatResponse: wrong-schema JSON → fallback to diagnosing');
+
+// JSON embedded in surrounding prose (Claude adds preamble/postamble after tool use)
+const proseWrapped = 'Here is my analysis:\n{"state":"diagnosing","acknowledgement":"Got it.","question":"Has the webhook been reconfigured?"}\nLet me know if you need more.';
+const parsedProse = parseChatResponse(proseWrapped);
+assert(parsedProse.state === 'diagnosing', 'parseChatResponse: extracts JSON from surrounding prose');
+assert(parsedProse.acknowledgement === 'Got it.', 'parseChatResponse: acknowledgement correct from prose-wrapped JSON');
+assert(parsedProse.question === 'Has the webhook been reconfigured?', 'parseChatResponse: question correct from prose-wrapped JSON');
+
+// ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
+console.log('\n🔹 buildFollowUpBlocks — label param');
+
+const followUpDefault = buildFollowUpBlocks('Some text');
+const followUpDefaultCtx = followUpDefault.find(b => b.type === 'context');
+assert(followUpDefaultCtx.elements[0].text === '_Follow-up_', 'buildFollowUpBlocks: default label is Follow-up');
+
+const followUpLabeled = buildFollowUpBlocks('Diagnosing text', { label: 'Diagnosing…' });
+const followUpLabeledCtx = followUpLabeled.find(b => b.type === 'context');
+assert(followUpLabeledCtx.elements[0].text === '_Diagnosing…_', 'buildFollowUpBlocks: custom label rendered');
+assert(followUpLabeled.find(b => b.type === 'section').text.text === 'Diagnosing text', 'buildFollowUpBlocks: text unchanged with label');
+
+// ── 18. buildChatResolutionBlocks ─────────────────────────────────────────────
+console.log('\n🔹 buildChatResolutionBlocks');
+
+const resolvedData = {
+  state: 'resolved',
+  title: 'Stale Zapier Auth Token',
+  diagnosis: 'Enabling API access invalidates existing tokens — re-auth required.',
+  steps: [
+    { tag: 'action', text: 'Disconnect Zapier in account settings.' },
+    { tag: 'action', text: 'Re-authenticate from scratch.' },
+    { tag: 'verify', text: 'Confirm sync resumes.' },
+  ],
+  escalate: false,
+  escalation_path: null,
+  suggested_channel_post: null,
+  refs: [
+    { source: 'confluence', title: 'Zapier Setup Guide' },
+    { source: 'slack', title: 'Zapier token issue thread' },
+  ],
+};
+
+const chatResBlocks = buildChatResolutionBlocks(resolvedData);
+assert(Array.isArray(chatResBlocks), 'buildChatResolutionBlocks returns array');
+assert(chatResBlocks.length > 0, 'buildChatResolutionBlocks returns non-empty array');
+
+// Badge
+const resBadge = chatResBlocks[0];
+assert(resBadge.type === 'context', 'first block is context (badge)');
+assert(resBadge.elements[0].text.includes('Root cause found'), 'resolved badge: Root cause found');
+assert(!resBadge.elements[0].text.includes('Needs escalation'), 'resolved badge: no escalation text');
+
+// Title + diagnosis
+const resTitleBlock = chatResBlocks[1];
+assert(resTitleBlock.type === 'section', 'second block is section');
+assert(resTitleBlock.text.text.includes('Stale Zapier Auth Token'), 'title block has title');
+assert(resTitleBlock.text.text.includes('Enabling API access invalidates'), 'title block has diagnosis');
+
+// Steps
+const resStepBlocks = chatResBlocks.filter(b => b.type === 'section' && b.text?.text?.includes('`action`'));
+assert(resStepBlocks.length === 2, 'buildChatResolutionBlocks renders 2 action steps');
+const verifyStep = chatResBlocks.find(b => b.type === 'section' && b.text?.text?.includes('`verify`'));
+assert(verifyStep !== undefined, 'buildChatResolutionBlocks renders verify step');
+
+// Source chips
+const resChipBlock = chatResBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
+assert(resChipBlock !== undefined, 'buildChatResolutionBlocks renders source chips');
+assert(resChipBlock.elements[0].text.includes('Confluence'), 'source chips include Confluence');
+assert(resChipBlock.elements[0].text.includes('Slack'), 'source chips include Slack');
+
+// Actions
+const resActions = chatResBlocks.find(b => b.type === 'actions');
+assert(resActions !== undefined, 'buildChatResolutionBlocks has actions block');
+const resWrongBtn = resActions.elements.find(e => e.action_id === 'wrong_answer_modal');
+assert(resWrongBtn !== undefined, 'buildChatResolutionBlocks has wrong_answer_modal button');
+const resNewChatBtn = resActions.elements.find(e => e.action_id === 'new_chat');
+assert(resNewChatBtn !== undefined, 'buildChatResolutionBlocks has new_chat button');
+const resChannelPostBtn = resActions.elements.find(e => e.action_id === 'copy_channel_post');
+assert(resChannelPostBtn === undefined, 'no copy_channel_post button when escalate: false');
+
+// Escalation state
+const escalationData = {
+  state: 'resolved',
+  title: 'Enterprise Tier Required',
+  diagnosis: 'This tenant requires backend config only available to Specialists.',
+  steps: [
+    { tag: 'action', text: 'Collect error details from customer.' },
+    { tag: 'escalate', text: 'Escalate via Live Assist → Integrations Specialist.' },
+  ],
+  escalate: true,
+  escalation_path: 'Live Assist → Integrations Specialist',
+  suggested_channel_post: 'Customer has Enterprise tier issue — escalating now.',
+  refs: [{ source: 'kb', title: 'Enterprise Tier Config' }],
+};
+
+const escBlocks = buildChatResolutionBlocks(escalationData);
+const escBadge = escBlocks[0];
+assert(escBadge.elements[0].text.includes('Needs escalation'), 'escalation badge: Needs escalation');
+
+const escPathBlock = escBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Escalation path:'));
+assert(escPathBlock !== undefined, 'escalation path context block rendered');
+assert(escPathBlock.elements[0].text.includes('Live Assist → Integrations Specialist'), 'escalation path text correct');
+
+const escActions = escBlocks.find(b => b.type === 'actions');
+const escChannelPostBtn = escActions.elements.find(e => e.action_id === 'copy_channel_post');
+assert(escChannelPostBtn !== undefined, 'copy_channel_post button present when escalate: true');
+assert(escChannelPostBtn.value === 'Customer has Enterprise tier issue — escalating now.', 'copy_channel_post value is suggested_channel_post');
+const escNewChatBtn = escActions.elements.find(e => e.action_id === 'new_chat');
+assert(escNewChatBtn !== undefined, 'new_chat button still present in escalation state');
+
+// No chips when refs is empty
+const noRefsData = { ...resolvedData, refs: [] };
+const noRefsChatBlocks = buildChatResolutionBlocks(noRefsData);
+const noRefsChip = noRefsChatBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
+assert(noRefsChip === undefined, 'no source chips when refs is empty');
+
+// ── 19. buildChannelPostModal ─────────────────────────────────────────────────
+console.log('\n🔹 buildChannelPostModal');
+
+const cpModal = buildChannelPostModal('Anyone seen Zapier failing after enabling API access? Need a hand here.');
+assert(cpModal.type === 'modal', 'buildChannelPostModal returns modal');
+assert(cpModal.title.text === '📋 Channel post', 'modal title is 📋 Channel post');
+assert(!('submit' in cpModal), 'buildChannelPostModal has no submit button (view-only)');
+assert(cpModal.close.text === 'Close', 'modal has Close button');
+const cpSection = cpModal.blocks.find(b => b.type === 'section');
+assert(cpSection !== undefined, 'modal has section block');
+assert(cpSection.text.text === 'Anyone seen Zapier failing after enabling API access? Need a hand here.', 'modal section contains the provided text');
+const cpContext = cpModal.blocks.find(b => b.type === 'context');
+assert(cpContext !== undefined, 'modal has context block with instructions');
+assert(cpContext.elements[0].text.includes('Select all and copy'), 'instructions say to select and copy');
+
+// ── 20. buildResponseBlocks — diagnosis + chips + channel post button ──────────
+console.log('\n🔹 buildResponseBlocks — new fields');
+
+// Diagnosis line present when findings_summary.diagnosis is set
+const withDiagBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
+});
+const diagBlock = withDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
+assert(diagBlock !== undefined, 'diagnosis context block present when findings_summary.diagnosis set');
+assert(diagBlock.elements[0].text.includes('Zapier integration is failing'), 'diagnosis text is from findings_summary.diagnosis');
+assert(diagBlock.elements[0].text.includes('_'), 'diagnosis text is italicised with markdown');
+
+// Diagnosis line absent when findings_summary is missing
+const noDiagBlocks = buildResponseBlocks({ ...sampleJson, findings_summary: undefined, escalate_decision: { should_escalate: false, reason: 'x' } });
+const noDiagBlock2 = noDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
+assert(noDiagBlock2 === undefined, 'no diagnosis block when findings_summary missing');
+
+// Source chips: Confluence chip when atlassian_refs has confluence entry
+const chipsBlocks = buildResponseBlocks({ ...sampleJson, escalate_decision: { should_escalate: false, reason: 'x' } });
+const chipsBlock = chipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence'));
+assert(chipsBlock !== undefined, 'Confluence chip present when atlassian_refs has confluence');
+assert(chipsBlock.elements[0].text.includes('📄 Jira'), 'Jira chip present when atlassian_refs has jira');
+assert(chipsBlock.elements[0].text.includes('💬 Slack'), 'Slack chip present when slack_refs non-empty');
+assert(chipsBlock.elements[0].text.includes('📖 KB'), 'KB chip present when kb_refs non-empty');
+
+// No chips when all ref arrays are empty
+const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [], escalate_decision: { should_escalate: false, reason: 'x' } });
+const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence') || b.elements[0].text?.includes('📄 Jira') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
+assert(noChipsBlock === undefined, 'no chips context block when all ref arrays empty');
+
+// Channel post button present when should_escalate:true and suggested_channel_post set
+const channelPostBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility' },
+  suggested_channel_post: 'Anyone seen this Zapier issue?',
+});
+const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
+const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(cpBtn !== undefined, 'copy_channel_post button present when should_escalate and suggested_channel_post set');
+assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is suggested_channel_post');
+
+// Channel post button absent when should_escalate:false
+const noCpBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: false, reason: 'CSA handles' },
+  suggested_channel_post: 'This should not appear.',
+});
+const noCpActionsBlock = noCpBlocks.find(b => b.type === 'actions');
+const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(noCpBtn === undefined, 'copy_channel_post button absent when should_escalate: false');
+
+// Channel post button absent when suggested_channel_post missing
+const noCpNoTextBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'x' },
+  suggested_channel_post: undefined,
+});
+const noCpNoTextBtn = noCpNoTextBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(noCpNoTextBtn === undefined, 'copy_channel_post button absent when suggested_channel_post missing');
+
+// new_chat button still last when isDm + escalation + channel post
+const fullDmBlocks = buildResponseBlocks({
+  ...sampleJson,
+  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
+  channel_recommendation: { channel: 'ask-integrations', reason: 'x' },
+  suggested_channel_post: 'Post this.',
+}, { isDm: true });
+const fullDmActions = fullDmBlocks.find(b => b.type === 'actions');
+assert(fullDmActions.elements.at(-1).action_id === 'new_chat', 'new_chat button is last even with channel post + isDm');
+
+// ── buildProgressBlocks ───────────────────────────────────────────────────────
+console.log('\n🔹 buildProgressBlocks');
+
+// Basic structure — empty steps
+const progEmpty = buildProgressBlocks('Zapier stopped syncing', []);
+assert(Array.isArray(progEmpty), 'buildProgressBlocks returns array');
+assert(progEmpty.length === 2, 'buildProgressBlocks returns 2 blocks');
+assert(progEmpty[0].type === 'section', 'first block is section');
+assert(progEmpty[0].text.type === 'mrkdwn', 'section uses mrkdwn');
+assert(progEmpty[0].text.text.includes('⚙️ Looking into this'), 'header includes ⚙️ Looking into this');
+assert(progEmpty[1].type === 'context', 'second block is context');
+
+// tool_start step → ⟳ Confluence  searching…
+const progStart = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_start', count: null },
+]);
+assert(progStart[0].text.text.includes('⟳'), 'tool_start shows ⟳');
+assert(progStart[0].text.text.includes('Confluence'), 'tool name is capitalized');
+assert(progStart[0].text.text.toLowerCase().includes('searching'), 'tool_start shows searching');
+
+// tool_done count > 0 → ✓ Confluence  · 3 results
+const progDone3 = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_done', count: 3 },
+]);
+assert(progDone3[0].text.text.includes('✓'), 'tool_done count > 0 shows ✓');
+assert(progDone3[0].text.text.includes('3 results'), 'count > 0 shows N results');
+
+// tool_done count === 1 → singular "result"
+const progDone1 = buildProgressBlocks('test', [
+  { tool: 'confluence', phase: 'tool_done', count: 1 },
+]);
+assert(progDone1[0].text.text.includes('1 result'), 'count 1 uses singular "result"');
+assert(!progDone1[0].text.text.includes('1 results'), 'count 1 does not say "1 results"');
+
+// tool_done count === 0 → –  Jira  · no results (no ✓)
+const progZero = buildProgressBlocks('test', [
+  { tool: 'jira', phase: 'tool_done', count: 0 },
+]);
+assert(progZero[0].text.text.includes('–'), 'tool_done count 0 shows dash');
+assert(progZero[0].text.text.includes('no results'), 'tool_done count 0 shows no results');
+assert(!progZero[0].text.text.includes('✓'), 'tool_done count 0 does not show ✓');
+
+// tool_done count === null → ✓ Slack (no count text)
+const progNullCount = buildProgressBlocks('test', [
+  { tool: 'slack', phase: 'tool_done', count: null },
+]);
+assert(progNullCount[0].text.text.includes('✓'), 'tool_done null count still shows ✓');
+assert(!progNullCount[0].text.text.includes('results'), 'tool_done null count shows no count text');
+
+// writing step → ✏️ Writing answer…
+const progWriting = buildProgressBlocks('test', [
+  { tool: null, phase: 'writing', count: null },
+]);
+assert(progWriting[0].text.text.includes('✏️'), 'writing step shows ✏️');
+assert(progWriting[0].text.text.toLowerCase().includes('writing'), 'writing step contains writing text');
+
+// Multi-step: confluence done, jira 0, slack 1, writing
+const progMulti = buildProgressBlocks('Zapier stopped syncing after API access enabled', [
+  { tool: 'confluence', phase: 'tool_done', count: 3 },
+  { tool: 'jira',       phase: 'tool_done', count: 0 },
+  { tool: 'slack',      phase: 'tool_done', count: 1 },
+  { tool: null,         phase: 'writing',   count: null },
+]);
+const multiText = progMulti[0].text.text;
+assert(multiText.includes('✓') && multiText.includes('Confluence'), 'multi: confluence done ✓');
+assert(multiText.includes('–') && multiText.includes('Jira'),       'multi: jira 0 shows –');
+assert(multiText.includes('Slack') && multiText.includes('1 result'), 'multi: slack 1 result');
+assert(multiText.includes('✏️'), 'multi: writing step present');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

@@ -43,6 +43,14 @@ function buildMcpServers() {
   return servers;
 }
 
+function normalizeTool(name) {
+  const n = (name ?? '').toLowerCase();
+  if (/confluence/.test(n)) return 'confluence';
+  if (/jira/.test(n)) return 'jira';
+  if (/slack/.test(n)) return 'slack';
+  return (name ?? '').slice(0, 20);
+}
+
 /**
  * Calls Claude with MCP tools for Atlassian and Slack search.
  * Claude drives its own searches — no pre-fetching on our side.
@@ -51,15 +59,16 @@ function buildMcpServers() {
  * @param {string} userQuery - The agent's question or customer issue
  * @returns {Promise<object>} Parsed structured response
  */
-export async function queryWithContext(userQuery, { role = 'csa', agentName = null } = {}) {
+export async function queryWithContext(userQuery, { role = 'csa', agentName = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  // Run team knowledge fetch and KB search in parallel
+  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
   const [knowledge, kbResult] = await Promise.all([
     getKnowledge().catch(() => null),
-    searchKnowledgeBase(userQuery),
+    searchKnowledgeBase(userQuery).catch(() => null),
   ]);
+  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbResult?.refs?.length ?? null })).catch(() => {});
 
   let userContent = `Issue: ${userQuery}`;
   if (knowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
@@ -83,7 +92,43 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    const toolsUsed = [];
+
+    if (onProgress) {
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            toolsUsed.push(cb.name);
+            const tool = normalizeTool(cb.name);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
+    if (toolsUsed.length > 0) {
+      console.info('[query] tools called:', toolsUsed.join(', '));
+    } else {
+      console.warn('[query] no MCP tools called — Claude answered without searching');
+    }
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
@@ -110,6 +155,19 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   return result;
 }
 
+export function parseChatResponse(text) {
+  const t = text.trim();
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start !== -1 && end !== -1) {
+    try {
+      const obj = JSON.parse(t.slice(start, end + 1));
+      if (obj.state === 'diagnosing' || obj.state === 'resolved') return obj;
+    } catch {}
+  }
+  return { state: 'diagnosing', acknowledgement: '', question: text };
+}
+
 /**
  * Conversational follow-up query — uses thread history, returns plain text.
  * Uses MCP tools so Claude can search for new information if the agent provides
@@ -120,9 +178,13 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
  * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
  * @returns {Promise<string>} Plain text response
  */
-export async function queryChat(userQuery, history) {
+export async function queryChat(userQuery, history, { kbContext = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  const systemPrompt = kbContext
+    ? `${CHAT_SYSTEM_PROMPT}\n\n[KB RESULTS]\n${kbContext}\n[/KB RESULTS]`
+    : CHAT_SYSTEM_PROMPT;
 
   const messages = [...history, { role: 'user', content: userQuery }];
   const mcpServers = buildMcpServers();
@@ -130,7 +192,7 @@ export async function queryChat(userQuery, history) {
   const requestParams = {
     model: MODEL,
     max_tokens: 2048,
-    system: CHAT_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages,
     ...(mcpServers.length > 0 ? { mcp_servers: mcpServers } : {}),
     betas: ['mcp-client-2025-04-04'],
@@ -139,7 +201,35 @@ export async function queryChat(userQuery, history) {
   let fullText = '';
 
   try {
-    const response = await anthropic.beta.messages.create(requestParams, { signal: controller.signal });
+    const stream = anthropic.beta.messages.stream(requestParams, { signal: controller.signal });
+
+    if (onProgress) {
+      let writingFired = false;
+
+      stream.on('streamEvent', (event) => {
+        if (event.type !== 'content_block_start') return;
+        const cb = event.content_block;
+        try {
+          if (cb.type === 'tool_use') {
+            const tool = normalizeTool(cb.name);
+            Promise.resolve(onProgress({ phase: 'tool_start', tool })).catch(() => {});
+          } else if (cb.type === 'text' && !writingFired) {
+            writingFired = true;
+            Promise.resolve(onProgress({ phase: 'writing' })).catch(() => {});
+          }
+        } catch {}
+      });
+
+      stream.on('contentBlock', (block) => {
+        if (block.type !== 'tool_use') return;
+        try {
+          const tool = normalizeTool(block.name);
+          Promise.resolve(onProgress({ phase: 'tool_done', tool, count: null })).catch(() => {});
+        } catch {}
+      });
+    }
+
+    const response = await stream.finalMessage();
     fullText = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
@@ -153,52 +243,7 @@ export async function queryChat(userQuery, history) {
     clearTimeout(timer);
   }
 
-  return fullText;
-}
-
-/**
- * Tier 2 fast-lookup — calls Claude with knowledge.md content only, no MCP servers.
- * Used in mention.js before the full MCP search.
- * Falls through (caller checks) if result has clarifying_question or confidence === 'low'.
- *
- * @param {string} userQuery
- * @param {string} knowledgeContent - Full contents of knowledge.md
- * @param {{ role?: string, agentName?: string|null }} [options]
- * @returns {Promise<object>} Parsed structured response
- */
-export async function queryWithKnowledge(userQuery, knowledgeContent, { role = 'csa', agentName = null } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  const userContent = `Issue: ${userQuery}\n\n[TEAM KNOWLEDGE]\n${knowledgeContent}\n[/TEAM KNOWLEDGE]`;
-  const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
-  const systemPrompt = agentName
-    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in intro_message.`
-    : basePrompt;
-
-  let fullText = '';
-  try {
-    const response = await anthropic.beta.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userContent }],
-    }, { signal: controller.signal });
-
-    fullText = response.content
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-  } catch (err) {
-    if (controller.signal.aborted) {
-      throw new Error(`Knowledge fast-lookup timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-
-  return parseClaudeResponse(fullText);
+  return parseChatResponse(fullText);
 }
 
 /**

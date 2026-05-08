@@ -1,5 +1,5 @@
 import { isAccountingTopic } from '../utils/accounting-filter.js';
-import { queryWithContext, queryChat, queryWithKnowledge } from '../claude/query.js';
+import { queryWithContext, queryChat } from '../claude/query.js';
 import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
@@ -10,12 +10,14 @@ import {
   buildFollowUpBlocks,
   buildHelpBlocks,
   buildHelpDetailBlocks,
+  buildChatResolutionBlocks,
+  buildProgressBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCached } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
-import { getKnowledge } from '../slack/knowledge.js';
 import { nominateResponse } from '../slack/nominations.js';
+import { searchKnowledgeBase } from '../claude/kb-search.js';
 
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
@@ -46,8 +48,9 @@ async function detectAgentRole(client, userId) {
 export async function handleQuery({ rawText, channelId, threadTs, client, userId, isDm = false }) {
   const query = stripBotMention(rawText);
 
-  // 1. Empty query — greet and return early
+  // 1. Empty query — greet and return early (silent in DMs, session card already guides the user)
   if (!query) {
+    if (isDm) return;
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
@@ -115,7 +118,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   if (hasHistory(threadTs)) {
     const history = getHistory(threadTs);
 
-    // Post thinking placeholder
     let thinkingTs;
     try {
       const thinkingMsg = await client.chat.postMessage({
@@ -129,9 +131,37 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       console.error('[mention] Failed to post thinking message:', err.message);
     }
 
-    let replyText;
+    const steps = [];
+    let lastUpdateMs = 0;
+    const onProgress = async (event) => {
+      if (event.phase === 'tool_start') {
+        steps.push({ tool: event.tool, phase: 'tool_start', count: null });
+      } else if (event.phase === 'tool_done') {
+        const existing = steps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+        if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+      } else if (event.phase === 'writing') {
+        steps.push({ tool: null, phase: 'writing', count: null });
+      }
+      const now = Date.now();
+      if (thinkingTs && now - lastUpdateMs >= 1000) {
+        lastUpdateMs = now;
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          blocks: buildProgressBlocks(query, steps),
+          text: 'Thinking…',
+        }).catch(() => {});
+      }
+    };
+
+    let chatResult;
     try {
-      replyText = await queryChat(query, history);
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
+      const [kbFetch] = await Promise.allSettled([searchKnowledgeBase(query)]);
+      const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
+      const kbCount = kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null;
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbCount })).catch(() => {});
+      chatResult = await queryChat(query, history, { kbContext, onProgress });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
       const errText = 'Something went wrong — please retry or escalate manually.';
@@ -143,26 +173,30 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       return;
     }
 
-    // Append this exchange to history
+    let blocks, plainText;
+    if (chatResult.state === 'resolved') {
+      blocks = buildChatResolutionBlocks(chatResult);
+      plainText = `${chatResult.title} — ${chatResult.diagnosis}`;
+    } else {
+      const text = [chatResult.acknowledgement, chatResult.question].filter(Boolean).join('\n\n');
+      blocks = buildFollowUpBlocks(text, { label: 'Diagnosing…' });
+      plainText = text;
+    }
+
     appendToHistory(threadTs, [
-      { role: 'user', content: query },
-      { role: 'assistant', content: replyText },
+      { role: 'user',      content: query },
+      { role: 'assistant', content: plainText },
     ]);
 
     if (thinkingTs) {
-      await client.chat.update({
-        channel: channelId,
-        ts: thinkingTs,
-        blocks: buildFollowUpBlocks(replyText),
-        text: replyText.slice(0, 200),
-      });
+      try {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: plainText.slice(0, 200) });
+      } catch (err) {
+        console.error('[mention] chat.update failed (follow-up), falling back to postMessage:', err.message);
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
+      }
     } else {
-      await client.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        blocks: buildFollowUpBlocks(replyText),
-        text: replyText.slice(0, 200),
-      });
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: plainText.slice(0, 200) });
     }
     return;
   }
@@ -173,10 +207,11 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
+    const { role: cachedRole } = await detectAgentRole(client, userId);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      blocks: buildResponseBlocks(cached, { isDm }),
+      blocks: buildResponseBlocks(cached, { isDm, role: cachedRole }),
       text: `Troubleshooting steps for: ${cached.issue_title}`,
     });
     appendToHistory(threadTs, [
@@ -205,55 +240,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   const thinkingTs = thinkingResult?.ts;
 
-  // 8. Tier 2: knowledge.md fast-lookup (no MCP, no cache miss)
-  try {
-    const knowledge = await getKnowledge();
-    if (knowledge) {
-      let fastResult = null;
-      try {
-        fastResult = await queryWithKnowledge(query, knowledge, { role, agentName });
-      } catch (err) {
-        console.warn('[mention] Knowledge fast-lookup failed, falling through:', err.message);
-      }
-
-      if (fastResult && !fastResult.clarifying_question && fastResult.confidence !== 'low') {
-        console.info(`[query] knowledge-hit confidence=${fastResult.confidence ?? 'unknown'} integration=${(fastResult.integration_type ?? 'unknown').slice(0, 50)}`);
-
-        fastResult._originalQuery = query;
-        if (role === 'csa') {
-          fastResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
-        }
-
-        if (thinkingTs) {
-          await client.chat.update({
-            channel: channelId,
-            ts: thinkingTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        } else {
-          await client.chat.postMessage({
-            channel: channelId,
-            thread_ts: threadTs,
-            blocks: buildResponseBlocks(fastResult, { isDm }),
-            text: `Troubleshooting steps for: ${fastResult.issue_title}`,
-          });
-        }
-
-        appendToHistory(threadTs, [
-          { role: 'user', content: query },
-          { role: 'assistant', content: summarizeResultForHistory(fastResult) },
-        ]);
-
-        return;
-      }
-      // Low confidence or clarifying question — fall through to full MCP search
-    }
-  } catch (err) {
-    console.warn('[mention] Step 2.5 unexpected error, continuing to full search:', err.message);
-  }
-
-  // 9. Feedback corrections context
+  // 8. Feedback corrections context
   let feedbackContext = '';
   try {
     const corrections = await getRelevantFeedback(query);
@@ -277,9 +264,32 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   // 10. Full Claude query (MCP search — slowest path)
   const queryStart = Date.now();
+  const steps = [];
+  let lastUpdateMs = 0;
+  const onProgress = async (event) => {
+    if (event.phase === 'tool_start') {
+      steps.push({ tool: event.tool, phase: 'tool_start', count: null });
+    } else if (event.phase === 'tool_done') {
+      const existing = steps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+      if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+    } else if (event.phase === 'writing') {
+      steps.push({ tool: null, phase: 'writing', count: null });
+    }
+    const now = Date.now();
+    if (thinkingTs && now - lastUpdateMs >= 1000) {
+      lastUpdateMs = now;
+      await client.chat.update({
+        channel: channelId,
+        ts: thinkingTs,
+        blocks: buildProgressBlocks(query, steps),
+        text: 'Checking…',
+      }).catch(() => {});
+    }
+  };
+
   let result;
   try {
-    result = await queryWithContext(query + feedbackContext, { role, agentName });
+    result = await queryWithContext(query + feedbackContext, { role, agentName, onProgress });
   } catch (err) {
     console.error('[mention] Claude query failed:', err.message);
 
@@ -365,23 +375,18 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   console.info(`[query] role=${role} confidence=${result.confidence ?? 'unknown'} integration=${liveIntegration} sources=${liveSources}`);
 
   // 14. Deliver response
-  const responseBlocks = buildResponseBlocks(result, { isDm });
+  const responseBlocks = buildResponseBlocks(result, { isDm, role });
   const fallbackText = `Troubleshooting: ${result.issue_title} (${result.integration_type})`;
 
   if (thinkingTs) {
-    await client.chat.update({
-      channel: channelId,
-      ts: thinkingTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    try {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
+    } catch (err) {
+      console.error('[mention] chat.update failed, falling back to postMessage:', err.message);
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+    }
   } else {
-    await client.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      blocks: responseBlocks,
-      text: fallbackText,
-    });
+    await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
   }
 
   // 15. Seed conversation history (after delivery so accounting redirects never seed history)
@@ -403,7 +408,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     hasSteps &&
     !result.clarifying_question
   ) {
-    const steps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+    const agentSteps = (result.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
     const refs = [
       ...(result.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
       ...(result.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
@@ -412,7 +417,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     nominateResponse(client, {
       integration: result.integration_type ?? 'General',
       issueTitle: result.issue_title ?? query.slice(0, 80),
-      steps,
+      steps: agentSteps,
       refs,
     }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
   }
@@ -422,6 +427,7 @@ export function registerMentionHandler(app) {
   const _inFlight = new Set();
 
   app.event('app_mention', async ({ event, client, logger }) => {
+    if (event.channel_type === 'im' || event.channel.startsWith('D')) return;
     if (_inFlight.has(event.ts)) {
       logger.warn(`[mention] Duplicate event ${event.ts} — skipping`);
       return;

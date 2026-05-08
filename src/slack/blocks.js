@@ -44,9 +44,19 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false } = {}) {
+export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
+
+  const slackRefs     = data.slack_refs     ?? [];
+  const atlassianRefs = data.atlassian_refs ?? [];
+  const kbRefs        = data.kb_refs        ?? [];
+
+  // Sensitive refs are hidden from CSAs; Specialists see everything
+  const isSpecialist  = role === 'specialist';
+  const visibleSlack      = isSpecialist ? slackRefs     : slackRefs.filter(r => !r.sensitive);
+  const visibleAtlassian  = isSpecialist ? atlassianRefs : atlassianRefs.filter(r => !r.sensitive);
+  const hiddenCount   = (slackRefs.length - visibleSlack.length) + (atlassianRefs.length - visibleAtlassian.length);
 
   // 1. Header
   blocks.push({
@@ -76,6 +86,26 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: infoText }],
   });
+
+  if (data.findings_summary?.diagnosis) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `🔍 _${data.findings_summary.diagnosis}_` }],
+    });
+  }
+
+  const chips = [];
+  if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if (visibleSlack.length > 0)                             chips.push('💬 Slack');
+  if (kbRefs.length > 0)                                   chips.push('📖 KB');
+  if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
+    });
+  }
 
   // 3. Customer message
   if (data.customer_message) {
@@ -119,16 +149,16 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     },
   ];
 
-  const totalRefs = (data.slack_refs ?? []).length + (data.atlassian_refs ?? []).length + (data.kb_refs ?? []).length;
-  if (totalRefs > 0) {
+  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + kbRefs.length;
+  if (totalVisibleRefs > 0) {
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
-        data.slack_refs     ?? [],
-        data.atlassian_refs ?? [],
-        data.kb_refs        ?? [],
+        visibleSlack,
+        visibleAtlassian,
+        kbRefs,
         data.findings_summary?.diagnosis ?? null,
       ),
     });
@@ -140,6 +170,15 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
       action_id: 'show_specialist_detail',
       value: data._showSpecialistValue,
+    });
+  }
+
+  if (data.escalate_decision?.should_escalate && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
     });
   }
 
@@ -224,18 +263,18 @@ export function buildAccountingRedirectBlocks(query) {
 /**
  * Builds a "thinking…" placeholder block shown while Claude is working.
  */
-export function buildThinkingBlocks(query) {
+export function buildThinkingBlocks(_query) {
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*🔍 Checking…*\n_"${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
+        text: '*⚙️ Looking into this…*\n○ Team KB\n○ Confluence\n○ Jira\n○ Slack',
       },
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot is working on it…_' }],
+      elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }],
     },
   ];
 }
@@ -325,11 +364,11 @@ export function buildFeedbackModal(context) {
  * @param {string} text - Claude's plain text follow-up reply
  * @returns {Array} Slack blocks array
  */
-export function buildFollowUpBlocks(text) {
+export function buildFollowUpBlocks(text, { label = 'Follow-up' } = {}) {
   return [
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_Follow-up_' }],
+      elements: [{ type: 'mrkdwn', text: `_${label}_` }],
     },
     {
       type: 'section',
@@ -600,4 +639,131 @@ export function buildAuditBlocks(data) {
   blocks.push({ type: 'divider' });
 
   return blocks;
+}
+
+const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
+
+export function buildChatResolutionBlocks(data) {
+  const blocks = [];
+  const isEscalation = data.escalate === true;
+
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: isEscalation ? '🔴 *Needs escalation*' : '✅ *Root cause found*' }],
+  });
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${data.title}*\n_${data.diagnosis}_` },
+  });
+
+  if (isEscalation && data.escalation_path) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${data.escalation_path}` }],
+    });
+  }
+
+  for (const step of (data.steps ?? []).slice(0, 10)) {
+    const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${circle} \`${step.tag}\` ${step.text}` },
+    });
+  }
+
+  const chips = (data.refs ?? [])
+    .map(r => CHAT_SOURCE_LABEL[r.source])
+    .filter(Boolean);
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `_Verified: ${chips.join('  ·  ')}_` }],
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  const actionElements = [
+    {
+      type: 'button',
+      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+      action_id: 'wrong_answer_modal',
+      style: 'danger',
+      value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
+    },
+  ];
+
+  if (isEscalation && data.suggested_channel_post) {
+    actionElements.push({
+      type: 'button',
+      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
+      action_id: 'copy_channel_post',
+      value: (data.suggested_channel_post ?? '').slice(0, 2000),
+    });
+  }
+
+  actionElements.push({
+    type: 'button',
+    text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+    action_id: 'new_chat',
+    value: 'new_chat',
+  });
+
+  blocks.push({ type: 'actions', elements: actionElements });
+
+  return blocks;
+}
+
+function capitalizeFirst(s) {
+  return s ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
+const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' };
+const KNOWN_TOOLS = ['kb', 'confluence', 'jira', 'slack'];
+
+export function buildProgressBlocks(_query, steps) {
+  // Compute current status for each tool from the steps array
+  const toolStatus = {};
+  let isWriting = false;
+
+  for (const step of steps) {
+    const tool = (step.tool ?? '').toLowerCase();
+    if (step.phase === 'writing') {
+      isWriting = true;
+    } else if (step.phase === 'tool_start') {
+      toolStatus[tool] = { phase: 'searching' };
+    } else if (step.phase === 'tool_done') {
+      toolStatus[tool] = { phase: 'done', count: step.count };
+    }
+  }
+
+  const lines = ['*⚙️ Looking into this…*'];
+
+  for (const tool of KNOWN_TOOLS) {
+    const label = TOOL_LABEL[tool];
+    const status = toolStatus[tool];
+    if (!status) {
+      lines.push(`○ ${label}`);
+    } else if (status.phase === 'searching') {
+      lines.push(`⟳ ${label}  _searching…_`);
+    } else {
+      // done
+      if (status.count === null) {
+        lines.push(`✓ ${label}`);
+      } else if (status.count === 0) {
+        lines.push(`–  ${label}  · no results`);
+      } else {
+        const countLabel = status.count === 1 ? '1 result' : `${status.count} results`;
+        lines.push(`✓ ${label}  · ${countLabel}`);
+      }
+    }
+  }
+
+  if (isWriting) lines.push('✏️ _Writing answer…_');
+
+  return [
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }] },
+  ];
 }
