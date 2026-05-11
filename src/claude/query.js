@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT_CSA, SYSTEM_PROMPT_SPECIALIST, parseClaudeResponse, AUDIT_LOG_PROMPT, parseAuditResponse } from './prompts.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { searchKnowledgeBase } from './kb-search.js';
+import { searchConfluence, searchJira } from './atlassian-search.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
 
 const anthropic = new Anthropic({
@@ -19,28 +20,16 @@ const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
  * @returns {Array} Array of MCP server config objects
  */
 function buildMcpServers() {
-  const servers = [];
-
-  if (process.env.ATLASSIAN_MCP_TOKEN) {
-    servers.push({
-      type: 'url',
-      url: 'https://mcp.atlassian.com/v1/sse',
-      name: 'atlassian',
-      authorization_token: process.env.ATLASSIAN_MCP_TOKEN,
-    });
-  }
-
   const slackToken = process.env.SLACK_USER_TOKEN;
   if (slackToken && slackToken !== 'xoxp-replace-me') {
-    servers.push({
+    return [{
       type: 'url',
       url: 'https://mcp.slack.com/mcp',
       name: 'slack',
       authorization_token: slackToken,
-    });
+    }];
   }
-
-  return servers;
+  return [];
 }
 
 function normalizeTool(name) {
@@ -63,16 +52,28 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
-  const [knowledge, kbResult] = await Promise.all([
+  if (onProgress) {
+    Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
+    Promise.resolve(onProgress({ phase: 'tool_start', tool: 'confluence' })).catch(() => {});
+    Promise.resolve(onProgress({ phase: 'tool_start', tool: 'jira' })).catch(() => {});
+  }
+  const [knowledge, kbResult, confluenceResult, jiraResult] = await Promise.all([
     getKnowledge().catch(() => null),
     searchKnowledgeBase(userQuery).catch(() => null),
+    searchConfluence(userQuery).catch(() => null),
+    searchJira(userQuery).catch(() => null),
   ]);
-  if (onProgress) Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbResult?.refs?.length ?? null })).catch(() => {});
+  if (onProgress) {
+    Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbResult?.refs?.length ?? null })).catch(() => {});
+    Promise.resolve(onProgress({ phase: 'tool_done', tool: 'confluence', count: confluenceResult?.refs?.length ?? null })).catch(() => {});
+    Promise.resolve(onProgress({ phase: 'tool_done', tool: 'jira', count: jiraResult?.refs?.length ?? null })).catch(() => {});
+  }
 
   let userContent = `Issue: ${userQuery}`;
   if (knowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${knowledge}\n[/TEAM KNOWLEDGE]`;
   if (kbResult?.text) userContent += `\n\n[KB RESULTS]\n${kbResult.text}\n[/KB RESULTS]`;
+  if (confluenceResult?.text) userContent += `\n\n[CONFLUENCE RESULTS]\n${confluenceResult.text}\n[/CONFLUENCE RESULTS]`;
+  if (jiraResult?.text) userContent += `\n\n[JIRA RESULTS]\n${jiraResult.text}\n[/JIRA RESULTS]`;
   const mcpServers = buildMcpServers();
 
   const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
@@ -178,13 +179,14 @@ export function parseChatResponse(text) {
  * @param {Array<{role: string, content: string}>} history - Prior messages in the thread
  * @returns {Promise<string>} Plain text response
  */
-export async function queryChat(userQuery, history, { kbContext = null, onProgress } = {}) {
+export async function queryChat(userQuery, history, { kbContext = null, confluenceContext = null, jiraContext = null, onProgress } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
-  const systemPrompt = kbContext
-    ? `${CHAT_SYSTEM_PROMPT}\n\n[KB RESULTS]\n${kbContext}\n[/KB RESULTS]`
-    : CHAT_SYSTEM_PROMPT;
+  let systemPrompt = CHAT_SYSTEM_PROMPT;
+  if (kbContext) systemPrompt += `\n\n[KB RESULTS]\n${kbContext}\n[/KB RESULTS]`;
+  if (confluenceContext) systemPrompt += `\n\n[CONFLUENCE RESULTS]\n${confluenceContext}\n[/CONFLUENCE RESULTS]`;
+  if (jiraContext) systemPrompt += `\n\n[JIRA RESULTS]\n${jiraContext}\n[/JIRA RESULTS]`;
 
   const messages = [...history, { role: 'user', content: userQuery }];
   const mcpServers = buildMcpServers();
