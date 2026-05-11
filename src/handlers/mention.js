@@ -18,6 +18,7 @@ import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { searchKnowledgeBase } from '../claude/kb-search.js';
+import { searchConfluence, searchJira } from '../claude/atlassian-search.js';
 
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
@@ -157,11 +158,20 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     let chatResult;
     try {
       Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
-      const [kbFetch] = await Promise.allSettled([searchKnowledgeBase(query)]);
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'confluence' })).catch(() => {});
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'jira' })).catch(() => {});
+      const [kbFetch, confluenceFetch, jiraFetch] = await Promise.allSettled([
+        searchKnowledgeBase(query),
+        searchConfluence(query),
+        searchJira(query),
+      ]);
       const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
-      const kbCount = kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null;
-      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbCount })).catch(() => {});
-      chatResult = await queryChat(query, history, { kbContext, onProgress });
+      const confluenceContext = confluenceFetch.status === 'fulfilled' && confluenceFetch.value?.text ? confluenceFetch.value.text : null;
+      const jiraContext = jiraFetch.status === 'fulfilled' && jiraFetch.value?.text ? jiraFetch.value.text : null;
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null })).catch(() => {});
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'confluence', count: confluenceFetch.status === 'fulfilled' ? (confluenceFetch.value?.refs?.length ?? null) : null })).catch(() => {});
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'jira', count: jiraFetch.status === 'fulfilled' ? (jiraFetch.value?.refs?.length ?? null) : null })).catch(() => {});
+      chatResult = await queryChat(query, history, { kbContext, confluenceContext, jiraContext, onProgress });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
       const errText = 'Something went wrong — please retry or escalate manually.';
