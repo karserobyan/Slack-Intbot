@@ -83,7 +83,9 @@ npm start
 | `SLACK_SIGNING_SECRET` | ✅ | From Basic Information |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key |
 | `SLACK_APP_TOKEN` | Socket Mode only | App-level token (`xapp-...`) |
-| `ATLASSIAN_MCP_TOKEN` | Recommended | Atlassian API token for Confluence/Jira MCP search |
+| `ATLASSIAN_EMAIL` | Recommended | Atlassian account email — paired with `ATLASSIAN_API_TOKEN` for Basic Auth |
+| `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
+| `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `GOOGLE_CSE_API_KEY` | Recommended | Google API key for ServiceTitan KB search |
 | `GOOGLE_CSE_ID` | Recommended | Custom Search Engine ID (scoped to `help.servicetitan.com`) |

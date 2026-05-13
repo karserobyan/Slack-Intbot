@@ -393,7 +393,7 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
     cache: stats,
     mcp: {
       slack: Boolean(process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_TOKEN !== 'xoxp-replace-me'),
-      atlassian: Boolean(process.env.ATLASSIAN_MCP_TOKEN),
+      atlassian: Boolean(process.env.ATLASSIAN_API_TOKEN),
     },
   });
 });
@@ -445,9 +445,9 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
   }
 
   const hasMcpSlack = Boolean(process.env.SLACK_USER_TOKEN && process.env.SLACK_USER_TOKEN !== 'xoxp-replace-me');
-  const hasMcpAtlassian = Boolean(process.env.ATLASSIAN_MCP_TOKEN);
+  const hasAtlassianApi = Boolean(process.env.ATLASSIAN_API_TOKEN);
   app.logger.info(
-    `[startup] MCP: Slack=${hasMcpSlack ? '✅' : '❌ (set SLACK_USER_TOKEN)'}  Atlassian=${hasMcpAtlassian ? '✅' : '❌ (set ATLASSIAN_MCP_TOKEN)'}`,
+    `[startup] Search: Slack MCP=${hasMcpSlack ? '✅' : '❌ (set SLACK_USER_TOKEN)'}  Atlassian REST=${hasAtlassianApi ? '✅' : '❌ (set ATLASSIAN_API_TOKEN)'}`,
   );
 })();
 

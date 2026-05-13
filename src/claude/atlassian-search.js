@@ -5,7 +5,7 @@ const TIMEOUT_MS = 8000;
 
 function getAuth() {
   const email = process.env.ATLASSIAN_EMAIL;
-  const token = process.env.ATLASSIAN_MCP_TOKEN;
+  const token = process.env.ATLASSIAN_API_TOKEN;
   if (!email || !token) return null;
   return 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
 }
