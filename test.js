@@ -1381,32 +1381,61 @@ assert(progZero[0].text.text.includes('–'), 'tool_done count 0 shows dash');
 assert(progZero[0].text.text.includes('no results'), 'tool_done count 0 shows no results');
 assert(!progZero[0].text.text.includes('✓'), 'tool_done count 0 does not show ✓');
 
-// tool_done count === null → ✓ Slack (no count text)
-const progNullCount = buildProgressBlocks('test', [
-  { tool: 'slack', phase: 'tool_done', count: null },
+// Slack is rendered in the context line, not the section rows
+const progSlackSearching = buildProgressBlocks('Zapier API access', [
+  { tool: 'slack', phase: 'tool_start', count: null },
 ]);
-assert(progNullCount[0].text.text.includes('✓'), 'tool_done null count still shows ✓');
-assert(!progNullCount[0].text.text.includes('results'), 'tool_done null count shows no count text');
+assert(!progSlackSearching[0].text.text.includes('Slack'), 'slack does not appear in section rows');
+assert(progSlackSearching[1].elements[0].text.includes('Now: searching Slack'),
+  'slack searching shown in context line');
+assert(progSlackSearching[1].elements[0].text.includes('"Zapier API access"'),
+  'context line includes the user query');
 
-// writing step → ✏️ Writing answer…
+// Slack tool_done clears the searching state — falls back to default context line
+const progSlackDone = buildProgressBlocks('test', [
+  { tool: 'slack', phase: 'tool_start', count: null },
+  { tool: 'slack', phase: 'tool_done',  count: null },
+]);
+assert(!progSlackDone[1].elements[0].text.includes('Now: searching Slack'),
+  'slack done removes the "now: searching" line');
+
+// writing step → context shows "writing answer"
 const progWriting = buildProgressBlocks('test', [
   { tool: null, phase: 'writing', count: null },
 ]);
-assert(progWriting[0].text.text.includes('✏️'), 'writing step shows ✏️');
-assert(progWriting[0].text.text.toLowerCase().includes('writing'), 'writing step contains writing text');
+assert(!progWriting[0].text.text.includes('✏️'),
+  'writing indicator no longer lives in section');
+assert(progWriting[1].elements[0].text.toLowerCase().includes('writing answer'),
+  'writing shown in context line');
 
-// Multi-step: confluence done, jira 0, slack 1, writing
+// writing supersedes slack searching in context
+const progWritingOverSlack = buildProgressBlocks('test', [
+  { tool: 'slack', phase: 'tool_start', count: null },
+  { tool: null,    phase: 'writing',    count: null },
+]);
+assert(progWritingOverSlack[1].elements[0].text.toLowerCase().includes('writing'),
+  'writing supersedes slack in context');
+assert(!progWritingOverSlack[1].elements[0].text.includes('searching Slack'),
+  'writing supersedes slack — no "searching Slack" text');
+
+// Long query truncates to keep the context line tidy
+const longQ = 'Zapier integration is not syncing leads after the recent tenant migration and customer is asking when it will be fixed';
+const progLongQ = buildProgressBlocks(longQ, [{ tool: 'slack', phase: 'tool_start', count: null }]);
+assert(progLongQ[1].elements[0].text.includes('…'), 'long query truncated with …');
+
+// Multi-step: confluence done, jira 0 — slack and writing surface via context
 const progMulti = buildProgressBlocks('Zapier stopped syncing after API access enabled', [
   { tool: 'confluence', phase: 'tool_done', count: 3 },
   { tool: 'jira',       phase: 'tool_done', count: 0 },
-  { tool: 'slack',      phase: 'tool_done', count: 1 },
-  { tool: null,         phase: 'writing',   count: null },
+  { tool: 'slack',      phase: 'tool_start', count: null },
+  { tool: null,         phase: 'writing',    count: null },
 ]);
 const multiText = progMulti[0].text.text;
 assert(multiText.includes('✓') && multiText.includes('Confluence'), 'multi: confluence done ✓');
 assert(multiText.includes('–') && multiText.includes('Jira'),       'multi: jira 0 shows –');
-assert(multiText.includes('Slack') && multiText.includes('1 result'), 'multi: slack 1 result');
-assert(multiText.includes('✏️'), 'multi: writing step present');
+assert(!multiText.includes('Slack'), 'multi: slack no longer in section');
+assert(progMulti[1].elements[0].text.toLowerCase().includes('writing'),
+  'multi: writing surfaces in context (overrides slack)');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

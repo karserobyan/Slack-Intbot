@@ -269,7 +269,7 @@ export function buildThinkingBlocks(_query) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*⚙️ Looking into this…*\n○ Team KB\n○ Confluence\n○ Jira\n○ Slack',
+        text: '*⚙️ Looking into this…*\n○ Team KB\n○ Confluence\n○ Jira',
       },
     },
     {
@@ -719,12 +719,19 @@ function capitalizeFirst(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira', slack: 'Slack' };
-const KNOWN_TOOLS = ['kb', 'confluence', 'jira', 'slack'];
+const TOOL_LABEL = { kb: 'Team KB', confluence: 'Confluence', jira: 'Jira' };
+const KNOWN_TOOLS = ['kb', 'confluence', 'jira'];
+const DEFAULT_STATUS = '_Searching Confluence, Jira, Slack, and team KB_';
 
-export function buildProgressBlocks(_query, steps) {
-  // Compute current status for each tool from the steps array
+function truncateQuery(q, max = 60) {
+  if (!q) return '';
+  const s = String(q).trim();
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s;
+}
+
+export function buildProgressBlocks(query, steps) {
   const toolStatus = {};
+  let slackSearching = false;
   let isWriting = false;
 
   for (const step of steps) {
@@ -732,9 +739,11 @@ export function buildProgressBlocks(_query, steps) {
     if (step.phase === 'writing') {
       isWriting = true;
     } else if (step.phase === 'tool_start') {
-      toolStatus[tool] = { phase: 'searching' };
+      if (tool === 'slack') slackSearching = true;
+      else toolStatus[tool] = { phase: 'searching' };
     } else if (step.phase === 'tool_done') {
-      toolStatus[tool] = { phase: 'done', count: step.count };
+      if (tool === 'slack') slackSearching = false;
+      else toolStatus[tool] = { phase: 'done', count: step.count };
     }
   }
 
@@ -748,7 +757,6 @@ export function buildProgressBlocks(_query, steps) {
     } else if (status.phase === 'searching') {
       lines.push(`⟳ ${label}  _searching…_`);
     } else {
-      // done
       if (status.count === null) {
         lines.push(`✓ ${label}`);
       } else if (status.count === 0) {
@@ -760,10 +768,16 @@ export function buildProgressBlocks(_query, steps) {
     }
   }
 
-  if (isWriting) lines.push('✏️ _Writing answer…_');
+  let statusLine = DEFAULT_STATUS;
+  if (isWriting) {
+    statusLine = '_Now: writing answer…_';
+  } else if (slackSearching) {
+    const q = truncateQuery(query);
+    statusLine = q ? `_Now: searching Slack for "${q}"_` : '_Now: searching Slack…_';
+  }
 
   return [
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: '_Searching Confluence, Jira, Slack, and team KB_' }] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: statusLine }] },
   ];
 }
