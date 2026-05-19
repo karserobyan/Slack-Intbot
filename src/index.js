@@ -2,10 +2,10 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
-import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks, buildAuditBlocks } from './slack/blocks.js';
+import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks } from './slack/blocks.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
-import { queryWithContext, queryAuditLog } from './claude/query.js';
+import { queryWithContext } from './claude/query.js';
 import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
 import { approveNomination, rejectNomination } from './slack/nominations.js';
 import { buildChannelPostModal } from './slack/modal.js';
@@ -40,64 +40,6 @@ const app = new App({
 // ── Register event handlers ──────────────────────────────────────────────────
 registerMentionHandler(app);
 registerDmHandler(app);
-
-// ── Audit log modal submission ────────────────────────────────────────────────
-app.view('audit_log_submission', async ({ ack, body, view, client, logger }) => {
-  await ack();
-
-  let channelId, threadTs;
-  try {
-    ({ channelId, threadTs } = JSON.parse(view.private_metadata));
-  } catch {
-    logger.error('[audit] Failed to parse private_metadata');
-    return;
-  }
-
-  const values      = view.state.values;
-  const tenantName  = values.tenant_block.tenant_input.value ?? '';
-  const question    = values.question_block.question_input.value ?? '';
-  const timeRange   = parseInt(values.time_range_block.time_range_select.selected_option?.value ?? '14', 10);
-
-  const thinkingMsg = await client.chat.postMessage({
-    channel:   channelId,
-    thread_ts: threadTs,
-    blocks:    buildThinkingBlocks(`Audit logs for ${tenantName}`),
-    text:      'Checking…',
-  }).catch(() => null);
-
-  const thinkingTs = thinkingMsg?.ts;
-
-  try {
-    const result = await queryAuditLog({ tenantName, question, timeRange });
-    const blocks = buildAuditBlocks(result);
-    const text   = `Audit log for ${tenantName}`;
-
-    if (thinkingTs) {
-      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text });
-    } else {
-      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text });
-    }
-    // Mark thread as having history so follow-up messages skip routing buttons
-    appendToHistory(threadTs, [
-      { role: 'user',      content: `Audit log request: ${tenantName}` },
-      { role: 'assistant', content: `Audit log for ${tenantName}: ${result.summary ?? ''}` },
-    ]);
-  } catch (err) {
-    logger.error('[audit] queryAuditLog failed:', err.message);
-    const errText = (err.message.includes('not configured') || err.message.includes('timed out'))
-      ? err.message
-      : `Something went wrong fetching audit logs for ${tenantName}. Try again or check Kibana directly.`;
-
-    if (thinkingTs) {
-      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: buildErrorBlocks(tenantName), text: errText });
-    } else {
-      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, text: errText });
-    }
-  }
-});
-
-// ── Kibana link button — ack only, Slack handles the URL open client-side ─────
-app.action('view_in_kibana', async ({ ack }) => { await ack(); });
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
