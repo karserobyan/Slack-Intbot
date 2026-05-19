@@ -89,8 +89,6 @@ npm start
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `GOOGLE_CSE_API_KEY` | Recommended | Google API key for ServiceTitan KB search |
 | `GOOGLE_CSE_ID` | Recommended | Custom Search Engine ID (scoped to `help.servicetitan.com`) |
-| `ES_MCP_URL` | Optional | Elasticsearch MCP server URL for audit log queries |
-| `ES_MCP_TOKEN` | Optional | Bearer token for the ES MCP server |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards |
 | `FEEDBACK_CHANNEL` | Optional | Alias for `FEEDBACK_REVIEW_CHANNEL_ID` (used internally for KB alerts) |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
@@ -112,19 +110,18 @@ src/
 │   ├── mention.js               # @mention handler + shared handleQuery()
 │   └── dm.js                    # Direct message handler
 ├── claude/
-│   ├── query.js                 # Claude API — queryWithContext, queryChat, queryAuditLog
-│   ├── prompts.js               # System prompts (CSA, Specialist, Chat, Audit) + parsers
+│   ├── query.js                 # Claude API — queryWithContext, queryChat
+│   ├── prompts.js               # System prompts (CSA, Specialist, Chat) + parsers
 │   └── kb-search.js             # Google Custom Search KB lookup
 ├── slack/
-│   ├── blocks.js                # Block Kit builders (response, audit, modals, error)
+│   ├── blocks.js                # Block Kit builders (response, modals, error)
 │   ├── cache.js                 # In-memory LRU response cache with TTL
 │   ├── conversation.js          # Per-thread history store for follow-up mode
 │   ├── feedback.js              # Wrong Answer feedback queue + moderation
 │   ├── knowledge.js             # knowledge.md loader with 5-min cache
 │   ├── knowledge-writer.js      # knowledge.md append with deduplication
-│   ├── modal.js                 # Audit log modal builder
-│   ├── nominations.js           # Bot-response nomination system
-│   └── routing-buttons.js       # Parked: routing buttons for DM entry point
+│   ├── modal.js                 # Modal builders (channel-post)
+│   └── nominations.js           # Bot-response nomination system
 └── utils/
     ├── accounting-filter.js     # Keyword-based accounting topic detection
     └── rate-limiter.js          # Per-user rate limiter
