@@ -39,7 +39,8 @@ Raw user question (from @mention or DM)
 │   └─ ok → { cleaned_question, intent, entities, search_plan }      │
 │                                                                     │
 │   [Search Executor — direct API/REST, no AI]      ~5s              │
-│   ├─ Runs the plan's sources in parallel, weighted by `priority`   │
+│   ├─ Runs every source in the plan in parallel                     │
+│   ├─ `priority` passes through as metadata (no execution gating v1)│
 │   └─ Slack via Web API (NOT MCP)                                   │
 │                                                                     │
 │   [Evaluator — Haiku 4.5]                         ~2s              │
@@ -64,8 +65,8 @@ Latency budget: ~25s fast path, ~35–45s with one refinement round. Hard cap: 6
 
 | Stage | File | Model | Job |
 |---|---|---|---|
-| Interpreter | `src/claude/interpreter.js` (new) | Haiku 4.5 | Strip email noise, extract entities, judge confidence (overall + per-source priority), build search plan |
-| Search Executor | `src/claude/search-executor.js` (new) | none (direct API) | Run the plan in parallel: KB / Confluence / Jira / Slack Web API |
+| Interpreter | `src/claude/interpreter.js` (new) | Haiku 4.5 | Strip email noise, extract entities, judge `question_confidence` + per-source `priority`, build search plan |
+| Search Executor | `src/claude/search-executor.js` (new) | none (direct API) | Run every source in the plan in parallel: KB / Confluence / Jira / Slack Web API. `priority` is passed through as metadata; v1 does not gate execution on it |
 | Evaluator | `src/claude/evaluator.js` (new) | Haiku 4.5 | Judge if results match cleaned question; emit refined plan if not. Hard cap: 1 refinement round |
 | Answerer | `src/claude/answerer.js` (new, derived from `queryWithContext`) | Sonnet 4.6 | Produce final structured response in the existing CSA / Specialist JSON schema |
 | Orchestrator | `src/claude/pipeline.js` (new) | — | Coordinates the four stages; called from `handleQuery` when `NEW_PIPELINE=true` |
@@ -226,15 +227,15 @@ Matches `CLAUDE.md` convention. The new stages get new test blocks alongside the
 
 ### Stage tests
 
-- **Interpreter** — golden-fixture driven. `test/fixtures/interpreter-queries.json` holds 10 hand-curated queries with their expected `cleaned_question`, `intent`, `entities`, and `question_confidence`. Mix:
-  - 3 clear troubleshooting queries (integration + symptom both named)
-  - 2 vague queries triggering `question_confidence: low`
-  - 2 queries with heavy email-paste noise (verifying that gets stripped)
-  - 1 `how-to` query
-  - 1 `policy` query
-  - 1 `integration-setup` query
-  
-  Tests call the Interpreter against mocked Anthropic SDK (returning fixture responses) and assert the JSON parses and matches the expected shape.
+- **Interpreter** — two-part testing:
+  - **Automated (`test.js`):** mocked Anthropic SDK returning a fixed JSON string; asserts the Interpreter wraps the SDK call correctly (right system prompt, right user message, JSON-parsed output, error handling for malformed responses)
+  - **Manual prompt iteration (`test/fixtures/interpreter-queries.json`):** 10 hand-curated queries with their expected `cleaned_question`, `intent`, `entities`, `question_confidence`. Developer runs the Interpreter against real Anthropic during development and checks the actual output against the fixture. Fixture is the **prompt-quality gate**; it's not executed in CI but must be verified before any prompt change ships. Mix of fixtures:
+    - 3 clear troubleshooting queries (integration + symptom both named)
+    - 2 vague queries triggering `question_confidence: low`
+    - 2 queries with heavy email-paste noise (verifying that gets stripped)
+    - 1 `how-to` query
+    - 1 `policy` query
+    - 1 `integration-setup` query
 
 - **Search Executor** — pure unit tests with mocked REST clients, mocked Slack Web API, mocked Google CSE. Asserts:
   - Sources in the plan get called in parallel
@@ -371,7 +372,7 @@ The redesign is successful when:
 
 ## 9. References
 
-- `process.md` (handoff doc 2026-05-13) — original brainstorm context, supersedes by this spec
+- `process.md` (handoff doc 2026-05-13) — original brainstorm context, superseded by this spec
 - `docs/functionality-overview.md` — capability-grouped reference for the current bot (baseline before redesign)
 - `CLAUDE.md` — branch + testing conventions
 - Anthropic SDK docs — Haiku 4.5 and Sonnet 4.6 model usage
