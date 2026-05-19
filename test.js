@@ -35,6 +35,7 @@ import {
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
+import { searchSlackMessages } from './src/slack/search-client.js';
 
 let passed = 0;
 let failed = 0;
@@ -1344,6 +1345,65 @@ process.env.NEW_PIPELINE = '1';
 assert(isNewPipelineEnabled() === false, 'numeric "1" is NOT true (strict "true" only)');
 
 delete process.env.NEW_PIPELINE;
+
+// ── slack search-client ───────────────────────────────────────────────────────
+console.log('\n🔹 slack search-client');
+
+// No token → null
+delete process.env.SLACK_USER_TOKEN;
+const noToken = await searchSlackMessages('zapier');
+assert(noToken === null, 'searchSlackMessages returns null when SLACK_USER_TOKEN is missing');
+
+// Placeholder token → null
+process.env.SLACK_USER_TOKEN = 'xoxp-replace-me';
+const placeholder = await searchSlackMessages('zapier');
+assert(placeholder === null, 'searchSlackMessages returns null for placeholder token');
+
+// Successful response → parsed refs
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+const origFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  assert(url.startsWith('https://slack.com/api/search.messages'), 'hits Slack API');
+  assert(opts.headers.Authorization === 'Bearer xoxp-test-token', 'uses Bearer auth');
+  return new Response(JSON.stringify({
+    ok: true,
+    messages: {
+      matches: [
+        { permalink: 'https://slack.com/archives/C1/p123', channel: { name: 'integrations' }, text: 'Zapier issue resolved by enabling API' },
+        { permalink: 'https://slack.com/archives/C1/p124', channel: { name: 'support' }, text: 'Another Zapier thread' },
+      ],
+    },
+  }), { status: 200 });
+};
+const ok = await searchSlackMessages('zapier');
+assert(ok !== null, 'parses successful response');
+assert(ok.refs.length === 2, 'returns two refs');
+assert(ok.refs[0].url === 'https://slack.com/archives/C1/p123', 'extracts permalink');
+assert(ok.refs[0].channel === '#integrations', 'prefixes channel with #');
+assert(ok.text.includes('integrations'), 'text contains channel');
+
+// Empty matches → null
+globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, messages: { matches: [] } }), { status: 200 });
+const empty = await searchSlackMessages('zapier');
+assert(empty === null, 'returns null when no matches');
+
+// Non-200 → null
+globalThis.fetch = async () => new Response('{}', { status: 500 });
+const fail = await searchSlackMessages('zapier');
+assert(fail === null, 'returns null on non-200');
+
+// Slack-level error (ok: false) → null
+globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 200 });
+const slackErr = await searchSlackMessages('zapier');
+assert(slackErr === null, 'returns null on Slack-level error');
+
+// Thrown exception → null
+globalThis.fetch = async () => { throw new Error('network down'); };
+const thrown = await searchSlackMessages('zapier');
+assert(thrown === null, 'returns null when fetch throws');
+
+globalThis.fetch = origFetch;
+delete process.env.SLACK_USER_TOKEN;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
