@@ -74,7 +74,7 @@
     },
     {
       "id": "how-to-1",
-      "input": "How do I enable the Thumbtack integration for an existing tenant?",
+      "input": "How do I view sync history for a customer's existing Thumbtack integration?",
       "expected": {
         "intent": "how-to",
         "entities": { "integration": "Thumbtack" },
