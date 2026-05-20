@@ -44,7 +44,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
     }
 
     onProgress?.({ phase: 'stage', stage: 'search-1' });
-    let searchResults = await executeSearchPlan(interp.search_plan);
+    let searchResults = await executeSearchPlan(interp.search_plan, { onProgress });
 
     onProgress?.({ phase: 'stage', stage: 'evaluator' });
     const evaluation = await runEvaluator({
@@ -55,13 +55,14 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
 
     if (!evaluation.sufficient && evaluation.refined_plan) {
       onProgress?.({ phase: 'stage', stage: 'search-2' });
-      const round2 = await executeSearchPlan(evaluation.refined_plan);
+      const round2 = await executeSearchPlan(evaluation.refined_plan, { onProgress });
       for (const k of Object.keys(round2)) {
         if (round2[k]) searchResults[k] = round2[k];
       }
     }
 
     onProgress?.({ phase: 'stage', stage: 'answerer' });
+    onProgress?.({ phase: 'writing' });
     const teamKnowledge = await getKnowledge().catch(() => null);
     const feedbackContext = await buildFeedbackContext(rawQuery);
 
