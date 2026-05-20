@@ -36,6 +36,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
 import { searchSlackMessages } from './src/slack/search-client.js';
+import { executeSearchPlan } from './src/claude/search-executor.js';
 
 let passed = 0;
 let failed = 0;
@@ -1403,6 +1404,91 @@ const thrown = await searchSlackMessages('zapier');
 assert(thrown === null, 'returns null when fetch throws');
 
 globalThis.fetch = origFetch;
+delete process.env.SLACK_USER_TOKEN;
+
+// ── search-executor ───────────────────────────────────────────────────────────
+console.log('\n🔹 search-executor');
+
+const origFetchSE = globalThis.fetch;
+
+// Helper fetch returns a per-URL fixture
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('customsearch')) {
+    return new Response(JSON.stringify({ items: [{ link: 'https://help.servicetitan.com/x', title: 'KB hit', snippet: 'foo' }] }), { status: 200 });
+  }
+  if (u.includes('atlassian.net/wiki')) {
+    return new Response(JSON.stringify({ results: [{ title: 'Confluence hit', url: '/page/1', excerpt: 'bar' }] }), { status: 200 });
+  }
+  if (u.includes('atlassian.net/rest/api/3/search')) {
+    return new Response(JSON.stringify({ issues: [{ key: 'JIRA-1', fields: { summary: 'Jira hit', status: { name: 'Open' } } }] }), { status: 200 });
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({ ok: true, messages: { matches: [{ permalink: 'https://slack.com/archives/C1/p1', channel: { name: 'c' }, text: 'Slack hit' }] } }), { status: 200 });
+  }
+  return new Response('{}', { status: 500 });
+};
+process.env.GOOGLE_CSE_API_KEY = 'k';
+process.env.GOOGLE_CSE_ID = 'cx';
+process.env.ATLASSIAN_EMAIL = 'a@b.c';
+process.env.ATLASSIAN_API_TOKEN = 't';
+process.env.SLACK_USER_TOKEN = 'xoxp-real';
+
+const plan = {
+  sources: [
+    { name: 'kb',         priority: 'medium', query: 'kb query' },
+    { name: 'confluence', priority: 'high',   query: 'confluence query' },
+    { name: 'jira',       priority: 'low',    query: 'jira query' },
+    { name: 'slack',      priority: 'high',   query: 'slack query' },
+  ],
+};
+const seResult = await executeSearchPlan(plan);
+
+assert(seResult.kb !== null, 'kb executed');
+assert(seResult.kb.priority === 'medium', 'kb priority passed through');
+assert(seResult.confluence !== null, 'confluence executed');
+assert(seResult.confluence.priority === 'high', 'confluence priority passed through');
+assert(seResult.jira !== null, 'jira executed');
+assert(seResult.jira.priority === 'low', 'jira priority passed through');
+assert(seResult.slack !== null, 'slack executed');
+assert(seResult.slack.priority === 'high', 'slack priority passed through');
+
+// Plan with only two sources → the other two are null
+const partialPlan = { sources: [{ name: 'kb', priority: 'high', query: 'kb only' }, { name: 'slack', priority: 'high', query: 'slack only' }] };
+const partial = await executeSearchPlan(partialPlan);
+assert(partial.kb !== null, 'kb runs');
+assert(partial.slack !== null, 'slack runs');
+assert(partial.confluence === null, 'confluence stays null');
+assert(partial.jira === null, 'jira stays null');
+
+// One failing source does not break others
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('customsearch')) throw new Error('boom');
+  if (u.includes('atlassian.net/wiki')) {
+    return new Response(JSON.stringify({ results: [{ title: 'OK', url: '/x', excerpt: '' }] }), { status: 200 });
+  }
+  return new Response('{}', { status: 500 });
+};
+const partialFail = await executeSearchPlan({ sources: [{ name: 'kb', priority: 'high', query: 'q' }, { name: 'confluence', priority: 'high', query: 'q' }] });
+assert(partialFail.kb === null, 'failing kb returns null');
+assert(partialFail.confluence !== null, 'confluence still succeeds');
+
+// Empty plan / null plan
+const emptyPlan = await executeSearchPlan({ sources: [] });
+assert(emptyPlan.kb === null && emptyPlan.confluence === null && emptyPlan.jira === null && emptyPlan.slack === null, 'empty plan returns all null');
+const nullPlan = await executeSearchPlan(null);
+assert(nullPlan.kb === null && nullPlan.confluence === null && nullPlan.jira === null && nullPlan.slack === null, 'null plan returns all null');
+
+// Unknown source name in plan is silently ignored
+const unknown = await executeSearchPlan({ sources: [{ name: 'mysteriousSource', priority: 'high', query: 'q' }] });
+assert(unknown.kb === null && unknown.confluence === null && unknown.jira === null && unknown.slack === null, 'unknown source ignored');
+
+globalThis.fetch = origFetchSE;
+delete process.env.GOOGLE_CSE_API_KEY;
+delete process.env.GOOGLE_CSE_ID;
+delete process.env.ATLASSIAN_EMAIL;
+delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.SLACK_USER_TOKEN;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
