@@ -40,6 +40,7 @@ export async function runAnswerer({
   teamKnowledge,
   feedbackContext,
   agentName = null,
+  signal: externalSignal,
 }) {
   const basePrompt = role === 'specialist' ? ANSWERER_PROMPT_SPECIALIST : ANSWERER_PROMPT_CSA;
   const systemPrompt = agentName
@@ -54,8 +55,11 @@ export async function runAnswerer({
   if (searchResults.slack?.text)      userContent += `\n\n[SLACK RESULTS]\n${searchResults.slack.text}\n[/SLACK RESULTS]`;
   if (feedbackContext)                userContent += feedbackContext;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
 
   try {
     const response = await getAnthropicClient().messages.create({
@@ -63,7 +67,7 @@ export async function runAnswerer({
       max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
-    }, { signal: controller.signal });
+    }, { signal });
 
     const fullText = response.content
       .filter(b => b.type === 'text')

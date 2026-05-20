@@ -198,6 +198,16 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
         return;
       }
 
+      if (pipelineResult.is_accounting_topic) {
+        const acctBlocks = buildAccountingRedirectBlocks(query);
+        if (thinkingTs) {
+          await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: acctBlocks, text: 'Accounting integration — please redirect.' });
+        } else {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: acctBlocks, text: 'Accounting integration — please redirect.' });
+        }
+        return;
+      }
+
       pipelineResult._originalQuery = query;
       if (fuRole === 'csa') {
         pipelineResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });

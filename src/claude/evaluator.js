@@ -26,11 +26,14 @@ function summarizeResults(searchResults) {
   return lines.join('\n\n');
 }
 
-export async function runEvaluator({ cleanedQuestion, searchResults, originalPlan }) {
+export async function runEvaluator({ cleanedQuestion, searchResults, originalPlan, signal: externalSignal }) {
   const userContent = `Cleaned question: ${cleanedQuestion}\n\nOriginal plan: ${JSON.stringify(originalPlan)}\n\nRound 1 results:\n${summarizeResults(searchResults)}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
 
   try {
     const response = await getAnthropicClient().messages.create({
@@ -38,7 +41,7 @@ export async function runEvaluator({ cleanedQuestion, searchResults, originalPla
       max_tokens: 1024,
       system: EVALUATOR_PROMPT,
       messages: [{ role: 'user', content: userContent }],
-    }, { signal: controller.signal });
+    }, { signal });
 
     const text = response.content
       .filter(b => b.type === 'text')

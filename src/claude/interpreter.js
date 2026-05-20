@@ -32,16 +32,19 @@ function buildUserMessage(rawQuery, threadHistory) {
   return `[PRIOR THREAD HISTORY]\n${historyText}\n[/PRIOR THREAD HISTORY]\n\nCURRENT MESSAGE: ${rawQuery}`;
 }
 
-async function callOnce(userMessage) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+async function callOnce(userMessage, externalSignal) {
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
   try {
     const response = await getAnthropicClient().messages.create({
       model: MODEL,
       max_tokens: 1024,
       system: INTERPRETER_PROMPT,
       messages: [{ role: 'user', content: userMessage }],
-    }, { signal: controller.signal });
+    }, { signal });
 
     const text = response.content
       .filter(b => b.type === 'text')
@@ -57,14 +60,15 @@ async function callOnce(userMessage) {
   }
 }
 
-export async function runInterpreter(rawQuery, { threadHistory = [] } = {}) {
+export async function runInterpreter(rawQuery, { threadHistory = [], signal } = {}) {
   const userMessage = buildUserMessage(rawQuery, threadHistory);
   try {
-    return await callOnce(userMessage);
+    return await callOnce(userMessage, signal);
   } catch (err1) {
+    if (signal?.aborted) return FALLBACK;
     console.warn('[interpreter] first attempt failed:', err1.message);
     try {
-      return await callOnce(userMessage);
+      return await callOnce(userMessage, signal);
     } catch (err2) {
       console.warn('[interpreter] second attempt failed, returning fallback:', err2.message);
       return FALLBACK;
