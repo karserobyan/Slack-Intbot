@@ -37,6 +37,7 @@ import { join } from 'node:path';
 import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
+import { runAnswerer } from './src/claude/answerer.js';
 
 let passed = 0;
 let failed = 0;
@@ -1490,6 +1491,93 @@ delete process.env.GOOGLE_CSE_ID;
 delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.SLACK_USER_TOKEN;
+
+// ── answerer ──────────────────────────────────────────────────────────────────
+console.log('\n🔹 answerer');
+
+const origFetchAns = globalThis.fetch;
+let lastAnthropicBody;
+globalThis.fetch = async (url, opts) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) {
+    lastAnthropicBody = JSON.parse(opts.body);
+    return new Response(JSON.stringify({
+      id: 'msg_test',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-sonnet-4-6',
+      content: [{ type: 'text', text: '{"issue_title":"Test","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 100, output_tokens: 100 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchAns(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test-key';
+
+const ansResult = await runAnswerer({
+  cleanedQuestion: 'Zapier not syncing',
+  searchResults: {
+    kb: null,
+    confluence: { text: 'C content', refs: [], priority: 'high' },
+    jira: null,
+    slack: { text: 'S content', refs: [], priority: 'high' },
+  },
+  role: 'csa',
+  teamKnowledge: 'TK content',
+  feedbackContext: '\n\nIMPORTANT — Past corrections: X',
+});
+
+assert(ansResult !== null, 'answerer returns parsed JSON');
+assert(ansResult.issue_title === 'Test', 'parses issue_title');
+assert(ansResult.integration_type === 'Zapier', 'parses integration_type');
+assert(lastAnthropicBody.system.includes('CSA') || lastAnthropicBody.system.includes('Customer Support') || lastAnthropicBody.system.length > 1000, 'uses non-empty CSA system prompt for csa role');
+assert(lastAnthropicBody.messages[0].content.includes('Issue: Zapier not syncing'), 'user content starts with cleaned question');
+assert(lastAnthropicBody.messages[0].content.includes('TK content'), 'user content includes team knowledge');
+assert(lastAnthropicBody.messages[0].content.includes('[TEAM KNOWLEDGE]'), 'user content has TEAM KNOWLEDGE delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('C content'), 'user content includes confluence');
+assert(lastAnthropicBody.messages[0].content.includes('[CONFLUENCE RESULTS]'), 'user content has CONFLUENCE RESULTS delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('S content'), 'user content includes slack');
+assert(lastAnthropicBody.messages[0].content.includes('[SLACK RESULTS]'), 'user content has SLACK RESULTS delimiter');
+assert(!lastAnthropicBody.messages[0].content.includes('[KB RESULTS]'), 'kb absent → no KB delimiter');
+assert(!lastAnthropicBody.messages[0].content.includes('[JIRA RESULTS]'), 'jira absent → no JIRA delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('IMPORTANT — Past corrections'), 'user content includes feedback');
+assert(!('mcp_servers' in lastAnthropicBody), 'no mcp_servers in answerer call (Slack moved to Web API)');
+assert(!('betas' in lastAnthropicBody), 'no betas: ["mcp-client-..."] in answerer call');
+
+// Specialist role uses specialist prompt
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'specialist',
+  teamKnowledge: null,
+  feedbackContext: '',
+});
+assert(lastAnthropicBody.system.includes('Specialist') || lastAnthropicBody.system.includes('specialist'), 'uses Specialist prompt for specialist role');
+
+// agentName appended to system prompt
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'csa',
+  teamKnowledge: null,
+  feedbackContext: '',
+  agentName: 'Sarah',
+});
+assert(lastAnthropicBody.system.includes('Sarah'), 'system prompt includes agent name when provided');
+
+// Empty feedback context doesn't add anything
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'csa',
+  teamKnowledge: null,
+  feedbackContext: '',
+});
+assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback adds nothing');
+
+globalThis.fetch = origFetchAns;
+delete process.env.ANTHROPIC_API_KEY;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
