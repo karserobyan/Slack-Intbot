@@ -1703,6 +1703,23 @@ assert(failedEval.refined_plan === null, 'no refined plan on failure');
 globalThis.fetch = origFetchEv;
 delete process.env.ANTHROPIC_API_KEY;
 
+// ── cache two-key support ─────────────────────────────────────────────────────
+console.log('\n🔹 cache two-key');
+
+import { setCachedMulti } from './src/slack/cache.js';
+const dummyCacheData = { issue_title: 'X' };
+
+setCachedMulti(['raw text here', 'raw text'], dummyCacheData);
+assert(getCached('raw text here') !== null, 'raw key1 hits');
+assert(getCached('raw text') !== null, 'raw key2 hits');
+assert(getCached('totally unrelated key') === null, 'unrelated key misses');
+
+setCachedMulti(['only one'], dummyCacheData);
+assert(getCached('only one') !== null, 'single-key write works');
+
+setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
+assert(getCached('valid key') !== null, 'valid key in mixed array is written');
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
