@@ -1648,6 +1648,61 @@ assert(fallback.search_plan === null, 'fallback skips search');
 globalThis.fetch = origFetchInt;
 delete process.env.ANTHROPIC_API_KEY;
 
+// ── evaluator ─────────────────────────────────────────────────────────────────
+console.log('\n🔹 evaluator');
+
+import { runEvaluator } from './src/claude/evaluator.js';
+
+const origFetchEv = globalThis.fetch;
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"sufficient":true,"rationale":"good","refined_plan":null}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchEv(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const suff = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: { text: 't', refs: [] }, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(suff.sufficient === true, 'parses sufficient: true');
+assert(suff.refined_plan === null, 'refined_plan null when sufficient');
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"sufficient":false,"rationale":"results off-topic","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"better keywords"}]}}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchEv(url, opts);
+};
+const insuff = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(insuff.sufficient === false, 'parses sufficient: false');
+assert(insuff.refined_plan.sources[0].query === 'better keywords', 'parses refined query');
+
+globalThis.fetch = async () => new Response('boom', { status: 503 });
+const failedEval = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(failedEval.sufficient === true, 'failure assumes sufficient (skip refinement)');
+assert(failedEval.refined_plan === null, 'no refined plan on failure');
+
+globalThis.fetch = origFetchEv;
+delete process.env.ANTHROPIC_API_KEY;
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
