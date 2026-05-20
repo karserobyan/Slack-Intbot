@@ -1579,6 +1579,75 @@ assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback add
 globalThis.fetch = origFetchAns;
 delete process.env.ANTHROPIC_API_KEY;
 
+// ── interpreter ───────────────────────────────────────────────────────────────
+console.log('\n🔹 interpreter');
+
+import { runInterpreter } from './src/claude/interpreter.js';
+
+const origFetchInt = globalThis.fetch;
+let lastInterpreterBody;
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    lastInterpreterBody = JSON.parse(opts.body);
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"cleaned_question":"Zapier stopped syncing","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"stopped syncing"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"confluence","priority":"high","query":"Zapier sync"}],"rationale":"r"}}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchInt(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const okInterp = await runInterpreter('Zapier stopped syncing');
+assert(okInterp.cleaned_question === 'Zapier stopped syncing', 'parses cleaned_question');
+assert(okInterp.intent === 'troubleshooting', 'parses intent');
+assert(okInterp.question_confidence === 'high', 'parses question_confidence');
+assert(lastInterpreterBody.model === 'claude-haiku-4-5-20251001' || lastInterpreterBody.model.includes('haiku'), 'uses Haiku model');
+
+await runInterpreter('still not working', { threadHistory: [
+  { role: 'user', content: 'My Zapier broke' },
+  { role: 'assistant', content: 'Did you check the API toggle?' },
+]});
+assert(lastInterpreterBody.messages.length >= 1, 'has user message');
+const lastMsg = lastInterpreterBody.messages[lastInterpreterBody.messages.length - 1].content;
+assert(lastMsg.includes('still not working'), 'includes current message');
+assert(lastMsg.includes('Zapier broke'), 'includes prior thread history');
+
+let attempts = 0;
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    attempts++;
+    if (attempts === 1) return new Response('upstream error', { status: 503 });
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"cleaned_question":"q","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which?","search_plan":null}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchInt(url, opts);
+};
+const retried = await runInterpreter('vague');
+assert(attempts === 2, 'retried exactly once on 5xx');
+assert(retried.question_confidence === 'low', 'got the eventual response');
+
+attempts = 0;
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    attempts++;
+    return new Response('boom', { status: 503 });
+  }
+  return origFetchInt(url, opts);
+};
+const fallback = await runInterpreter('test');
+assert(attempts === 2, 'tries twice total before giving up');
+assert(fallback.question_confidence === 'low', 'fallback confidence is low');
+assert(fallback.intent === 'unclear', 'fallback intent is unclear');
+assert(fallback.clarifying_question && fallback.clarifying_question.length > 0, 'fallback includes clarifying_question');
+assert(fallback.search_plan === null, 'fallback skips search');
+
+globalThis.fetch = origFetchInt;
+delete process.env.ANTHROPIC_API_KEY;
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
