@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "note": "Manual prompt-quality gate. Run the Interpreter against real Anthropic with each `input` and verify the actual output matches `expected`. Not executed in CI.",
+  "fixtures": [
+    {
+      "id": "clear-troubleshoot-1",
+      "input": "Customer's Zapier integration stopped syncing leads after tenant migration last week",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "Zapier", "symptom_contains": "sync" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence", "slack"]
+      }
+    },
+    {
+      "id": "clear-troubleshoot-2",
+      "input": "We're getting 502 Bad Gateway calling the Angi webhook for new leads",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "Angi", "error_code_contains": "502" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence", "slack"]
+      }
+    },
+    {
+      "id": "clear-troubleshoot-3",
+      "input": "RwG bookings showing pending status but not appearing in the schedule",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "RwG", "symptom_contains": "pending" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence", "slack"]
+      }
+    },
+    {
+      "id": "vague-1",
+      "input": "it's broken",
+      "expected": {
+        "intent": "unclear",
+        "question_confidence": "low",
+        "clarifying_question_not_null": true,
+        "search_plan_is_null": true
+      }
+    },
+    {
+      "id": "vague-2",
+      "input": "Something's off with the integration thing",
+      "expected": {
+        "intent": "unclear",
+        "question_confidence": "low",
+        "clarifying_question_not_null": true,
+        "search_plan_is_null": true
+      }
+    },
+    {
+      "id": "email-noise-1",
+      "input": "Hi Bot,\n\nHope you had a great weekend! Our customer ABC Corp (tenant 12345) reached out about their Zapier integration. They said it stopped pushing new leads to their CRM since Friday. Could you take a look?\n\nThanks!\nSarah Lee\nIntegrations Specialist\n----\n> Original email from customer:\n> Hi support, our Zapier hasn't been working since Friday.",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "Zapier", "tenant_id_contains": "12345" },
+        "cleaned_question_must_omit": ["Sarah", "Hope you had", "Original email"],
+        "question_confidence": "high"
+      }
+    },
+    {
+      "id": "email-noise-2",
+      "input": "From: customer@example.com\nSubject: ServiceChannel issue\n\nWe're seeing duplicate work orders in ServiceChannel ever since the last release. Can your team check this?\n\n--\nRegards,\nMike\nIT Manager",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "ServiceChannel", "symptom_contains": "duplicate" },
+        "cleaned_question_must_omit": ["From:", "Subject:", "Regards"],
+        "question_confidence": "high"
+      }
+    },
+    {
+      "id": "how-to-1",
+      "input": "How do I enable the Thumbtack integration for an existing tenant?",
+      "expected": {
+        "intent": "how-to",
+        "entities": { "integration": "Thumbtack" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence", "kb"]
+      }
+    },
+    {
+      "id": "policy-1",
+      "input": "What's the escalation path when a Procore integration affects multiple tenants?",
+      "expected": {
+        "intent": "policy",
+        "entities": { "integration": "Procore" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence"]
+      }
+    },
+    {
+      "id": "integration-setup-1",
+      "input": "What do I need to provision for a brand new Chat-to-Text integration?",
+      "expected": {
+        "intent": "integration-setup",
+        "entities": { "integration": "Chat-to-Text" },
+        "question_confidence": "high",
+        "search_plan_must_include": ["confluence"]
+      }
+    }
+  ]
+}

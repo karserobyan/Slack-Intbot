@@ -34,6 +34,10 @@ import {
 } from './src/slack/knowledge-writer.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
+import { searchSlackMessages } from './src/slack/search-client.js';
+import { executeSearchPlan } from './src/claude/search-executor.js';
+import { runAnswerer } from './src/claude/answerer.js';
 
 let passed = 0;
 let failed = 0;
@@ -1323,6 +1327,464 @@ assert(multiText.includes('–') && multiText.includes('Jira'),       'multi: ji
 assert(!multiText.includes('Slack'), 'multi: slack no longer in section');
 assert(progMulti[1].elements[0].text.toLowerCase().includes('writing'),
   'multi: writing surfaces in context (overrides slack)');
+
+// ── feature-flags ─────────────────────────────────────────────────────────────
+console.log('\n🔹 feature-flags');
+
+delete process.env.NEW_PIPELINE;
+assert(isNewPipelineEnabled() === false, 'unset NEW_PIPELINE → false');
+
+process.env.NEW_PIPELINE = 'false';
+assert(isNewPipelineEnabled() === false, '"false" → false');
+
+process.env.NEW_PIPELINE = 'true';
+assert(isNewPipelineEnabled() === true, '"true" → true');
+
+process.env.NEW_PIPELINE = 'TRUE';
+assert(isNewPipelineEnabled() === true, '"TRUE" (case-insensitive) → true');
+
+process.env.NEW_PIPELINE = '1';
+assert(isNewPipelineEnabled() === false, 'numeric "1" is NOT true (strict "true" only)');
+
+delete process.env.NEW_PIPELINE;
+
+// ── slack search-client ───────────────────────────────────────────────────────
+console.log('\n🔹 slack search-client');
+
+// No token → null
+delete process.env.SLACK_USER_TOKEN;
+const noToken = await searchSlackMessages('zapier');
+assert(noToken === null, 'searchSlackMessages returns null when SLACK_USER_TOKEN is missing');
+
+// Placeholder token → null
+process.env.SLACK_USER_TOKEN = 'xoxp-replace-me';
+const placeholder = await searchSlackMessages('zapier');
+assert(placeholder === null, 'searchSlackMessages returns null for placeholder token');
+
+// Successful response → parsed refs
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+const origFetch = globalThis.fetch;
+globalThis.fetch = async (url, opts) => {
+  assert(url.startsWith('https://slack.com/api/search.messages'), 'hits Slack API');
+  assert(opts.headers.Authorization === 'Bearer xoxp-test-token', 'uses Bearer auth');
+  return new Response(JSON.stringify({
+    ok: true,
+    messages: {
+      matches: [
+        { permalink: 'https://slack.com/archives/C1/p123', channel: { name: 'integrations' }, text: 'Zapier issue resolved by enabling API' },
+        { permalink: 'https://slack.com/archives/C1/p124', channel: { name: 'support' }, text: 'Another Zapier thread' },
+      ],
+    },
+  }), { status: 200 });
+};
+const ok = await searchSlackMessages('zapier');
+assert(ok !== null, 'parses successful response');
+assert(ok.refs.length === 2, 'returns two refs');
+assert(ok.refs[0].url === 'https://slack.com/archives/C1/p123', 'extracts permalink');
+assert(ok.refs[0].channel === '#integrations', 'prefixes channel with #');
+assert(ok.text.includes('integrations'), 'text contains channel');
+
+// Empty matches → null
+globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, messages: { matches: [] } }), { status: 200 });
+const empty = await searchSlackMessages('zapier');
+assert(empty === null, 'returns null when no matches');
+
+// Non-200 → null
+globalThis.fetch = async () => new Response('{}', { status: 500 });
+const fail = await searchSlackMessages('zapier');
+assert(fail === null, 'returns null on non-200');
+
+// Slack-level error (ok: false) → null
+globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 200 });
+const slackErr = await searchSlackMessages('zapier');
+assert(slackErr === null, 'returns null on Slack-level error');
+
+// Thrown exception → null
+globalThis.fetch = async () => { throw new Error('network down'); };
+const thrown = await searchSlackMessages('zapier');
+assert(thrown === null, 'returns null when fetch throws');
+
+globalThis.fetch = origFetch;
+delete process.env.SLACK_USER_TOKEN;
+
+// ── search-executor ───────────────────────────────────────────────────────────
+console.log('\n🔹 search-executor');
+
+const origFetchSE = globalThis.fetch;
+
+// Helper fetch returns a per-URL fixture
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('customsearch')) {
+    return new Response(JSON.stringify({ items: [{ link: 'https://help.servicetitan.com/x', title: 'KB hit', snippet: 'foo' }] }), { status: 200 });
+  }
+  if (u.includes('atlassian.net/wiki')) {
+    return new Response(JSON.stringify({ results: [{ title: 'Confluence hit', url: '/page/1', excerpt: 'bar' }] }), { status: 200 });
+  }
+  if (u.includes('atlassian.net/rest/api/3/search')) {
+    return new Response(JSON.stringify({ issues: [{ key: 'JIRA-1', fields: { summary: 'Jira hit', status: { name: 'Open' } } }] }), { status: 200 });
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({ ok: true, messages: { matches: [{ permalink: 'https://slack.com/archives/C1/p1', channel: { name: 'c' }, text: 'Slack hit' }] } }), { status: 200 });
+  }
+  return new Response('{}', { status: 500 });
+};
+process.env.GOOGLE_CSE_API_KEY = 'k';
+process.env.GOOGLE_CSE_ID = 'cx';
+process.env.ATLASSIAN_EMAIL = 'a@b.c';
+process.env.ATLASSIAN_API_TOKEN = 't';
+process.env.SLACK_USER_TOKEN = 'xoxp-real';
+
+const plan = {
+  sources: [
+    { name: 'kb',         priority: 'medium', query: 'kb query' },
+    { name: 'confluence', priority: 'high',   query: 'confluence query' },
+    { name: 'jira',       priority: 'low',    query: 'jira query' },
+    { name: 'slack',      priority: 'high',   query: 'slack query' },
+  ],
+};
+const seResult = await executeSearchPlan(plan);
+
+assert(seResult.kb !== null, 'kb executed');
+assert(seResult.kb.priority === 'medium', 'kb priority passed through');
+assert(seResult.confluence !== null, 'confluence executed');
+assert(seResult.confluence.priority === 'high', 'confluence priority passed through');
+assert(seResult.jira !== null, 'jira executed');
+assert(seResult.jira.priority === 'low', 'jira priority passed through');
+assert(seResult.slack !== null, 'slack executed');
+assert(seResult.slack.priority === 'high', 'slack priority passed through');
+
+// Plan with only two sources → the other two are null
+const partialPlan = { sources: [{ name: 'kb', priority: 'high', query: 'kb only' }, { name: 'slack', priority: 'high', query: 'slack only' }] };
+const partial = await executeSearchPlan(partialPlan);
+assert(partial.kb !== null, 'kb runs');
+assert(partial.slack !== null, 'slack runs');
+assert(partial.confluence === null, 'confluence stays null');
+assert(partial.jira === null, 'jira stays null');
+
+// One failing source does not break others
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('customsearch')) throw new Error('boom');
+  if (u.includes('atlassian.net/wiki')) {
+    return new Response(JSON.stringify({ results: [{ title: 'OK', url: '/x', excerpt: '' }] }), { status: 200 });
+  }
+  return new Response('{}', { status: 500 });
+};
+const partialFail = await executeSearchPlan({ sources: [{ name: 'kb', priority: 'high', query: 'q' }, { name: 'confluence', priority: 'high', query: 'q' }] });
+assert(partialFail.kb === null, 'failing kb returns null');
+assert(partialFail.confluence !== null, 'confluence still succeeds');
+
+// Empty plan / null plan
+const emptyPlan = await executeSearchPlan({ sources: [] });
+assert(emptyPlan.kb === null && emptyPlan.confluence === null && emptyPlan.jira === null && emptyPlan.slack === null, 'empty plan returns all null');
+const nullPlan = await executeSearchPlan(null);
+assert(nullPlan.kb === null && nullPlan.confluence === null && nullPlan.jira === null && nullPlan.slack === null, 'null plan returns all null');
+
+// Unknown source name in plan is silently ignored
+const unknown = await executeSearchPlan({ sources: [{ name: 'mysteriousSource', priority: 'high', query: 'q' }] });
+assert(unknown.kb === null && unknown.confluence === null && unknown.jira === null && unknown.slack === null, 'unknown source ignored');
+
+globalThis.fetch = origFetchSE;
+delete process.env.GOOGLE_CSE_API_KEY;
+delete process.env.GOOGLE_CSE_ID;
+delete process.env.ATLASSIAN_EMAIL;
+delete process.env.ATLASSIAN_API_TOKEN;
+delete process.env.SLACK_USER_TOKEN;
+
+// ── answerer ──────────────────────────────────────────────────────────────────
+console.log('\n🔹 answerer');
+
+const origFetchAns = globalThis.fetch;
+let lastAnthropicBody;
+globalThis.fetch = async (url, opts) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) {
+    lastAnthropicBody = JSON.parse(opts.body);
+    return new Response(JSON.stringify({
+      id: 'msg_test',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-sonnet-4-6',
+      content: [{ type: 'text', text: '{"issue_title":"Test","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 100, output_tokens: 100 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchAns(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test-key';
+
+const ansResult = await runAnswerer({
+  cleanedQuestion: 'Zapier not syncing',
+  searchResults: {
+    kb: null,
+    confluence: { text: 'C content', refs: [], priority: 'high' },
+    jira: null,
+    slack: { text: 'S content', refs: [], priority: 'high' },
+  },
+  role: 'csa',
+  teamKnowledge: 'TK content',
+  feedbackContext: '\n\nIMPORTANT — Past corrections: X',
+});
+
+assert(ansResult !== null, 'answerer returns parsed JSON');
+assert(ansResult.issue_title === 'Test', 'parses issue_title');
+assert(ansResult.integration_type === 'Zapier', 'parses integration_type');
+assert(lastAnthropicBody.system.includes('CSA') || lastAnthropicBody.system.includes('Customer Support') || lastAnthropicBody.system.length > 1000, 'uses non-empty CSA system prompt for csa role');
+assert(lastAnthropicBody.messages[0].content.includes('Issue: Zapier not syncing'), 'user content starts with cleaned question');
+assert(lastAnthropicBody.messages[0].content.includes('TK content'), 'user content includes team knowledge');
+assert(lastAnthropicBody.messages[0].content.includes('[TEAM KNOWLEDGE]'), 'user content has TEAM KNOWLEDGE delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('C content'), 'user content includes confluence');
+assert(lastAnthropicBody.messages[0].content.includes('[CONFLUENCE RESULTS]'), 'user content has CONFLUENCE RESULTS delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('S content'), 'user content includes slack');
+assert(lastAnthropicBody.messages[0].content.includes('[SLACK RESULTS]'), 'user content has SLACK RESULTS delimiter');
+assert(!lastAnthropicBody.messages[0].content.includes('[KB RESULTS]'), 'kb absent → no KB delimiter');
+assert(!lastAnthropicBody.messages[0].content.includes('[JIRA RESULTS]'), 'jira absent → no JIRA delimiter');
+assert(lastAnthropicBody.messages[0].content.includes('IMPORTANT — Past corrections'), 'user content includes feedback');
+assert(!('mcp_servers' in lastAnthropicBody), 'no mcp_servers in answerer call (Slack moved to Web API)');
+assert(!('betas' in lastAnthropicBody), 'no betas: ["mcp-client-..."] in answerer call');
+
+// Specialist role uses specialist prompt
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'specialist',
+  teamKnowledge: null,
+  feedbackContext: '',
+});
+assert(lastAnthropicBody.system.includes('Specialist') || lastAnthropicBody.system.includes('specialist'), 'uses Specialist prompt for specialist role');
+
+// agentName appended to system prompt
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'csa',
+  teamKnowledge: null,
+  feedbackContext: '',
+  agentName: 'Sarah',
+});
+assert(lastAnthropicBody.system.includes('Sarah'), 'system prompt includes agent name when provided');
+
+// Empty feedback context doesn't add anything
+await runAnswerer({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  role: 'csa',
+  teamKnowledge: null,
+  feedbackContext: '',
+});
+assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback adds nothing');
+
+globalThis.fetch = origFetchAns;
+delete process.env.ANTHROPIC_API_KEY;
+
+// ── interpreter ───────────────────────────────────────────────────────────────
+console.log('\n🔹 interpreter');
+
+import { runInterpreter } from './src/claude/interpreter.js';
+
+const origFetchInt = globalThis.fetch;
+let lastInterpreterBody;
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    lastInterpreterBody = JSON.parse(opts.body);
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"cleaned_question":"Zapier stopped syncing","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"stopped syncing"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"confluence","priority":"high","query":"Zapier sync"}],"rationale":"r"}}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchInt(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const okInterp = await runInterpreter('Zapier stopped syncing');
+assert(okInterp.cleaned_question === 'Zapier stopped syncing', 'parses cleaned_question');
+assert(okInterp.intent === 'troubleshooting', 'parses intent');
+assert(okInterp.question_confidence === 'high', 'parses question_confidence');
+assert(lastInterpreterBody.model === 'claude-haiku-4-5-20251001' || lastInterpreterBody.model.includes('haiku'), 'uses Haiku model');
+
+await runInterpreter('still not working', { threadHistory: [
+  { role: 'user', content: 'My Zapier broke' },
+  { role: 'assistant', content: 'Did you check the API toggle?' },
+]});
+assert(lastInterpreterBody.messages.length >= 1, 'has user message');
+const lastMsg = lastInterpreterBody.messages[lastInterpreterBody.messages.length - 1].content;
+assert(lastMsg.includes('still not working'), 'includes current message');
+assert(lastMsg.includes('Zapier broke'), 'includes prior thread history');
+
+let attempts = 0;
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    attempts++;
+    if (attempts === 1) return new Response('upstream error', { status: 503 });
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"cleaned_question":"q","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which?","search_plan":null}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchInt(url, opts);
+};
+const retried = await runInterpreter('vague');
+assert(attempts === 2, 'retried exactly once on 5xx');
+assert(retried.question_confidence === 'low', 'got the eventual response');
+
+attempts = 0;
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    attempts++;
+    return new Response('boom', { status: 503 });
+  }
+  return origFetchInt(url, opts);
+};
+const fallback = await runInterpreter('test');
+assert(attempts === 2, 'tries twice total before giving up');
+assert(fallback.question_confidence === 'low', 'fallback confidence is low');
+assert(fallback.intent === 'unclear', 'fallback intent is unclear');
+assert(fallback.clarifying_question && fallback.clarifying_question.length > 0, 'fallback includes clarifying_question');
+assert(fallback.search_plan === null, 'fallback skips search');
+
+globalThis.fetch = origFetchInt;
+delete process.env.ANTHROPIC_API_KEY;
+
+// ── evaluator ─────────────────────────────────────────────────────────────────
+console.log('\n🔹 evaluator');
+
+import { runEvaluator } from './src/claude/evaluator.js';
+
+const origFetchEv = globalThis.fetch;
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"sufficient":true,"rationale":"good","refined_plan":null}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchEv(url, opts);
+};
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const suff = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: { text: 't', refs: [] }, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(suff.sufficient === true, 'parses sufficient: true');
+assert(suff.refined_plan === null, 'refined_plan null when sufficient');
+
+globalThis.fetch = async (url, opts) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"sufficient":false,"rationale":"results off-topic","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"better keywords"}]}}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchEv(url, opts);
+};
+const insuff = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(insuff.sufficient === false, 'parses sufficient: false');
+assert(insuff.refined_plan.sources[0].query === 'better keywords', 'parses refined query');
+
+globalThis.fetch = async () => new Response('boom', { status: 503 });
+const failedEval = await runEvaluator({
+  cleanedQuestion: 'q',
+  searchResults: { kb: null, confluence: null, jira: null, slack: null },
+  originalPlan: { sources: [] },
+});
+assert(failedEval.sufficient === true, 'failure assumes sufficient (skip refinement)');
+assert(failedEval.refined_plan === null, 'no refined plan on failure');
+
+globalThis.fetch = origFetchEv;
+delete process.env.ANTHROPIC_API_KEY;
+
+// ── cache two-key support ─────────────────────────────────────────────────────
+console.log('\n🔹 cache two-key');
+
+import { setCachedMulti } from './src/slack/cache.js';
+const dummyCacheData = { issue_title: 'X' };
+
+setCachedMulti(['raw text here', 'raw text'], dummyCacheData);
+assert(getCached('raw text here') !== null, 'raw key1 hits');
+assert(getCached('raw text') !== null, 'raw key2 hits');
+assert(getCached('totally unrelated key') === null, 'unrelated key misses');
+
+setCachedMulti(['only one'], dummyCacheData);
+assert(getCached('only one') !== null, 'single-key write works');
+
+setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
+assert(getCached('valid key') !== null, 'valid key in mixed array is written');
+
+// ── pipeline orchestrator ─────────────────────────────────────────────────────
+console.log('\n🔹 pipeline');
+
+import { runPipeline } from './src/claude/pipeline.js';
+
+const origFetchPipe = globalThis.fetch;
+process.env.ANTHROPIC_API_KEY = 'test';
+
+let stepCounter = 0;
+const sequenceResponses = [];
+function nextResponse() {
+  const r = sequenceResponses[stepCounter++];
+  if (!r) throw new Error(`No response queued for step ${stepCounter}`);
+  return r;
+}
+function anthropicMock(body) {
+  return new Response(JSON.stringify({
+    content: [{ type: 'text', text: body }],
+    stop_reason: 'end_turn',
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+async function passThroughFetch(url) {
+  if (typeof url === 'string' && url.includes('anthropic.com')) return nextResponse();
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200 });
+}
+
+// Test A: question_confidence: low → clarifying-question shortcut
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which one?","search_plan":null}'),
+);
+globalThis.fetch = passThroughFetch;
+const lowConfResult = await runPipeline({ rawQuery: 'vague', role: 'csa' });
+assert(lowConfResult.clarifying_question === 'Which one?', 'low-confidence shortcut returns clarifying_question');
+assert(stepCounter === 1, 'only Interpreter was called');
+
+// Test B: sufficient:true → skips refinement
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+globalThis.fetch = passThroughFetch;
+const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
+assert(okPipeResult.issue_title === 'T', 'Answerer ran');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (no refinement)');
+
+// Test C: sufficient:false → exactly one refinement
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":false,"rationale":"miss","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"q2"}]}}'),
+  anthropicMock('{"issue_title":"T2","integration_type":"Zapier","is_accounting_topic":false,"confidence":"medium","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+globalThis.fetch = passThroughFetch;
+const refinedResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
+assert(refinedResult.issue_title === 'T2', 'Answerer ran after refinement');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (refinement triggers a second SEARCH, not a second Evaluator)');
+
+globalThis.fetch = origFetchPipe;
+delete process.env.ANTHROPIC_API_KEY;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

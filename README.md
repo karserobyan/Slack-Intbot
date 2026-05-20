@@ -101,6 +101,19 @@ npm start
 
 ---
 
+## New pipeline rollout
+
+The bot supports a four-stage query pipeline (Interpreter → Search → Evaluator → Refine → Answerer) behind the `NEW_PIPELINE` feature flag. Default is OFF.
+
+- `NEW_PIPELINE=false` (default) — today's `queryWithContext` / `queryChat` path runs unchanged.
+- `NEW_PIPELINE=true` — `handleQuery` routes to `src/claude/pipeline.js`, which understands the question first (Haiku Interpreter), then searches each source with a targeted plan, evaluates the results, optionally refines once, and only then calls Sonnet for the final answer.
+
+Both initial channel mentions and DM follow-ups respect the flag. Flip with a single env-var change — no code redeploy required to roll back.
+
+See `docs/superpowers/specs/2026-05-19-query-understanding-redesign.md` for the full design.
+
+---
+
 ## Project Structure
 
 ```

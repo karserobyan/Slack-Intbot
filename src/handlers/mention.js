@@ -13,12 +13,14 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
 } from '../slack/blocks.js';
-import { getCached, setCached } from '../slack/cache.js';
+import { getCached, setCached, setCachedMulti } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { searchKnowledgeBase } from '../claude/kb-search.js';
 import { searchConfluence, searchJira } from '../claude/atlassian-search.js';
+import { runPipeline } from '../claude/pipeline.js';
+import { isNewPipelineEnabled } from '../utils/feature-flags.js';
 
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
@@ -117,6 +119,115 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   // 5. Follow-up: active thread history → conversational mode
   if (hasHistory(threadTs)) {
+    if (isNewPipelineEnabled()) {
+      const history = getHistory(threadTs);
+      let thinkingTs;
+      try {
+        const thinkingMsg = await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          blocks: buildThinkingBlocks(query),
+          text: 'Thinking…',
+        });
+        thinkingTs = thinkingMsg.ts;
+      } catch (err) {
+        console.error('[mention] Failed to post thinking message:', err.message);
+      }
+
+      const { role: fuRole, agentName: fuAgentName } = await detectAgentRole(client, userId);
+
+      const fuSteps = [];
+      let fuLastUpdateMs = 0;
+      const fuOnProgress = async (event) => {
+        if (event.phase === 'tool_start') {
+          fuSteps.push({ tool: event.tool, phase: 'tool_start', count: null });
+        } else if (event.phase === 'tool_done') {
+          const existing = fuSteps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+          if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+        } else if (event.phase === 'writing') {
+          fuSteps.push({ tool: null, phase: 'writing', count: null });
+        } else {
+          return;
+        }
+        const now = Date.now();
+        if (thinkingTs && now - fuLastUpdateMs >= 1000) {
+          fuLastUpdateMs = now;
+          await client.chat.update({
+            channel: channelId,
+            ts: thinkingTs,
+            blocks: buildProgressBlocks(query, fuSteps),
+            text: 'Thinking…',
+          }).catch(() => {});
+        }
+      };
+
+      let pipelineResult;
+      try {
+        pipelineResult = await runPipeline({
+          rawQuery: query,
+          role: fuRole,
+          agentName: fuAgentName,
+          threadHistory: history,
+          onProgress: fuOnProgress,
+        });
+      } catch (err) {
+        console.error('[mention] pipeline (follow-up) failed:', err.message);
+        const errText = 'Something went wrong — please retry or escalate manually.';
+        if (thinkingTs) {
+          await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: buildErrorBlocks(query), text: errText });
+        } else {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: buildErrorBlocks(query), text: errText });
+        }
+        return;
+      }
+
+      if (pipelineResult.clarifying_question) {
+        const qText = pipelineResult.clarifying_question;
+        const blocks = buildFollowUpBlocks(qText, { label: 'Diagnosing…' });
+        if (thinkingTs) {
+          await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: qText.slice(0, 200) }).catch(async () => {
+            await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: qText.slice(0, 200) });
+          });
+        } else {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: qText.slice(0, 200) });
+        }
+        appendToHistory(threadTs, [
+          { role: 'user', content: query },
+          { role: 'assistant', content: qText },
+        ]);
+        return;
+      }
+
+      if (pipelineResult.is_accounting_topic) {
+        const acctBlocks = buildAccountingRedirectBlocks(query);
+        if (thinkingTs) {
+          await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: acctBlocks, text: 'Accounting integration — please redirect.' });
+        } else {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: acctBlocks, text: 'Accounting integration — please redirect.' });
+        }
+        return;
+      }
+
+      pipelineResult._originalQuery = query;
+      if (fuRole === 'csa') {
+        pipelineResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
+      }
+      const fuBlocks = buildResponseBlocks(pipelineResult, { isDm, role: fuRole });
+      const fuFallbackText = `Troubleshooting: ${pipelineResult.issue_title ?? query.slice(0, 80)}`;
+      if (thinkingTs) {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: fuBlocks, text: fuFallbackText }).catch(async () => {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: fuBlocks, text: fuFallbackText });
+        });
+      } else {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: fuBlocks, text: fuFallbackText });
+      }
+      appendToHistory(threadTs, [
+        { role: 'user', content: query },
+        { role: 'assistant', content: summarizeResultForHistory(pipelineResult) },
+      ]);
+      return;
+    }
+
     const history = getHistory(threadTs);
 
     let thinkingTs;
@@ -249,6 +360,136 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   ]);
 
   const thinkingTs = thinkingResult?.ts;
+
+  if (isNewPipelineEnabled()) {
+    const queryStartPipe = Date.now();
+    const pipeSteps = [];
+    let pipeLastUpdateMs = 0;
+    const pipeOnProgress = async (event) => {
+      if (event.phase === 'tool_start') {
+        pipeSteps.push({ tool: event.tool, phase: 'tool_start', count: null });
+      } else if (event.phase === 'tool_done') {
+        const existing = pipeSteps.findLast(s => s.tool === event.tool && s.phase === 'tool_start');
+        if (existing) { existing.phase = 'tool_done'; existing.count = event.count; }
+      } else if (event.phase === 'writing') {
+        pipeSteps.push({ tool: null, phase: 'writing', count: null });
+      } else {
+        return;
+      }
+      const now = Date.now();
+      if (thinkingTs && now - pipeLastUpdateMs >= 1000) {
+        pipeLastUpdateMs = now;
+        await client.chat.update({
+          channel: channelId,
+          ts: thinkingTs,
+          blocks: buildProgressBlocks(query, pipeSteps),
+          text: 'Checking…',
+        }).catch(() => {});
+      }
+    };
+
+    let pipelineResult;
+    try {
+      pipelineResult = await runPipeline({
+        rawQuery: query,
+        role,
+        agentName,
+        onProgress: pipeOnProgress,
+      });
+    } catch (err) {
+      console.error('[mention] pipeline (initial) failed:', err.message);
+      const errBlocks = buildErrorBlocks(query);
+      if (thinkingTs) {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: errBlocks, text: 'Something went wrong — please retry or escalate manually.' });
+      } else {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: errBlocks, text: 'Something went wrong — please retry or escalate manually.' });
+      }
+      return;
+    }
+
+    if (pipelineResult.clarifying_question) {
+      const qText = pipelineResult.clarifying_question;
+      const blocks = buildFollowUpBlocks(qText);
+      if (thinkingTs) {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks, text: qText.slice(0, 200) }).catch(async () => {
+          await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: qText.slice(0, 200) });
+        });
+      } else {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: qText.slice(0, 200) });
+      }
+      appendToHistory(threadTs, [
+        { role: 'user', content: query },
+        { role: 'assistant', content: qText },
+      ]);
+      return;
+    }
+
+    if (pipelineResult.is_accounting_topic) {
+      const acctBlocks = buildAccountingRedirectBlocks(query);
+      if (thinkingTs) {
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: acctBlocks, text: 'Accounting integration — please redirect to #ask-partner-enabled-accounting-integrations.' });
+      } else {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: acctBlocks, text: 'Accounting integration — please redirect.' });
+      }
+      return;
+    }
+
+    const cleanedKey = pipelineResult._cleanedQuestion;
+    delete pipelineResult._cleanedQuestion;
+
+    pipelineResult._originalQuery = query;
+    if (role === 'csa') {
+      pipelineResult._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
+    }
+
+    const CACHE_MIN_MS_PIPE = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
+    if ((Date.now() - queryStartPipe) >= CACHE_MIN_MS_PIPE) {
+      setCachedMulti([query, cleanedKey].filter(Boolean), pipelineResult);
+    }
+
+    const pipeIntegration = (pipelineResult.integration_type ?? 'unknown').slice(0, 50);
+    const pipeSources = (pipelineResult.sources_used ?? []).join(',') || 'none';
+    console.info(`[query] pipeline role=${role} confidence=${pipelineResult.confidence ?? 'unknown'} integration=${pipeIntegration} sources=${pipeSources}`);
+
+    const responseBlocks = buildResponseBlocks(pipelineResult, { isDm, role });
+    const fallbackText = `Troubleshooting: ${pipelineResult.issue_title} (${pipelineResult.integration_type})`;
+    if (thinkingTs) {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText }).catch(async () => {
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+      });
+    } else {
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+    }
+
+    appendToHistory(threadTs, [
+      { role: 'user', content: query },
+      { role: 'assistant', content: summarizeResultForHistory(pipelineResult) },
+    ]);
+
+    const KNOWLEDGE_MIN_MS_PIPE = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);
+    const hasRefs = (pipelineResult.slack_refs?.length > 0) || (pipelineResult.atlassian_refs?.length > 0);
+    const noEscalation = pipelineResult.escalate_decision?.should_escalate !== true;
+    const hasSteps = (pipelineResult.agent_steps?.length ?? 0) > 0;
+    if (
+      (Date.now() - queryStartPipe) >= KNOWLEDGE_MIN_MS_PIPE &&
+      hasRefs &&
+      noEscalation &&
+      hasSteps
+    ) {
+      const agentSteps = (pipelineResult.agent_steps ?? []).map((s) => `${s.title}: ${s.detail}`.slice(0, 200));
+      const refs = [
+        ...(pipelineResult.slack_refs ?? []).slice(0, 2).map((r) => `Slack ${r.channel ?? ''} ${r.title ?? ''}`.trim()),
+        ...(pipelineResult.atlassian_refs ?? []).slice(0, 2).map((r) => `${r.type ?? 'Atlassian'}: ${r.title ?? ''}`.trim()),
+      ].filter(Boolean);
+      nominateResponse(client, {
+        integration: pipelineResult.integration_type ?? 'General',
+        issueTitle: pipelineResult.issue_title ?? query.slice(0, 80),
+        steps: agentSteps,
+        refs,
+      }).catch((err) => console.warn('[mention] nominateResponse failed (non-critical):', err.message));
+    }
+    return;
+  }
 
   // 8. Feedback corrections context
   let feedbackContext = '';

@@ -65,6 +65,19 @@ export function setCached(query, data) {
 }
 
 /**
+ * Stores a response under multiple keys (e.g. raw query + cleaned_question).
+ * Both keys point at the same data object, so memory cost is just the keys.
+ *
+ * @param {string[]} keys - distinct queries that should map to the same response
+ * @param {object} data
+ */
+export function setCachedMulti(keys, data) {
+  for (const k of keys) {
+    if (k != null && k !== '') setCached(k, data);
+  }
+}
+
+/**
  * Removes a specific entry from the cache.
  * Used to invalidate stale responses when feedback is submitted for a query.
  * @param {string} query
