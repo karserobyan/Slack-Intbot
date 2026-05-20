@@ -1720,6 +1720,72 @@ assert(getCached('only one') !== null, 'single-key write works');
 setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
 assert(getCached('valid key') !== null, 'valid key in mixed array is written');
 
+// ── pipeline orchestrator ─────────────────────────────────────────────────────
+console.log('\n🔹 pipeline');
+
+import { runPipeline } from './src/claude/pipeline.js';
+
+const origFetchPipe = globalThis.fetch;
+process.env.ANTHROPIC_API_KEY = 'test';
+
+let stepCounter = 0;
+const sequenceResponses = [];
+function nextResponse() {
+  const r = sequenceResponses[stepCounter++];
+  if (!r) throw new Error(`No response queued for step ${stepCounter}`);
+  return r;
+}
+function anthropicMock(body) {
+  return new Response(JSON.stringify({
+    content: [{ type: 'text', text: body }],
+    stop_reason: 'end_turn',
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+async function passThroughFetch(url) {
+  if (typeof url === 'string' && url.includes('anthropic.com')) return nextResponse();
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200 });
+}
+
+// Test A: question_confidence: low → clarifying-question shortcut
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which one?","search_plan":null}'),
+);
+globalThis.fetch = passThroughFetch;
+const lowConfResult = await runPipeline({ rawQuery: 'vague', role: 'csa' });
+assert(lowConfResult.clarifying_question === 'Which one?', 'low-confidence shortcut returns clarifying_question');
+assert(stepCounter === 1, 'only Interpreter was called');
+
+// Test B: sufficient:true → skips refinement
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+globalThis.fetch = passThroughFetch;
+const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
+assert(okPipeResult.issue_title === 'T', 'Answerer ran');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (no refinement)');
+
+// Test C: sufficient:false → exactly one refinement
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":false,"rationale":"miss","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"q2"}]}}'),
+  anthropicMock('{"issue_title":"T2","integration_type":"Zapier","is_accounting_topic":false,"confidence":"medium","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+globalThis.fetch = passThroughFetch;
+const refinedResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
+assert(refinedResult.issue_title === 'T2', 'Answerer ran after refinement');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (refinement triggers a second SEARCH, not a second Evaluator)');
+
+globalThis.fetch = origFetchPipe;
+delete process.env.ANTHROPIC_API_KEY;
+
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed out of ${passed + failed} tests`);
