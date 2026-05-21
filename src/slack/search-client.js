@@ -9,12 +9,15 @@ const TIMEOUT_MS = 8000;
  * @param {string} query
  * @returns {Promise<{ text: string, refs: Array<{ url: string, channel: string, title: string }> } | null>}
  */
-export async function searchSlackMessages(query) {
+export async function searchSlackMessages(query, { signal: externalSignal } = {}) {
   const token = process.env.SLACK_USER_TOKEN;
   if (!token || token === 'xoxp-replace-me') return null;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
 
   try {
     const url = new URL(SEARCH_URL);
@@ -23,7 +26,7 @@ export async function searchSlackMessages(query) {
 
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -52,8 +55,10 @@ export async function searchSlackMessages(query) {
 
     return { text, refs };
   } catch (err) {
-    if (controller.signal.aborted) {
+    if (localController.signal.aborted) {
       console.warn('[slack-search] timed out after 8s');
+    } else if (externalSignal?.aborted) {
+      console.warn('[slack-search] aborted by pipeline budget');
     } else {
       console.warn('[slack-search] error:', err.message);
     }

@@ -17,14 +17,14 @@ const SOURCE_FUNCS = {
  * @param {{ sources: Array<{ name: string, priority: string, query: string }> } | null} plan
  * @returns {Promise<Record<'kb'|'confluence'|'jira'|'slack', object|null>>}
  */
-export async function executeSearchPlan(plan, { onProgress } = {}) {
+export async function executeSearchPlan(plan, { onProgress, signal } = {}) {
   const sources = plan?.sources ?? [];
 
   const tasks = sources.map(s => {
     const fn = SOURCE_FUNCS[s.name];
     if (!fn) return Promise.resolve({ name: s.name, value: null });
     onProgress?.({ phase: 'tool_start', tool: s.name });
-    return Promise.resolve(fn(s.query))
+    return Promise.resolve(fn(s.query, { signal }))
       .then(v => {
         onProgress?.({ phase: 'tool_done', tool: s.name, count: v?.refs?.length ?? null });
         return { name: s.name, value: v, priority: s.priority };

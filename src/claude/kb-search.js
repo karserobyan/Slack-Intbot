@@ -17,7 +17,7 @@ const GOOGLE_CSE_URL = 'https://www.googleapis.com/customsearch/v1';
  * @returns {Promise<{text: string, refs: Array<{url: string, title: string, snippet: string}>} | null>}
  *   Returns formatted results or null on any error / missing config.
  */
-export async function searchKnowledgeBase(query) {
+export async function searchKnowledgeBase(query, { signal: externalSignal } = {}) {
   const apiKey = process.env.GOOGLE_CSE_API_KEY;
   const cx = process.env.GOOGLE_CSE_ID;
 
@@ -34,11 +34,14 @@ export async function searchKnowledgeBase(query) {
 
   let data;
   try {
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), 8_000);
+    const localAbort = new AbortController();
+    const timer = setTimeout(() => localAbort.abort(), 8_000);
+    const signal = externalSignal
+      ? AbortSignal.any([localAbort.signal, externalSignal])
+      : localAbort.signal;
     let response;
     try {
-      response = await fetch(url.toString(), { signal: abort.signal });
+      response = await fetch(url.toString(), { signal });
     } finally {
       clearTimeout(timer);
     }

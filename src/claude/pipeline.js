@@ -52,7 +52,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
 
     onProgress?.({ phase: 'stage', stage: 'search-1' });
     const tSearch1 = Date.now();
-    let searchResults = await executeSearchPlan(interp.search_plan, { onProgress });
+    let searchResults = await executeSearchPlan(interp.search_plan, { onProgress, signal });
     timings.search1 = Date.now() - tSearch1;
 
     onProgress?.({ phase: 'stage', stage: 'evaluator' });
@@ -70,7 +70,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
       refined = true;
       onProgress?.({ phase: 'stage', stage: 'search-2' });
       const tSearch2 = Date.now();
-      const round2 = await executeSearchPlan(evaluation.refined_plan, { onProgress });
+      const round2 = await executeSearchPlan(evaluation.refined_plan, { onProgress, signal });
       timings.search2 = Date.now() - tSearch2;
       for (const k of Object.keys(round2)) {
         if (round2[k]) searchResults[k] = round2[k];
