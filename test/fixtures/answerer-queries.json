@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "note": "Manual prompt-quality gate for the Answerer stage. Checks STRUCTURE and BOUNDS (required fields, value enums, sensible non-empty agent_steps for high-info cases, escalation for low-info cases) — not exact content (model variance makes string matches brittle). Uses real Sonnet 4.6, ~one query each, so this script costs more than the Interpreter/Evaluator gates (~$0.10/run). Not in CI — run manually before any NEW_PIPELINE flag change.",
+  "fixtures": [
+    {
+      "id": "csa-high-info-zapier",
+      "description": "Strong search context for a known Zapier issue → expect non-empty steps, confidence high/medium, no escalation",
+      "input": {
+        "cleanedQuestion": "Zapier integration stopped syncing leads after a tenant migration",
+        "role": "csa",
+        "teamKnowledge": null,
+        "feedbackContext": "",
+        "searchResults": {
+          "kb": null,
+          "confluence": {
+            "text": "[Confluence] Zapier integration — common issues after tenant migration\nThe API access toggle in Tenant Settings → Integrations can be reset to OFF during migration. Re-enabling restores sync within ~10 minutes.\nhttps://example.atlassian.net/wiki/x",
+            "refs": [{ "type": "confluence", "title": "Zapier post-migration playbook", "url": "https://example.atlassian.net/wiki/x", "excerpt": "API access toggle..." }],
+            "priority": "high"
+          },
+          "jira": null,
+          "slack": {
+            "text": "[#integrations] Customer Zapier broke after migration — turned out to be API access toggle. Re-enabled, sync resumed in ~10 minutes.\nhttps://slack.com/archives/x/y",
+            "refs": [{ "url": "https://slack.com/archives/x/y", "channel": "#integrations", "title": "Zapier broke after migration" }],
+            "priority": "high"
+          }
+        }
+      },
+      "expected": {
+        "required_fields": ["issue_title", "integration_type", "confidence", "customer_message", "agent_steps", "escalate_decision"],
+        "confidence_in": ["high", "medium"],
+        "agent_steps_non_empty": true,
+        "escalate_should_be_false": true,
+        "customer_message_non_empty": true,
+        "integration_type_contains": "Zapier"
+      }
+    },
+    {
+      "id": "csa-sparse-info-vague",
+      "description": "Sparse search context for a vague symptom → expect either a clarifying_question short-circuit (preferred) OR a full response with low confidence / escalation",
+      "input": {
+        "cleanedQuestion": "Something is broken in our Angi integration but the agent doesn't know what",
+        "role": "csa",
+        "teamKnowledge": null,
+        "feedbackContext": "",
+        "searchResults": { "kb": null, "confluence": null, "jira": null, "slack": null }
+      },
+      "expected": {
+        "clarifying_or_full_with_escalation": true
+      }
+    },
+    {
+      "id": "specialist-role",
+      "description": "Specialist role with good context → verifies the role-based prompt branch produces a valid response shape",
+      "input": {
+        "cleanedQuestion": "Procore integration intermittently failing webhook delivery to ServiceTitan",
+        "role": "specialist",
+        "teamKnowledge": null,
+        "feedbackContext": "",
+        "searchResults": {
+          "kb": null,
+          "confluence": {
+            "text": "[Confluence] Procore webhook reliability runbook\nIntermittent 502s are usually traced to Procore's upstream proxy. Check the X-Procore-Request-ID header against their support portal.\nhttps://example.atlassian.net/wiki/p",
+            "refs": [{ "type": "confluence", "title": "Procore webhook reliability runbook", "url": "https://example.atlassian.net/wiki/p", "excerpt": "Intermittent 502s..." }],
+            "priority": "high"
+          },
+          "jira": {
+            "text": "[Jira] INTPROC-481 — Procore webhook 502 cluster May 2026 [Closed]\nhttps://example.atlassian.net/browse/INTPROC-481",
+            "refs": [{ "type": "jira", "title": "INTPROC-481 — Procore webhook 502 cluster May 2026", "url": "https://example.atlassian.net/browse/INTPROC-481", "status": "Closed" }],
+            "priority": "medium"
+          },
+          "slack": null
+        }
+      },
+      "expected": {
+        "required_fields": ["issue_title", "integration_type", "confidence", "agent_steps"],
+        "confidence_in": ["high", "medium", "low"],
+        "integration_type_contains": "Procore",
+        "note": "Specialist response schema omits escalate_decision (line 239 of prompts/answerer.js — specialists own the resolution)"
+      }
+    }
+  ]
+}

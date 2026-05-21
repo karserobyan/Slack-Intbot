@@ -25,12 +25,15 @@ function stripHtml(html) {
     .trim();
 }
 
-export async function searchConfluence(query) {
+export async function searchConfluence(query, { signal: externalSignal } = {}) {
   const auth = getAuth();
   if (!auth) return null;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
 
   try {
     const cql = `text ~ "${escapeQuery(query)}" AND type = page`;
@@ -38,7 +41,7 @@ export async function searchConfluence(query) {
 
     const res = await fetch(url, {
       headers: { Authorization: auth, Accept: 'application/json' },
-      signal: controller.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -60,8 +63,10 @@ export async function searchConfluence(query) {
     const text = refs.map(r => `[Confluence] ${r.title}\n${r.excerpt}\n${r.url}`).join('\n\n');
     return { text, refs };
   } catch (err) {
-    if (controller.signal.aborted) {
+    if (localController.signal.aborted) {
       console.warn('[atlassian] Confluence search timed out');
+    } else if (externalSignal?.aborted) {
+      console.warn('[atlassian] Confluence search aborted by pipeline budget');
     } else {
       console.warn('[atlassian] Confluence search error:', err.message);
     }
@@ -71,12 +76,15 @@ export async function searchConfluence(query) {
   }
 }
 
-export async function searchJira(query) {
+export async function searchJira(query, { signal: externalSignal } = {}) {
   const auth = getAuth();
   if (!auth) return null;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const localController = new AbortController();
+  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const signal = externalSignal
+    ? AbortSignal.any([localController.signal, externalSignal])
+    : localController.signal;
 
   try {
     const jql = `text ~ "${escapeQuery(query)}" ORDER BY updated DESC`;
@@ -88,7 +96,7 @@ export async function searchJira(query) {
 
     const res = await fetch(url, {
       headers: { Authorization: auth, Accept: 'application/json' },
-      signal: controller.signal,
+      signal,
     });
 
     if (!res.ok) {
@@ -110,8 +118,10 @@ export async function searchJira(query) {
     const text = refs.map(r => `[Jira] ${r.title} [${r.status}]\n${r.url}`).join('\n\n');
     return { text, refs };
   } catch (err) {
-    if (controller.signal.aborted) {
+    if (localController.signal.aborted) {
       console.warn('[atlassian] Jira search timed out');
+    } else if (externalSignal?.aborted) {
+      console.warn('[atlassian] Jira search aborted by pipeline budget');
     } else {
       console.warn('[atlassian] Jira search error:', err.message);
     }
