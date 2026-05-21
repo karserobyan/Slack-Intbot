@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "note": "Manual prompt-quality gate for the Evaluator stage. Each fixture supplies a cleaned question + an original search plan + simulated round-1 search results, and asserts what the Evaluator should decide (sufficient vs. refined_plan). Not executed in CI — run manually before any NEW_PIPELINE flag change.",
+  "fixtures": [
+    {
+      "id": "passable-results",
+      "description": "Search returned clearly relevant material in two sources → Evaluator should accept (sufficient: true)",
+      "input": {
+        "cleanedQuestion": "Zapier integration stopped syncing leads after a tenant migration",
+        "originalPlan": {
+          "sources": [
+            { "name": "slack", "priority": "high", "query": "Zapier sync broken migration" },
+            { "name": "confluence", "priority": "high", "query": "Zapier integration troubleshooting" }
+          ],
+          "rationale": "Recent breakage; Confluence and Slack are most likely."
+        },
+        "searchResults": {
+          "kb": null,
+          "confluence": {
+            "text": "[Confluence] Zapier integration — common issues after tenant migration\nThe API access toggle in Tenant Settings → Integrations can be reset to OFF during migration. Re-enabling restores sync within ~10 minutes.\nhttps://example.atlassian.net/wiki/x",
+            "refs": [{ "type": "confluence", "title": "Zapier post-migration playbook", "url": "https://example.atlassian.net/wiki/x", "excerpt": "API access toggle..." }],
+            "priority": "high"
+          },
+          "jira": null,
+          "slack": {
+            "text": "[#integrations] Customer Zapier broke after migration — turned out to be API access toggle. Re-enabled, sync resumed.\nhttps://slack.com/archives/x/y",
+            "refs": [{ "url": "https://slack.com/archives/x/y", "channel": "#integrations", "title": "Zapier broke after migration" }],
+            "priority": "high"
+          }
+        }
+      },
+      "expected": {
+        "sufficient": true,
+        "refined_plan_is_null": true
+      }
+    },
+    {
+      "id": "off-topic-results",
+      "description": "Search returned a result, but about a different integration → Evaluator should refine, not accept",
+      "input": {
+        "cleanedQuestion": "RwG bookings showing pending status but not appearing in the schedule",
+        "originalPlan": {
+          "sources": [
+            { "name": "slack", "priority": "high", "query": "RwG bookings pending" }
+          ],
+          "rationale": "Slack for recent breakage discussion."
+        },
+        "searchResults": {
+          "kb": null,
+          "confluence": null,
+          "jira": null,
+          "slack": {
+            "text": "[#integrations] Discussion about Zapier billing changes for enterprise customers. Nothing about RwG.\nhttps://slack.com/archives/q/r",
+            "refs": [{ "url": "https://slack.com/archives/q/r", "channel": "#integrations", "title": "Zapier billing thread" }],
+            "priority": "high"
+          }
+        }
+      },
+      "expected": {
+        "sufficient": false,
+        "refined_plan_has_sources": true
+      }
+    },
+    {
+      "id": "empty-results",
+      "description": "All sources returned null → Evaluator should refine with tighter keywords",
+      "input": {
+        "cleanedQuestion": "How to find Procore integration audit log for a specific job",
+        "originalPlan": {
+          "sources": [
+            { "name": "confluence", "priority": "high", "query": "Procore audit log" }
+          ],
+          "rationale": "Confluence for how-to docs."
+        },
+        "searchResults": { "kb": null, "confluence": null, "jira": null, "slack": null }
+      },
+      "expected": {
+        "sufficient": false,
+        "refined_plan_has_sources": true
+      }
+    }
+  ]
+}
