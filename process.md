@@ -21,7 +21,7 @@ This is a working-state document for picking up where we left off. Read top to b
 
 - Node.js (ESM), `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
 - Default model: `claude-sonnet-4-6` (override via `ANTHROPIC_MODEL`)
-- Current sources: Confluence + Jira via REST (Basic Auth), Slack via MCP, KB via Google Custom Search
+- Current sources: Confluence + Jira via REST (Basic Auth), Slack via MCP, KB via Anthropic `web_search` (scoped to `help.servicetitan.com`)
 - Entry points: `src/handlers/mention.js` (channel mentions) and `src/handlers/dm.js` (DMs) — both call `handleQuery()` in `mention.js`
 - Test runner: `node test.js` (no framework, plain `assert`), must pass with 0 failures before any PR
 
@@ -30,7 +30,7 @@ Key files:
 - `src/claude/query.js` — `queryWithContext`, `queryChat`, MCP server config
 - `src/claude/prompts.js` — CSA / Specialist / Chat system prompts, JSON parsers
 - `src/claude/atlassian-search.js` — REST-based Confluence + Jira search
-- `src/claude/kb-search.js` — Google Custom Search wrapper
+- `src/claude/kb-search.js` — Anthropic `web_search` wrapper (scoped to `help.servicetitan.com`)
 - `src/slack/blocks.js` — all Block Kit builders
 
 ---
