@@ -43,9 +43,7 @@ export async function runAnswerer({
   signal: externalSignal,
 }) {
   const basePrompt = role === 'specialist' ? ANSWERER_PROMPT_SPECIALIST : ANSWERER_PROMPT_CSA;
-  const systemPrompt = agentName
-    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in customer_message.`
-    : basePrompt;
+  const systemPrompt = basePrompt;
 
   let userContent = `Issue: ${cleanedQuestion}`;
   if (teamKnowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${teamKnowledge}\n[/TEAM KNOWLEDGE]`;
