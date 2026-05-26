@@ -1564,7 +1564,7 @@ await runAnswerer({
 });
 assert(lastAnthropicBody.system.includes('Specialist') || lastAnthropicBody.system.includes('specialist'), 'uses Specialist prompt for specialist role');
 
-// agentName appended to system prompt
+// agentName must NOT leak into system prompt (caused third-person customer_message bug)
 await runAnswerer({
   cleanedQuestion: 'q',
   searchResults: { kb: null, confluence: null, jira: null, slack: null },
@@ -1573,7 +1573,7 @@ await runAnswerer({
   feedbackContext: '',
   agentName: 'Sarah',
 });
-assert(lastAnthropicBody.system.includes('Sarah'), 'system prompt includes agent name when provided');
+assert(!lastAnthropicBody.system.includes('Sarah'), 'system prompt does NOT include agent name (prevents third-person customer_message)');
 
 // Empty feedback context doesn't add anything
 await runAnswerer({

@@ -77,9 +77,7 @@ export async function queryWithContext(userQuery, { role = 'csa', agentName = nu
   const mcpServers = buildMcpServers();
 
   const basePrompt = role === 'specialist' ? SYSTEM_PROMPT_SPECIALIST : SYSTEM_PROMPT_CSA;
-  const systemPrompt = agentName
-    ? `${basePrompt}\n\nThe agent's display name is: ${agentName}. Use this name in customer_message.`
-    : basePrompt;
+  const systemPrompt = basePrompt;
 
   const requestParams = {
     model: MODEL,
