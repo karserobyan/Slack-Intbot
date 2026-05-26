@@ -87,8 +87,6 @@ npm start
 | `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
 | `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
-| `GOOGLE_CSE_API_KEY` | Recommended | Google API key for ServiceTitan KB search |
-| `GOOGLE_CSE_ID` | Recommended | Custom Search Engine ID (scoped to `help.servicetitan.com`) |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards |
 | `FEEDBACK_CHANNEL` | Optional | Alias for `FEEDBACK_REVIEW_CHANNEL_ID` (used internally for KB alerts) |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
@@ -125,7 +123,7 @@ src/
 ├── claude/
 │   ├── query.js                 # Claude API — queryWithContext, queryChat
 │   ├── prompts.js               # System prompts (CSA, Specialist, Chat) + parsers
-│   └── kb-search.js             # Google Custom Search KB lookup
+│   └── kb-search.js             # KB lookup via Anthropic web_search (help.servicetitan.com)
 ├── slack/
 │   ├── blocks.js                # Block Kit builders (response, modals, error)
 │   ├── cache.js                 # In-memory LRU response cache with TTL

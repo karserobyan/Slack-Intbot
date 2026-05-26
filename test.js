@@ -894,9 +894,12 @@ console.log('\n🔹 KB Search');
 assert(typeof searchKnowledgeBase === 'function', 'searchKnowledgeBase is a function');
 assert(searchKnowledgeBase.constructor.name === 'AsyncFunction', 'searchKnowledgeBase is async');
 
-// Returns null when GOOGLE_CSE_API_KEY is not set (will not be set in CI)
+// Returns null when ANTHROPIC_API_KEY is not set (will not be set in CI)
+const _savedKbApiKey = process.env.ANTHROPIC_API_KEY;
+delete process.env.ANTHROPIC_API_KEY;
 const kbResult = await searchKnowledgeBase('zapier api access not working');
 assert(kbResult === null, 'searchKnowledgeBase returns null when env vars not set');
+if (_savedKbApiKey) process.env.ANTHROPIC_API_KEY = _savedKbApiKey;
 
 // ── 14. Knowledge Writer ─────────────────────────────────────────────────────
 console.log('\n🔹 Knowledge Writer');
@@ -1415,8 +1418,14 @@ const origFetchSE = globalThis.fetch;
 // Helper fetch returns a per-URL fixture
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('customsearch')) {
-    return new Response(JSON.stringify({ items: [{ link: 'https://help.servicetitan.com/x', title: 'KB hit', snippet: 'foo' }] }), { status: 200 });
+  if (u.includes('api.anthropic.com')) {
+    return new Response(JSON.stringify({
+      content: [{
+        type: 'web_search_tool_result',
+        tool_use_id: 'srvtoolu_test',
+        content: [{ type: 'web_search_result', title: 'KB hit', url: 'https://help.servicetitan.com/x' }],
+      }],
+    }), { status: 200 });
   }
   if (u.includes('atlassian.net/wiki')) {
     return new Response(JSON.stringify({ results: [{ title: 'Confluence hit', url: '/page/1', excerpt: 'bar' }] }), { status: 200 });
@@ -1429,8 +1438,8 @@ globalThis.fetch = async (url) => {
   }
   return new Response('{}', { status: 500 });
 };
-process.env.GOOGLE_CSE_API_KEY = 'k';
-process.env.GOOGLE_CSE_ID = 'cx';
+const _savedAnthropicKey = process.env.ANTHROPIC_API_KEY;
+process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
 process.env.ATLASSIAN_EMAIL = 'a@b.c';
 process.env.ATLASSIAN_API_TOKEN = 't';
 process.env.SLACK_USER_TOKEN = 'xoxp-real';
@@ -1465,7 +1474,7 @@ assert(partial.jira === null, 'jira stays null');
 // One failing source does not break others
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('customsearch')) throw new Error('boom');
+  if (u.includes('api.anthropic.com')) throw new Error('boom');
   if (u.includes('atlassian.net/wiki')) {
     return new Response(JSON.stringify({ results: [{ title: 'OK', url: '/x', excerpt: '' }] }), { status: 200 });
   }
@@ -1486,8 +1495,8 @@ const unknown = await executeSearchPlan({ sources: [{ name: 'mysteriousSource', 
 assert(unknown.kb === null && unknown.confluence === null && unknown.jira === null && unknown.slack === null, 'unknown source ignored');
 
 globalThis.fetch = origFetchSE;
-delete process.env.GOOGLE_CSE_API_KEY;
-delete process.env.GOOGLE_CSE_ID;
+if (_savedAnthropicKey) process.env.ANTHROPIC_API_KEY = _savedAnthropicKey;
+else delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.SLACK_USER_TOKEN;

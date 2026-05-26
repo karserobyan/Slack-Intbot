@@ -1,77 +1,88 @@
 /**
- * Google Custom Search integration for Knowledge Base lookups.
- * Searches the configured CSE and returns formatted results for Claude context injection
- * and a refs array for the Sources modal.
+ * Knowledge Base search backed by Anthropic's web_search tool, scoped to
+ * help.servicetitan.com. Returns public, customer-shareable KB URLs.
  *
- * Environment variables required:
- *   GOOGLE_CSE_API_KEY — Google API key with Custom Search enabled
- *   GOOGLE_CSE_ID     — Custom Search Engine ID (cx)
+ * Why not Google Custom Search: avoids a separate GCP project + enable-API +
+ * billing surface that has repeatedly broken. Anthropic API is already a hard
+ * dependency of the bot, so this collapses one failure mode.
  */
 
-const GOOGLE_CSE_URL = 'https://www.googleapis.com/customsearch/v1';
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const KB_DOMAIN = 'help.servicetitan.com';
+const MODEL = 'claude-haiku-4-5-20251001';
+const MAX_RESULTS = 5;
 
-/**
- * Search the knowledge base via Google Custom Search.
- *
- * @param {string} query - The search query
- * @returns {Promise<{text: string, refs: Array<{url: string, title: string, snippet: string}>} | null>}
- *   Returns formatted results or null on any error / missing config.
- */
 export async function searchKnowledgeBase(query, { signal: externalSignal } = {}) {
-  const apiKey = process.env.GOOGLE_CSE_API_KEY;
-  const cx = process.env.GOOGLE_CSE_ID;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
 
-  if (!apiKey || !cx) {
-    console.warn('[kb-search] GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set — skipping KB search');
+  if (!apiKey) {
+    console.warn('[kb-search] ANTHROPIC_API_KEY not set — skipping KB search');
     return null;
   }
 
-  const url = new URL(GOOGLE_CSE_URL);
-  url.searchParams.set('key', apiKey);
-  url.searchParams.set('cx', cx);
-  url.searchParams.set('q', query);
-  url.searchParams.set('num', '3');
+  const body = {
+    model: MODEL,
+    max_tokens: 1024,
+    tools: [{
+      type: 'web_search_20250305',
+      name: 'web_search',
+      allowed_domains: [KB_DOMAIN],
+      max_uses: 1,
+    }],
+    tool_choice: { type: 'any' },
+    messages: [{ role: 'user', content: query }],
+  };
 
   let data;
   try {
     const localAbort = new AbortController();
-    const timer = setTimeout(() => localAbort.abort(), 8_000);
+    const timer = setTimeout(() => localAbort.abort(), 15_000);
     const signal = externalSignal
       ? AbortSignal.any([localAbort.signal, externalSignal])
       : localAbort.signal;
     let response;
     try {
-      response = await fetch(url.toString(), { signal });
+      response = await fetch(ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
     } finally {
       clearTimeout(timer);
     }
     if (!response.ok) {
-      console.warn(`[kb-search] Google API returned ${response.status} — skipping KB search`);
+      const errText = await response.text().catch(() => '');
+      console.warn(`[kb-search] Anthropic API returned ${response.status} — skipping KB search`, errText.slice(0, 200));
       return null;
     }
     data = await response.json();
   } catch (err) {
-    console.warn('[kb-search] Fetch failed:', err.name === 'AbortError' ? 'timed out after 8s' : err.message);
+    console.warn('[kb-search] Fetch failed:', err.name === 'AbortError' ? 'timed out after 15s' : err.message);
     return null;
   }
 
   try {
-    const items = Array.isArray(data?.items) ? data.items : [];
+    const toolResult = (data?.content ?? []).find((b) => b.type === 'web_search_tool_result');
+    const results = Array.isArray(toolResult?.content) ? toolResult.content : [];
+    const webResults = results.filter((r) => r?.type === 'web_search_result');
 
-    if (items.length === 0) {
+    if (webResults.length === 0) {
       return null;
     }
 
-    const refs = items.map((item) => ({
-      url: item.link ?? '',
-      title: item.title ?? '',
-      snippet: item.snippet ?? '',
+    const refs = webResults.slice(0, MAX_RESULTS).map((r) => ({
+      url: r.url ?? '',
+      title: r.title ?? '',
+      snippet: '',
     }));
 
     const text = refs
-      .map((ref, i) =>
-        `${i + 1}. ${ref.title}\n   URL: ${ref.url}\n   Snippet: ${ref.snippet}`
-      )
+      .map((ref, i) => `${i + 1}. ${ref.title}\n   URL: ${ref.url}`)
       .join('\n\n');
 
     return { text, refs };

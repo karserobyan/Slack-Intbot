@@ -9,7 +9,7 @@ An internal Slack bot for ServiceTitan integrations support agents. It answers c
 - **Entry points:** `src/index.js` (Bolt app startup) + `src/handlers/mention.js` (shared query handler)
 - **Model:** `claude-sonnet-4-6` (override via `ANTHROPIC_MODEL`)
 - **Stack:** Node.js ESM, `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
-- **Search sources:** Confluence REST, Jira REST, Slack MCP (optional), Google Custom Search (KB), local `data/knowledge.md`
+- **Search sources:** Confluence REST, Jira REST, Slack MCP (optional), Anthropic `web_search` scoped to `help.servicetitan.com` (KB), local `data/knowledge.md`
 - **In scope:** Zapier, Angi, Reserve with Google, ServiceChannel, Thumbtack, Procore, Chat-to-Text, generic webhooks/API
 - **Out of scope:** All accounting integrations (QuickBooks, Sage Intacct, NetSuite, Xero, Viewpoint Vista) — auto-redirected
 
@@ -290,7 +290,6 @@ All three live in `data/` and are **gitignored**.
 ### Recommended
 - `SLACK_USER_TOKEN` — enables Slack MCP search (else Claude has no live Slack tool)
 - `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` — Confluence + Jira REST (Basic Auth)
-- `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_ID` — KB search
 - `FEEDBACK_REVIEW_CHANNEL_ID` — moderation queue channel
 
 ### Optional

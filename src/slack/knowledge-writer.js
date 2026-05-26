@@ -3,7 +3,7 @@
  * Appends entries to data/knowledge.md with deduplication.
  *
  * Entry types:
- *   [kb, YYYY-MM-DD]   — auto-saved KB article from Google Custom Search
+ *   [kb, YYYY-MM-DD]   — auto-saved KB article from kb-search (Anthropic web_search)
  *   [auto, YYYY-MM-DD] — moderator-approved bot response nomination
  *
  * All writes serialised via _writeQueue to prevent concurrent write races.
