@@ -14,11 +14,11 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deleteCache } from './cache.js';
+import { getFeedbackChannelId } from '../utils/feedback-channel.js';
 
 const FEEDBACK_DIR = join(process.cwd(), 'data');
 const FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
 const PENDING_FILE = join(FEEDBACK_DIR, 'feedback-pending.json');
-const REVIEW_CHANNEL = process.env.FEEDBACK_REVIEW_CHANNEL_ID || null;
 const MAX_ACTIVE = 500;
 const MAX_PENDING = 200;
 
@@ -85,7 +85,7 @@ export async function saveFeedback(entry) {
     agentId: entry.agentId,
     agentName: entry.agentName,
     reviewMessageTs: null,
-    reviewChannelId: REVIEW_CHANNEL,
+    reviewChannelId: getFeedbackChannelId(),
   };
 
   _writeQueue = _writeQueue
@@ -110,21 +110,21 @@ export async function saveFeedback(entry) {
 /**
  * Posts a review card to the review channel with Approve/Reject buttons.
  * Updates the pending entry with reviewMessageTs after posting.
- * No-op if FEEDBACK_REVIEW_CHANNEL_ID is not configured.
+ * No-op if no feedback channel is configured (see getFeedbackChannelId).
  *
  * @param {object} client - Slack WebClient
  * @param {object} record - Pending feedback record
  */
 export async function notifyFeedbackChannel(client, record) {
-  if (!REVIEW_CHANNEL) {
-    console.warn('[feedback] FEEDBACK_REVIEW_CHANNEL_ID not set — review card not posted.');
+  if (!getFeedbackChannelId()) {
+    console.warn('[feedback] No feedback channel set (FEEDBACK_REVIEW_CHANNEL_ID) — review card not posted.');
     return;
   }
 
   let messageTs;
   try {
     const msg = await client.chat.postMessage({
-      channel: REVIEW_CHANNEL,
+      channel: getFeedbackChannelId(),
       text: `📝 Feedback Review from ${record.agentName}`,
       blocks: [
         {
@@ -191,7 +191,7 @@ export async function notifyFeedbackChannel(client, record) {
       const idx = pending.findIndex((e) => e.id === record.id);
       if (idx !== -1) {
         pending[idx].reviewMessageTs = messageTs;
-        pending[idx].reviewChannelId = REVIEW_CHANNEL;
+        pending[idx].reviewChannelId = getFeedbackChannelId();
         _pendingCache = pending;
         await persistPending(pending);
       }

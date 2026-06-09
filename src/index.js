@@ -3,6 +3,7 @@ import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks } from './slack/blocks.js';
+import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
@@ -363,7 +364,7 @@ app.receiver?.router?.get?.('/health', (_req, res) => {
     }
   }
 
-  const feedbackChannel = process.env.FEEDBACK_REVIEW_CHANNEL_ID || process.env.FEEDBACK_CHANNEL_ID;
+  const feedbackChannel = getFeedbackChannelId();
   app.logger.info(`[startup] Feedback review channel: ${feedbackChannel ? feedbackChannel : '❌ NOT SET — review cards will not be posted. Set FEEDBACK_REVIEW_CHANNEL_ID and invite the bot to that channel.'}`);
 
   // Ensure data dir exists (prevents silent write failures on first run)

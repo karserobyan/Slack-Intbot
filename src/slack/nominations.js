@@ -2,7 +2,7 @@
  * Nomination system for bot-response knowledge entries.
  *
  * Flow:
- *   1. nominateResponse() posts to FEEDBACK_CHANNEL with Approve/Reject buttons.
+ *   1. nominateResponse() posts to the feedback review channel with Approve/Reject buttons.
  *   2. Moderator clicks Approve → approveNomination() writes to knowledge.md, posts confirmation.
  *   3. Moderator clicks Reject → rejectNomination() removes from pending, no write.
  *
@@ -10,8 +10,8 @@
  */
 
 import { appendBotResponse, DEFAULT_KB_FILE } from './knowledge-writer.js';
+import { getFeedbackChannelId } from '../utils/feedback-channel.js';
 
-const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || process.env.FEEDBACK_REVIEW_CHANNEL_ID || null;
 const NOMINATION_ID_PREFIX = 'nom_';
 
 /** @type {Map<string, object>} nominationId → record */
@@ -71,14 +71,15 @@ export function buildNominationBlocks(record) {
 
 /**
  * Nominates a bot response for knowledge base inclusion.
- * Posts a review card to FEEDBACK_CHANNEL. No-op if channel not configured.
+ * Posts a review card to the feedback channel. No-op if no channel configured.
  * @param {object} client - Slack WebClient
  * @param {object} record - { integration, issueTitle, steps, refs }
  * @returns {Promise<object|null>}
  */
 export async function nominateResponse(client, record) {
-  if (!FEEDBACK_CHANNEL) {
-    console.warn('[nominations] FEEDBACK_CHANNEL not set — nomination skipped.');
+  const channelId = getFeedbackChannelId();
+  if (!channelId) {
+    console.warn('[nominations] No feedback channel set — nomination skipped.');
     return null;
   }
 
@@ -95,14 +96,14 @@ export async function nominateResponse(client, record) {
     refs: record.refs ?? [],
     proposedEntry,
     reviewMessageTs: null,
-    reviewChannelId: FEEDBACK_CHANNEL,
+    reviewChannelId: channelId,
   };
 
   _pending.set(nomination.id, nomination);
 
   try {
     const msg = await client.chat.postMessage({
-      channel: FEEDBACK_CHANNEL,
+      channel: channelId,
       text: `📝 Knowledge Nomination — ${record.integration}: ${record.issueTitle}`,
       blocks: buildNominationBlocks(nomination),
     });

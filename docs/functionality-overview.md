@@ -32,7 +32,7 @@ An internal Slack bot for ServiceTitan integrations support agents. It answers c
   - `start_chat_thread` button → seeded thread prompt
 - **Top-level messages** start a new conversation; thread replies are follow-ups. Both call the shared `handleQuery()`.
 
-Both entry points funnel into a deterministic **16-step flow** (see §14).
+Both entry points funnel into a deterministic **16-step flow** (see §13).
 
 ---
 
@@ -89,13 +89,13 @@ Both entry points funnel into a deterministic **16-step flow** (see §14).
 ### Multi-source knowledge fetch
 - **What it does:** Pre-fetches three sources in parallel before the Claude call, then optionally lets Claude search Slack live during inference via MCP
 - **Sources:**
-  - **KB (Google CSE)** — `src/claude/kb-search.js`, 8s timeout
+  - **KB (Anthropic `web_search`, scoped to `help.servicetitan.com`)** — `src/claude/kb-search.js`, 15s timeout
   - **Confluence (REST)** — `src/claude/atlassian-search.js`, text-search, limit 5, 8s timeout
   - **Jira (REST)** — `src/claude/atlassian-search.js`, JQL search, limit 5, 8s timeout
   - **Team knowledge** — `data/knowledge.md` via `src/slack/knowledge.js` (5-min cache)
   - **Slack MCP** — Live, during Claude inference (optional; requires `SLACK_USER_TOKEN`)
 - **How they're combined:** Results are injected into the user message as `[KB RESULTS]`, `[CONFLUENCE RESULTS]`, `[JIRA RESULTS]`, `[TEAM KNOWLEDGE]`, and optional `[FEEDBACK CORRECTIONS]` blocks
-- **External services:** Google CSE, Confluence REST, Jira REST, Anthropic API, Slack MCP
+- **External services:** Anthropic API (used for both Claude inference and `web_search` for KB), Confluence REST, Jira REST, Slack MCP
 
 ### Role-based prompts (CSA vs. Specialist)
 - **CSA prompt** (`prompts.js:SYSTEM_PROMPT_CSA`, ~200 lines):
@@ -213,26 +213,7 @@ When the bot is uncertain, it returns a simpler fallback:
 
 ---
 
-## 9. Audit log query (Kibana / Elasticsearch) — **SCHEDULED FOR DELETION**
-
-> ⚠️ This entire section describes functionality that is **slated for removal in the next PR**. Listed here so the deletion surface is visible.
-
-- **What it did:** Specialized query for audit logs of a specific tenant over a time range. Modal collected `tenantName + question + timeRange`; `queryAuditLog()` drove Elasticsearch MCP to discover the index, inspect mappings, and query events; output rendered as a change timeline with a "View in Kibana" button
-- **Current status:** **Unreachable.** The trigger UI (routing buttons) was removed; the modal handler is wired but nothing ever opens the modal. This is dead code on `main` today.
-- **Files / symbols to delete:**
-  - `src/claude/query.js:251-303` — `queryAuditLog()`
-  - `src/claude/prompts.js:423-547` — `AUDIT_LOG_PROMPT`, `parseAuditResponse()`
-  - `src/slack/modal.js` — `buildAuditLogModal()` (keep `buildChannelPostModal`)
-  - `src/slack/blocks.js:551-642` — `CHANGE_CIRCLE`, `buildAuditBlocks()`
-  - `src/index.js:44-100` — `audit_log_submission` view handler + `view_in_kibana` action handler
-  - `test.js` — audit modal, `buildAuditBlocks`, `parseAuditResponse` test blocks (~110 lines)
-  - `scripts/get-es-token.js` — orphaned OAuth helper
-  - `.env.example` — `ES_MCP_URL` / `ES_MCP_TOKEN` section
-  - `README.md` — ES_MCP rows and file-tree references
-
----
-
-## 10. Health & monitoring
+## 9. Health & monitoring
 
 ### Health-check endpoint
 - **What:** `GET /health` (HTTP mode only) returns uptime, cache stats, source availability
@@ -251,7 +232,7 @@ When the bot is uncertain, it returns a simpler fallback:
 
 ---
 
-## 11. CLI simulator & tests
+## 10. CLI simulator & tests
 
 ### `cli.js`
 - **What:** Interactive REPL for testing without Slack. Calls the full pipeline, prints color-coded output
@@ -265,7 +246,7 @@ When the bot is uncertain, it returns a simpler fallback:
 
 ---
 
-## 12. Data persistence
+## 11. Data persistence
 
 ### `data/feedback.json` + `data/feedback-pending.json`
 - **Schema:** Array of `{ id, timestamp, query, issueTitle, integrationType, feedbackType, correction, agentId, agentName, reviewMessageTs, reviewChannelId }`
@@ -282,7 +263,7 @@ All three live in `data/` and are **gitignored**.
 
 ---
 
-## 13. Environment variables
+## 12. Environment variables
 
 ### Required
 - `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`
@@ -295,12 +276,11 @@ All three live in `data/` and are **gitignored**.
 ### Optional
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
-- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
-- ~~`ES_MCP_URL`, `ES_MCP_TOKEN`~~ — being removed with audit log
+- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `NEW_PIPELINE`, `PORT`, `LOG_LEVEL`
 
 ---
 
-## 14. The 16-step query flow
+## 13. The 16-step query flow
 
 When a `@mention` or DM arrives, both entry points call `handleQuery()` in `src/handlers/mention.js:49`. The flow is deterministic and early-exits at the first fast path:
 
@@ -323,7 +303,7 @@ When a `@mention` or DM arrives, both entry points call `handleQuery()` in `src/
 
 ---
 
-## 15. Data flow at a glance
+## 14. Data flow at a glance
 
 ```
 User query
@@ -359,23 +339,15 @@ Post to Slack → seed thread history → nominate to KB if eligible
 
 ---
 
-## 16. MCP architecture (current, partially changing)
+## 15. MCP architecture
 
-- **Slack MCP:** Optional. With `SLACK_USER_TOKEN` set, Claude can call Slack search tools during inference. The upcoming redesign will move this to direct Web API to remove a class of failure modes
-- **Atlassian:** Originally MCP, **migrated to REST Basic Auth** in PR #11. Confluence + Jira are now searched directly via REST in `src/claude/atlassian-search.js`
-- **Elasticsearch MCP:** Optional, for the audit-log feature — **being deleted**
-
----
-
-## 17. Known dead code and stale references
-
-- **Routing buttons:** `src/slack/routing-buttons.js` no longer exists; the audit-log modal it used to open is now unreachable (see §9)
-- **Prompt drift:** `prompts.js:191, 329` still mention "use your atlassian and slack search tools" although Atlassian is no longer MCP. Low risk today (Claude has no Atlassian tool to call) but should be cleaned up in the redesign
-- **process.md** is a session handoff snapshot dated 2026-05-13; treat as historical record. It will be superseded by the upcoming redesign spec
+- **Slack MCP:** Optional. With `SLACK_USER_TOKEN` set, Claude can call Slack search tools during inference (used both inside `queryChat` and as one of the search sources in the NEW_PIPELINE search executor)
+- **Atlassian:** REST Basic Auth (migrated from MCP in PR #11). Confluence + Jira are searched directly via REST in `src/claude/atlassian-search.js`
+- **KB:** Anthropic `web_search_20250305` scoped to `help.servicetitan.com` (see `src/claude/kb-search.js`). No MCP, no separate API key
 
 ---
 
-## 18. Sensitivity & ref filtering
+## 16. Sensitivity & ref filtering
 
 Some references are marked `"sensitive": true` (internal escalation channels, Jira tickets with PII, engineering-only docs). CSAs see only non-sensitive refs; Specialists see everything. This is enforced inside `buildResponseBlocks()` based on the detected role.
 
@@ -383,4 +355,4 @@ Some references are marked `"sensitive": true` (internal escalation channels, Ji
 
 ## Summary in one paragraph
 
-IntegrationsBot is a Slack-native, Node ESM, single-process bot. Channel mentions and DMs converge on a single 16-step handler that walks fast paths (empty / help / accounting / rate limit / cache / thread follow-up) before doing the heavy work: parallel pre-fetch from Confluence + Jira (REST) + KB (Google CSE) + the local `data/knowledge.md`, an injected past-corrections block, then a single Claude Sonnet 4.6 call (with optional Slack MCP) that returns a structured JSON response. The response is rendered as a Block Kit card with confidence, escalation signal, color-coded steps, source chips, and action buttons (Wrong Answer, Sources, Copy Message, Show Specialist Detail). A feedback-and-nomination loop curates `data/knowledge.md` over time. Audit-log query via Elasticsearch was previously a separate flow but is now dead code, slated for removal.
+IntegrationsBot is a Slack-native, Node ESM, single-process bot. Channel mentions and DMs converge on a single 16-step handler that walks fast paths (empty / help / accounting / rate limit / cache / thread follow-up) before doing the heavy work: parallel pre-fetch from Confluence + Jira (REST) + KB (Anthropic `web_search` scoped to `help.servicetitan.com`) + the local `data/knowledge.md`, an injected past-corrections block, then a single Claude Sonnet 4.6 call (with optional Slack MCP) that returns a structured JSON response. The response is rendered as a Block Kit card with confidence, escalation signal, color-coded steps, source chips, and action buttons (Wrong Answer, Sources, Copy Message, Show Specialist Detail). A feedback-and-nomination loop curates `data/knowledge.md` over time. The bot also supports a four-stage NEW_PIPELINE (Interpreter → Search → Evaluator → Answerer) gated by an env flag.
