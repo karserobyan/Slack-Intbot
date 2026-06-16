@@ -87,8 +87,8 @@ npm start
 | `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
 | `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
-| `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards |
-| `FEEDBACK_CHANNEL` | Optional | Alias for `FEEDBACK_REVIEW_CHANNEL_ID` (used internally for KB alerts) |
+| `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
+| `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
 | `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |
 | `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
@@ -121,23 +121,38 @@ src/
 │   ├── mention.js               # @mention handler + shared handleQuery()
 │   └── dm.js                    # Direct message handler
 ├── claude/
-│   ├── query.js                 # Claude API — queryWithContext, queryChat
-│   ├── prompts.js               # System prompts (CSA, Specialist, Chat) + parsers
-│   └── kb-search.js             # KB lookup via Anthropic web_search (help.servicetitan.com)
+│   ├── query.js                 # queryWithContext, queryChat (legacy single-call path)
+│   ├── pipeline.js              # 4-stage NEW_PIPELINE orchestrator (gated by NEW_PIPELINE env)
+│   ├── interpreter.js           # Stage 1 — Haiku question understanding + search plan
+│   ├── search-executor.js       # Stage 2 — runs each source in parallel
+│   ├── evaluator.js             # Stage 3 — sufficient? refine plan once if not
+│   ├── answerer.js              # Stage 4 — Sonnet final answer from gathered context
+│   ├── prompts.js               # CSA / Specialist / Chat system prompts + parsers
+│   ├── prompts/                 # Per-stage NEW_PIPELINE prompts (interpreter, evaluator, answerer)
+│   ├── kb-search.js             # KB lookup via Anthropic web_search (help.servicetitan.com)
+│   └── atlassian-search.js      # Confluence + Jira REST search
 ├── slack/
-│   ├── blocks.js                # Block Kit builders (response, modals, error)
+│   ├── blocks.js                # Block Kit builders (response, modals, error, progress)
 │   ├── cache.js                 # In-memory LRU response cache with TTL
 │   ├── conversation.js          # Per-thread history store for follow-up mode
 │   ├── feedback.js              # Wrong Answer feedback queue + moderation
 │   ├── knowledge.js             # knowledge.md loader with 5-min cache
 │   ├── knowledge-writer.js      # knowledge.md append with deduplication
-│   ├── modal.js                 # Modal builders (channel-post)
-│   └── nominations.js           # Bot-response nomination system
+│   ├── modal.js                 # Channel-post modal builder
+│   ├── nominations.js           # Bot-response nomination system
+│   └── search-client.js         # Slack search.messages helper (uses SLACK_USER_TOKEN)
 └── utils/
     ├── accounting-filter.js     # Keyword-based accounting topic detection
+    ├── feature-flags.js         # isNewPipelineEnabled()
     └── rate-limiter.js          # Per-user rate limiter
 scripts/
-└── get-es-token.js              # One-time OAuth helper for ES MCP token
+├── run-interpreter-fixtures.js  # Pre-flight gate — 10 golden interpreter fixtures
+├── run-evaluator-fixtures.js    # Pre-flight gate — evaluator fixtures
+├── run-answerer-fixtures.js     # Pre-flight gate — answerer fixtures
+├── smoke-kb-search.js           # Live KB search smoke (Anthropic web_search)
+├── smoke-atlassian.js           # Live Atlassian REST smoke
+├── test-mcp.js                  # Slack MCP connectivity diagnostic
+└── watch-pipeline.js            # Tail pipeline logs in real time
 ```
 
 ---
