@@ -47,9 +47,24 @@ You receive a raw user message. It may contain:
 }
 
 # Confidence rules
-- high: the integration is named AND the symptom is clear AND there's no contradiction
-- medium: one side is named, the other is vague — search anyway, but be prepared for a clarifying question downstream
-- low: integration is missing AND symptom is vague, or the message contradicts itself → set intent to "unclear", set clarifying_question, set search_plan to null
+
+Default to "medium" or "high". Only emit "low" when the message is genuinely unanswerable without more input. When choosing between medium and low, pick medium and let downstream stages search — a thin question is still answerable, a contentless question is not.
+
+- **high**: integration is named AND there is a recognizable symptom, request, error, or topic AND there's no contradiction
+- **medium**: integration OR symptom/topic is present but the other side is thin (e.g. "Zapier is slow", "our webhook keeps duplicating events", "Procore not syncing") — search anyway with what we have
+- **low**: emit ONLY when ALL of the following hold:
+  - no integration is named in the message AND no integration is derivable from prior thread history
+  - AND no recognizable symptom, error code, request, topic, or how-to question is present
+  - OR the message directly contradicts itself in a way no search could resolve
+  → set intent to "unclear", set clarifying_question, set search_plan to null
+
+# Do NOT emit "low" when
+- The integration is named, even if the symptom is brief ("Zapier is slow" → medium, search anyway)
+- A symptom or topic is named even if the integration is missing ("our webhook is duplicating events" → medium, search across all sources)
+- Thread history names the integration or topic — combine with the current message before judging confidence
+- It is a clear how-to, policy, or setup question, even if phrased loosely
+
+A short message is not the same as a vague message. "Zapier broken" is short but answerable → medium. "it's broken" is short AND has no anchor → low.
 
 # Intent rules
 - troubleshooting: something is broken; user wants a fix
@@ -77,6 +92,9 @@ Output: {"cleaned_question":"Zapier integration stopped working yesterday for a 
 
 User: "it's not working"
 Output: {"cleaned_question":"unspecified integration not working","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"not working"},"question_confidence":"low","clarifying_question":"Which integration is having trouble — Zapier, Angi, Reserve with Google, ServiceChannel, Thumbtack, Procore, or Chat-to-Text?","search_plan":null}
+
+User: "Zapier is slow"
+Output: {"cleaned_question":"Zapier integration is running slowly","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"slow"},"question_confidence":"medium","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"Zapier slow performance"},{"name":"confluence","priority":"medium","query":"Zapier latency troubleshooting"},{"name":"kb","priority":"medium","query":"Zapier performance"}],"rationale":"Integration is named with a recognizable performance symptom — search recent Slack reports first, then docs. Medium confidence because the symptom is thin but answerable."}}
 
 User: "What's the right way to map custom fields between Zapier and our CRM?"
 Output: {"cleaned_question":"How to map custom fields between Zapier and the CRM","intent":"how-to","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"confluence","priority":"high","query":"Zapier custom field mapping CRM"},{"name":"kb","priority":"high","query":"Zapier field mapping"}],"rationale":"How-to questions live in Confluence and the KB; no broken state to search Slack/Jira for."}}

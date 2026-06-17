@@ -101,6 +101,38 @@
         "question_confidence": "high",
         "search_plan_must_include": ["confluence"]
       }
+    },
+    {
+      "id": "marginal-symptom-zapier",
+      "input": "Zapier is slow",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "Zapier" },
+        "question_confidence_in": ["medium", "high"],
+        "search_plan_is_not_null": true,
+        "search_plan_must_include": ["slack"]
+      }
+    },
+    {
+      "id": "marginal-symptom-procore",
+      "input": "Our Procore webhook keeps duplicating events",
+      "expected": {
+        "intent": "troubleshooting",
+        "entities": { "integration": "Procore", "symptom_contains": "duplic" },
+        "question_confidence_in": ["medium", "high"],
+        "search_plan_is_not_null": true,
+        "search_plan_must_include": ["slack"]
+      }
+    },
+    {
+      "id": "marginal-howto-no-integration",
+      "input": "How do I check sync history for a tenant?",
+      "expected": {
+        "intent": "how-to",
+        "question_confidence_in": ["medium", "high"],
+        "search_plan_is_not_null": true,
+        "search_plan_must_include": ["confluence"]
+      }
     }
   ]
 }

@@ -43,6 +43,14 @@ function verifyFixture(actual, expected) {
     ));
   }
 
+  if (Array.isArray(expected.question_confidence_in)) {
+    results.push(check(
+      `question_confidence in [${expected.question_confidence_in.join(', ')}]`,
+      expected.question_confidence_in.includes(actual.question_confidence),
+      `actual: ${JSON.stringify(actual.question_confidence)}`,
+    ));
+  }
+
   if (expected.entities?.integration) {
     results.push(check(
       `entities.integration === "${expected.entities.integration}"`,
@@ -93,6 +101,18 @@ function verifyFixture(actual, expected) {
     results.push(check(
       'search_plan is null',
       actual.search_plan === null,
+      `actual search_plan: ${JSON.stringify(actual.search_plan)}`,
+    ));
+  }
+
+  if (expected.search_plan_is_not_null) {
+    const ok = actual.search_plan !== null
+      && typeof actual.search_plan === 'object'
+      && Array.isArray(actual.search_plan.sources)
+      && actual.search_plan.sources.length > 0;
+    results.push(check(
+      'search_plan is non-null with at least one source',
+      ok,
       `actual search_plan: ${JSON.stringify(actual.search_plan)}`,
     ));
   }
