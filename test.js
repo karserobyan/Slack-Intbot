@@ -1335,19 +1335,25 @@ assert(progMulti[1].elements[0].text.toLowerCase().includes('writing'),
 console.log('\n🔹 feature-flags');
 
 delete process.env.NEW_PIPELINE;
-assert(isNewPipelineEnabled() === false, 'unset NEW_PIPELINE → false');
+assert(isNewPipelineEnabled() === true, 'unset NEW_PIPELINE → true (default ON post-Phase-2)');
 
 process.env.NEW_PIPELINE = 'false';
 assert(isNewPipelineEnabled() === false, '"false" → false');
+
+process.env.NEW_PIPELINE = 'FALSE';
+assert(isNewPipelineEnabled() === false, '"FALSE" (case-insensitive) → false');
 
 process.env.NEW_PIPELINE = 'true';
 assert(isNewPipelineEnabled() === true, '"true" → true');
 
 process.env.NEW_PIPELINE = 'TRUE';
-assert(isNewPipelineEnabled() === true, '"TRUE" (case-insensitive) → true');
+assert(isNewPipelineEnabled() === true, '"TRUE" → true');
 
 process.env.NEW_PIPELINE = '1';
-assert(isNewPipelineEnabled() === false, 'numeric "1" is NOT true (strict "true" only)');
+assert(isNewPipelineEnabled() === true, '"1" → true (anything not "false" enables)');
+
+process.env.NEW_PIPELINE = 'fals';
+assert(isNewPipelineEnabled() === true, 'typo "fals" → true (strict disable protects from accidental rollback)');
 
 delete process.env.NEW_PIPELINE;
 
