@@ -73,7 +73,10 @@ export async function runAnswerer({
       .join('');
 
     const parsed = parseClaudeResponse(fullText);
-    if (!parsed) throw new Error('Could not parse Answerer response.');
+    if (!parsed) {
+      console.error('[answerer] parse failed — head of model output:', JSON.stringify(fullText.slice(0, 200)));
+      throw new Error('Could not parse Answerer response.');
+    }
     return parsed;
   } finally {
     clearTimeout(timer);

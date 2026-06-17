@@ -111,6 +111,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
   } catch (err) {
     if (signal.aborted) {
       console.error(`[pipeline] aborted after ${Date.now() - t0}ms (60s hard cap)`);
+      err.pipelineTimedOut = true;
     }
     throw err;
   } finally {

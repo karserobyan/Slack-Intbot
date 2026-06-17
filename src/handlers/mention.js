@@ -172,7 +172,9 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
         });
       } catch (err) {
         console.error('[mention] pipeline (follow-up) failed:', err.message);
-        const errText = 'Something went wrong — please retry or escalate manually.';
+        const errText = err.pipelineTimedOut
+          ? 'This question took longer than 60 seconds to investigate — try a more specific phrasing, or escalate manually.'
+          : 'Something went wrong — please retry or escalate manually.';
         if (thinkingTs) {
           await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: buildErrorBlocks(query), text: errText });
         } else {
@@ -268,9 +270,10 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
     let chatResult;
     try {
-      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(() => {});
-      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'confluence' })).catch(() => {});
-      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'jira' })).catch(() => {});
+      const onProgressError = (err) => console.warn('[mention] onProgress failed:', err.message);
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'KB' })).catch(onProgressError);
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'confluence' })).catch(onProgressError);
+      Promise.resolve(onProgress({ phase: 'tool_start', tool: 'jira' })).catch(onProgressError);
       const [kbFetch, confluenceFetch, jiraFetch] = await Promise.allSettled([
         searchKnowledgeBase(query),
         searchConfluence(query),
@@ -279,9 +282,9 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       const kbContext = kbFetch.status === 'fulfilled' && kbFetch.value?.text ? kbFetch.value.text : null;
       const confluenceContext = confluenceFetch.status === 'fulfilled' && confluenceFetch.value?.text ? confluenceFetch.value.text : null;
       const jiraContext = jiraFetch.status === 'fulfilled' && jiraFetch.value?.text ? jiraFetch.value.text : null;
-      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null })).catch(() => {});
-      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'confluence', count: confluenceFetch.status === 'fulfilled' ? (confluenceFetch.value?.refs?.length ?? null) : null })).catch(() => {});
-      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'jira', count: jiraFetch.status === 'fulfilled' ? (jiraFetch.value?.refs?.length ?? null) : null })).catch(() => {});
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'KB', count: kbFetch.status === 'fulfilled' ? (kbFetch.value?.refs?.length ?? null) : null })).catch(onProgressError);
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'confluence', count: confluenceFetch.status === 'fulfilled' ? (confluenceFetch.value?.refs?.length ?? null) : null })).catch(onProgressError);
+      Promise.resolve(onProgress({ phase: 'tool_done', tool: 'jira', count: jiraFetch.status === 'fulfilled' ? (jiraFetch.value?.refs?.length ?? null) : null })).catch(onProgressError);
       chatResult = await queryChat(query, history, { kbContext, confluenceContext, jiraContext, onProgress });
     } catch (err) {
       console.error('[mention] queryChat failed:', err.message);
@@ -399,10 +402,13 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     } catch (err) {
       console.error('[mention] pipeline (initial) failed:', err.message);
       const errBlocks = buildErrorBlocks(query);
+      const errText = err.pipelineTimedOut
+        ? 'This question took longer than 60 seconds to investigate — try a more specific phrasing, or escalate manually.'
+        : 'Something went wrong — please retry or escalate manually.';
       if (thinkingTs) {
-        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: errBlocks, text: 'Something went wrong — please retry or escalate manually.' });
+        await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: errBlocks, text: errText });
       } else {
-        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: errBlocks, text: 'Something went wrong — please retry or escalate manually.' });
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: errBlocks, text: errText });
       }
       return;
     }

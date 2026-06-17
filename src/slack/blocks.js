@@ -61,7 +61,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   // 1. Header
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: `${conf.icon} ${data.issue_title}`, emoji: true },
+    text: { type: 'plain_text', text: `${conf.icon} ${data.issue_title ?? 'Integration Issue'}`, emoji: true },
   });
   blocks.push({ type: 'divider' });
 
@@ -124,12 +124,13 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+      const prefix = `${circle} *${step.num}. ${step.title}*  \`${step.tag}\`\n`;
+      const detailRaw = step.detail ?? '';
+      const budget = 2900 - prefix.length;
+      const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
       blocks.push({
         type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `${circle} *${step.num}. ${step.title}*  \`${step.tag}\`\n${step.detail}`,
-        },
+        text: { type: 'mrkdwn', text: `${prefix}${detail}` },
       });
     }
   }

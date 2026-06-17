@@ -89,7 +89,7 @@ npm start
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
-| `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
+| `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-6`) |
 | `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |
 | `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
