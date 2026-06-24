@@ -15,6 +15,11 @@ function getAnthropicClient() {
     anthropic = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
       fetch: (...args) => globalThis.fetch(...args),
+      // Retry policy is owned by the pipeline (see runPipeline), not the SDK —
+      // matching interpreter.js and evaluator.js. Leaving the SDK default (2)
+      // would stack with the pipeline's manual retry inside the same timeout
+      // budget and burn it on exponential backoff.
+      maxRetries: 0,
     });
   }
   return anthropic;
@@ -72,8 +77,15 @@ export async function runAnswerer({
       .map(b => b.text)
       .join('');
 
-    const parsed = parseClaudeResponse(fullText);
-    if (!parsed) throw new Error('Could not parse Answerer response.');
+    let parsed;
+    try {
+      parsed = parseClaudeResponse(fullText);
+    } catch (parseErr) {
+      // Malformed/truncated LLM JSON is common and usually recovers on a re-roll.
+      // Tag it so runPipeline retries once instead of failing the whole request.
+      throw Object.assign(new Error(`Could not parse Answerer response: ${parseErr.message}`), { parseFailure: true });
+    }
+    if (!parsed) throw Object.assign(new Error('Answerer returned no parseable content.'), { parseFailure: true });
     return parsed;
   } finally {
     clearTimeout(timer);

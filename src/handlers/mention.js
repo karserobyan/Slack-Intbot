@@ -26,6 +26,32 @@ function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
 }
 
+// Per-request fields that depend on the current thread/channel/query and must
+// NEVER be served stale from cache. `_showSpecialistValue` in particular carries
+// {threadTs, channelId}; if baked into a cached result it would route a later
+// asker's "Show Specialist Detail" click into the original asker's thread.
+const TRANSIENT_FIELDS = ['_originalQuery', '_showSpecialistValue', '_cleanedQuestion'];
+
+// Returns a shallow clone with all transient per-request fields removed — used
+// before writing to the shared cache so stored data is request-agnostic.
+export function stripTransient(data) {
+  const clean = { ...data };
+  for (const f of TRANSIENT_FIELDS) delete clean[f];
+  return clean;
+}
+
+// Returns a shallow clone of a (possibly cached) result with the per-request
+// fields freshly attached for THIS thread/channel/role. Only CSAs get the
+// "Show Specialist Detail" affordance.
+export function withRequestContext(data, { query, threadTs, channelId, role }) {
+  const view = stripTransient(data);
+  view._originalQuery = query;
+  if (role === 'csa') {
+    view._showSpecialistValue = JSON.stringify({ threadTs, channelId, query: query.slice(0, 800) });
+  }
+  return view;
+}
+
 // Returns { role: 'csa' | 'specialist', agentName } from Slack profile. Defaults to 'csa' on failure.
 async function detectAgentRole(client, userId) {
   try {
@@ -329,15 +355,16 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
     const { role: cachedRole } = await detectAgentRole(client, userId);
+    const cachedView = withRequestContext(cached, { query, threadTs, channelId, role: cachedRole });
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      blocks: buildResponseBlocks(cached, { isDm, role: cachedRole }),
-      text: `Troubleshooting steps for: ${cached.issue_title}`,
+      blocks: buildResponseBlocks(cachedView, { isDm, role: cachedRole }),
+      text: `Troubleshooting steps for: ${cachedView.issue_title}`,
     });
     appendToHistory(threadTs, [
       { role: 'user', content: query },
-      { role: 'assistant', content: summarizeResultForHistory(cached) },
+      { role: 'assistant', content: summarizeResultForHistory(cachedView) },
     ]);
     return;
   }
@@ -444,7 +471,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
     const CACHE_MIN_MS_PIPE = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
     if ((Date.now() - queryStartPipe) >= CACHE_MIN_MS_PIPE) {
-      setCachedMulti([query, cleanedKey].filter(Boolean), pipelineResult);
+      setCachedMulti([query, cleanedKey].filter(Boolean), stripTransient(pipelineResult));
     }
 
     const pipeIntegration = (pipelineResult.integration_type ?? 'unknown').slice(0, 50);
@@ -573,7 +600,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     });
   }
   const CACHE_MIN_MS = parseInt(process.env.CACHE_MIN_MS ?? '30000', 10);
-  if (!result.clarifying_question && (Date.now() - queryStart) >= CACHE_MIN_MS) setCached(query, result);
+  if (!result.clarifying_question && (Date.now() - queryStart) >= CACHE_MIN_MS) setCached(query, stripTransient(result));
 
   // 12. Accounting redirect from AI (double-check)
   if (result.is_accounting_topic) {

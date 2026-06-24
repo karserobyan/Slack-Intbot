@@ -43,7 +43,7 @@ registerMentionHandler(app);
 registerDmHandler(app);
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
-app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
+app.action('wrong_answer_modal', async ({ ack, body, client, action, logger }) => {
   await ack();
 
   let context = { query: '', issueTitle: '', integrationType: '' };
@@ -53,21 +53,29 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action }) => {
     // fallback to empty context
   }
 
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildFeedbackModal(context),
-  });
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: buildFeedbackModal(context),
+    });
+  } catch (err) {
+    logger.error('[index] Failed to open feedback modal:', err.message);
+  }
 });
 
 // ── "Sources" button — opens sources modal ───────────────────────────────────
-app.action('view_sources_modal', async ({ ack, body, client, action }) => {
+app.action('view_sources_modal', async ({ ack, body, client, action, logger }) => {
   await ack();
   let refsData = { diagnosis: null, slack_refs: [], atlassian_refs: [], kb_refs: [] };
   try { refsData = JSON.parse(action.value); } catch { /* show empty modal on bad JSON */ }
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: buildSourcesModal(refsData),
-  });
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: buildSourcesModal(refsData),
+    });
+  } catch (err) {
+    logger.error('[index] Failed to open sources modal:', err.message);
+  }
 });
 
 // ── "Channel post" button — opens copy-paste modal ───────────────────────────
@@ -138,10 +146,19 @@ app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
   const responseBlocks = buildResponseBlocks(result, { role: 'specialist' });
   const fallbackText = `Specialist view: ${result.issue_title}`;
 
-  if (thinkingTs) {
-    await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
-  } else {
-    await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+  try {
+    if (thinkingTs) {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: responseBlocks, text: fallbackText });
+    } else {
+      await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks: responseBlocks, text: fallbackText });
+    }
+  } catch (err) {
+    app.logger.error('[show_specialist_detail] Failed to deliver specialist view:', err.message);
+    const errText = 'Could not render the specialist view — please retry.';
+    if (thinkingTs) {
+      await client.chat.update({ channel: channelId, ts: thinkingTs, text: errText, blocks: [] }).catch(() => {});
+    }
+    return;
   }
 
   // Append to conversation history

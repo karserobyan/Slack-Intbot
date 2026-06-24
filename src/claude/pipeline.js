@@ -97,7 +97,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
     try {
       answer = await runAnswerer(answererArgs);
     } catch (err1) {
-      const transient = err1.status >= 500 || err1.name === 'AbortError' || err1.code === 'ECONNRESET';
+      const transient = err1.status >= 500 || err1.name === 'AbortError' || err1.code === 'ECONNRESET' || err1.parseFailure === true;
       if (!transient || signal.aborted) throw err1;
       console.warn('[pipeline] Answerer first attempt failed, retrying:', err1.message);
       answer = await runAnswerer(answererArgs);

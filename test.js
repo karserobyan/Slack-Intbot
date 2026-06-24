@@ -1335,19 +1335,19 @@ assert(progMulti[1].elements[0].text.toLowerCase().includes('writing'),
 console.log('\n🔹 feature-flags');
 
 delete process.env.NEW_PIPELINE;
-assert(isNewPipelineEnabled() === false, 'unset NEW_PIPELINE → false');
+assert(isNewPipelineEnabled() === true, 'unset NEW_PIPELINE → true (new pipeline is the default)');
 
 process.env.NEW_PIPELINE = 'false';
-assert(isNewPipelineEnabled() === false, '"false" → false');
+assert(isNewPipelineEnabled() === false, '"false" → false (kill-switch back to legacy)');
+
+process.env.NEW_PIPELINE = 'FALSE';
+assert(isNewPipelineEnabled() === false, '"FALSE" (case-insensitive) → false');
 
 process.env.NEW_PIPELINE = 'true';
 assert(isNewPipelineEnabled() === true, '"true" → true');
 
-process.env.NEW_PIPELINE = 'TRUE';
-assert(isNewPipelineEnabled() === true, '"TRUE" (case-insensitive) → true');
-
 process.env.NEW_PIPELINE = '1';
-assert(isNewPipelineEnabled() === false, 'numeric "1" is NOT true (strict "true" only)');
+assert(isNewPipelineEnabled() === true, 'any non-"false" value → true (only "false" disables)');
 
 delete process.env.NEW_PIPELINE;
 
@@ -1728,6 +1728,94 @@ assert(getCached('only one') !== null, 'single-key write works');
 
 setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
 assert(getCached('valid key') !== null, 'valid key in mixed array is written');
+
+// ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
+console.log('\n🔹 transient cache fields');
+
+import { stripTransient, withRequestContext } from './src/handlers/mention.js';
+
+const bakedResult = {
+  issue_title: 'Zapier broke',
+  integration_type: 'Zapier',
+  _originalQuery: 'original asker query',
+  _showSpecialistValue: JSON.stringify({ threadTs: 'T_OLD', channelId: 'C_OLD', query: 'old' }),
+  _cleanedQuestion: 'zapier broke',
+};
+
+const stripped = stripTransient(bakedResult);
+assert(stripped._originalQuery === undefined, 'stripTransient drops _originalQuery');
+assert(stripped._showSpecialistValue === undefined, 'stripTransient drops _showSpecialistValue');
+assert(stripped._cleanedQuestion === undefined, 'stripTransient drops _cleanedQuestion');
+assert(stripped.issue_title === 'Zapier broke', 'stripTransient keeps real fields');
+assert(bakedResult._originalQuery === 'original asker query', 'stripTransient does not mutate the input');
+
+// A CSA in a NEW thread must get a button pointing at THEIR thread, not the cached one
+const csaView = withRequestContext(bakedResult, { query: 'new query', threadTs: 'T_NEW', channelId: 'C_NEW', role: 'csa' });
+const csaVal = JSON.parse(csaView._showSpecialistValue);
+assert(csaVal.threadTs === 'T_NEW' && csaVal.channelId === 'C_NEW', 'withRequestContext rebinds specialist button to current thread/channel');
+assert(csaView._originalQuery === 'new query', 'withRequestContext sets _originalQuery to current query');
+assert(bakedResult._showSpecialistValue.includes('T_OLD'), 'withRequestContext does not mutate the cached input');
+
+// A specialist must NOT receive the "Show Specialist Detail" affordance
+const specialistView = withRequestContext(bakedResult, { query: 'q', threadTs: 'T2', channelId: 'C2', role: 'specialist' });
+assert(specialistView._showSpecialistValue === undefined, 'withRequestContext withholds specialist button from specialists');
+
+// ── Block Kit clamping (invalid_blocks / stuck-thinking guard) ────────────────
+console.log('\n🔹 Block Kit clamping');
+
+// Helper: assert no section/header text in a block array exceeds Slack limits.
+function assertWithinSlackLimits(blocks, label) {
+  for (const b of blocks) {
+    if (b.type === 'header' && b.text?.type === 'plain_text') {
+      assert(b.text.text.length <= 150, `${label}: header within 150 chars (got ${b.text.text.length})`);
+    }
+    if (b.type === 'section' && b.text?.type === 'mrkdwn') {
+      assert(b.text.text.length <= 3000, `${label}: section within 3000 chars (got ${b.text.text.length})`);
+    }
+  }
+}
+
+const HUGE = 'x'.repeat(5000);
+const overflowResult = {
+  issue_title: HUGE,
+  confidence: 'high',
+  customer_message: HUGE,
+  findings_summary: { diagnosis: HUGE },
+  agent_steps: [
+    { num: 1, title: HUGE, detail: HUGE, tag: 'action' },
+    { num: 2, title: 'ok', detail: HUGE, tag: 'verify' },
+  ],
+  sources_used: ['kb'],
+};
+const overflowBlocks = buildResponseBlocks(overflowResult, { role: 'csa' });
+assertWithinSlackLimits(overflowBlocks, 'buildResponseBlocks');
+assert(overflowBlocks.some(b => b.type === 'header'), 'overflow response still produces a header');
+
+const overflowChat = buildChatResolutionBlocks({
+  title: HUGE,
+  diagnosis: HUGE,
+  steps: [{ tag: 'action', text: HUGE }],
+  refs: [],
+});
+assertWithinSlackLimits(overflowChat, 'buildChatResolutionBlocks');
+
+const overflowModal = buildSourcesModal({
+  diagnosis: HUGE,
+  slack_refs: [{ url: 'https://x', title: HUGE, channel: HUGE }],
+  atlassian_refs: [{ url: 'https://y', title: HUGE, type: 'jira' }],
+  kb_refs: [{ url: 'https://z', title: HUGE, snippet: HUGE }],
+});
+assertWithinSlackLimits(overflowModal.blocks, 'buildSourcesModal');
+
+// Normal-length content must be left intact (no spurious truncation)
+const normalBlocks = buildResponseBlocks({
+  issue_title: 'Zapier API access',
+  confidence: 'high',
+  customer_message: 'Short message.',
+  agent_steps: [{ num: 1, title: 'Do it', detail: 'Details here.', tag: 'action' }],
+}, { role: 'csa' });
+assert(JSON.stringify(normalBlocks).includes('Zapier API access'), 'normal title not truncated');
+assert(!JSON.stringify(normalBlocks).includes('…'), 'normal content has no ellipsis');
 
 // ── pipeline orchestrator ─────────────────────────────────────────────────────
 console.log('\n🔹 pipeline');

@@ -10,7 +10,7 @@
  * Slack alert sent to the configured feedback channel on every successful write.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { clearKnowledgeCache } from './knowledge.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
@@ -21,12 +21,23 @@ export const DEFAULT_KB_FILE = join(DATA_DIR, 'knowledge.md');
 let _writeQueue = Promise.resolve();
 
 async function readKb(filePath = DEFAULT_KB_FILE) {
-  try { return await readFile(filePath, 'utf-8'); } catch { return ''; }
+  try {
+    return await readFile(filePath, 'utf-8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return ''; // first run — no KB yet
+    // Unreadable for any other reason: abort rather than treat as empty, which
+    // would let the next append rewrite a near-empty file and wipe the KB.
+    console.error(`[knowledge-writer] Failed to read ${filePath} (${err.code ?? err.name}): ${err.message}. Aborting write to avoid clobbering.`);
+    throw err;
+  }
 }
 
+// Atomic write (temp + rename) so a crash mid-write can't truncate knowledge.md.
 async function writeKb(content, filePath = DEFAULT_KB_FILE) {
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, content, 'utf-8');
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  await writeFile(tmp, content, 'utf-8');
+  await rename(tmp, filePath);
 }
 
 function escapeRegex(str) {
