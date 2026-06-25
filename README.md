@@ -89,7 +89,7 @@ npm start
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
-| `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-20250514`) |
+| `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-6`) |
 | `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |
 | `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
@@ -101,12 +101,12 @@ npm start
 
 ## New pipeline rollout
 
-The bot runs a four-stage query pipeline (Interpreter → Search → Evaluator → Refine → Answerer), gated by the `NEW_PIPELINE` flag. As of 2026-06-24 this pipeline is the **default** (Phase 2, enabled after real-traffic verification).
+The bot runs a four-stage query pipeline (Interpreter → Search → Evaluator → Refine → Answerer) controlled by the `NEW_PIPELINE` feature flag. **Default is ON** as of the Phase-2 flip.
 
-- **Default (unset)** — `handleQuery` routes to `src/claude/pipeline.js`, which understands the question first (Haiku Interpreter), then searches each source with a targeted plan, evaluates the results, optionally refines once, and only then calls Sonnet for the final answer.
-- `NEW_PIPELINE=false` — kill-switch back to the legacy `queryWithContext` / `queryChat` single-call path.
+- `NEW_PIPELINE=true` (default) — `handleQuery` routes to `src/claude/pipeline.js`, which understands the question first (Haiku Interpreter), then searches each source with a targeted plan, evaluates the results, optionally refines once, and only then calls Sonnet for the final answer.
+- `NEW_PIPELINE=false` — rolls back to the legacy `queryWithContext` / `queryChat` single-call path. Strict comparison: only the literal string `false` (case-insensitive) disables; typos do not roll back.
 
-Both initial channel mentions and DM follow-ups respect the flag. Roll back with a single env-var change — no code redeploy required.
+Both initial channel mentions and DM follow-ups respect the flag. Rollback is a single env-var change — no code redeploy required. The legacy path remains in place during Phase 2 stabilization; it will be removed in Phase 3 after the new pipeline is stable for ≥1 week.
 
 See `docs/superpowers/specs/2026-05-19-query-understanding-redesign.md` for the full design.
 

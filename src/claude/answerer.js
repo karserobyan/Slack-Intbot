@@ -83,9 +83,13 @@ export async function runAnswerer({
     } catch (parseErr) {
       // Malformed/truncated LLM JSON is common and usually recovers on a re-roll.
       // Tag it so runPipeline retries once instead of failing the whole request.
+      console.error('[answerer] parse failed — head of model output:', JSON.stringify(fullText.slice(0, 200)));
       throw Object.assign(new Error(`Could not parse Answerer response: ${parseErr.message}`), { parseFailure: true });
     }
-    if (!parsed) throw Object.assign(new Error('Answerer returned no parseable content.'), { parseFailure: true });
+    if (!parsed) {
+      console.error('[answerer] parse returned no content — head of model output:', JSON.stringify(fullText.slice(0, 200)));
+      throw Object.assign(new Error('Answerer returned no parseable content.'), { parseFailure: true });
+    }
     return parsed;
   } finally {
     clearTimeout(timer);
