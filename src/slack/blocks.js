@@ -13,6 +13,18 @@ const CONFIDENCE_META = {
   low:    { icon: '🔴', label: 'Low'    },
 };
 
+// Slack hard limits: section text ≤ 3000 chars, header plain_text ≤ 150.
+// LLM-derived fields (issue_title, customer_message, diagnosis, step.detail) have
+// no enforced upstream cap, so clamp defensively at render time — an over-long
+// field would otherwise make chat.postMessage reject the whole payload with
+// `invalid_blocks`, leaving the user with a stuck "thinking…" message.
+const SECTION_MAX = 2900; // headroom under 3000 for surrounding markdown
+const HEADER_MAX = 140;   // headroom under 150
+function clamp(str, max = SECTION_MAX) {
+  const s = String(str ?? '');
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 /**
  * Builds the Block Kit payload for a successful (non-accounting) response.
  * Stays well under Slack's 50-block limit by capping steps and refs.
@@ -61,7 +73,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   // 1. Header
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: `${conf.icon} ${data.issue_title ?? 'Integration Issue'}`, emoji: true },
+    text: { type: 'plain_text', text: clamp(`${conf.icon} ${data.issue_title ?? 'Integration Issue'}`, HEADER_MAX), emoji: true },
   });
   blocks.push({ type: 'divider' });
 
@@ -111,7 +123,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (data.customer_message) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `💬 _"${data.customer_message}"_` },
+      text: { type: 'mrkdwn', text: `💬 _"${clamp(data.customer_message)}"_` },
     });
   }
 
@@ -124,7 +136,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${step.title}*  \`${step.tag}\`\n`;
+      const prefix = `${circle} *${step.num}. ${clamp(step.title, 200)}*  \`${step.tag}\`\n`;
       const detailRaw = step.detail ?? '';
       const budget = 2900 - prefix.length;
       const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
@@ -489,7 +501,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
   if (diagnosis) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*🔍 Root Cause*\n${diagnosis}` },
+      text: { type: 'mrkdwn', text: clamp(`*🔍 Root Cause*\n${diagnosis}`) },
     });
     blocks.push({ type: 'divider' });
   }
@@ -502,7 +514,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of slack_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.channel}_` },
+        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.channel}_`) },
       });
     }
   }
@@ -515,7 +527,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of atlassian_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>` },
+        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>`) },
       });
     }
   }
@@ -528,7 +540,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of kb_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: `• <${ref.url}|${ref.title}>\n  _${ref.snippet}_` },
+        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.snippet}_`) },
       });
     }
   }
@@ -562,7 +574,7 @@ export function buildChatResolutionBlocks(data) {
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: `*${data.title}*\n_${data.diagnosis}_` },
+    text: { type: 'mrkdwn', text: clamp(`*${clamp(data.title, 200)}*\n_${data.diagnosis}_`) },
   });
 
   if (isEscalation && data.escalation_path) {
@@ -576,7 +588,7 @@ export function buildChatResolutionBlocks(data) {
     const circle = TAG_CIRCLE[step.tag] ?? '⚪';
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `${circle} \`${step.tag}\` ${step.text}` },
+      text: { type: 'mrkdwn', text: clamp(`${circle} \`${step.tag}\` ${step.text}`) },
     });
   }
 

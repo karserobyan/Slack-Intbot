@@ -11,7 +11,7 @@
  * - Max 500 active entries, 200 pending entries
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deleteCache } from './cache.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
@@ -31,34 +31,48 @@ let _writeQueue = Promise.resolve();
 
 // ── Disk I/O helpers ──────────────────────────────────────────────────────
 
+// Reads a JSON array file. A missing file (ENOENT) is a normal first-run state
+// and returns []. Any OTHER error (corrupt JSON, EACCES) is NOT swallowed: we
+// throw so the caller aborts rather than caching [] and then overwriting real
+// on-disk data with an empty array on the next write.
+async function readJsonArray(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf-8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    console.error(`[feedback] Failed to read ${file} (${err.code ?? err.name}): ${err.message}. Refusing to overwrite — leaving the file intact for recovery.`);
+    throw err;
+  }
+}
+
+// Atomic write: write a temp file then rename over the target. rename(2) is
+// atomic on the same filesystem, so a crash mid-write can never leave a
+// truncated/corrupt JSON file that would wipe state on the next read.
+async function writeJsonAtomic(file, entries) {
+  await mkdir(FEEDBACK_DIR, { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  await writeFile(tmp, JSON.stringify(entries, null, 2));
+  await rename(tmp, file);
+}
+
 async function loadActive() {
   if (_activeCache !== null) return _activeCache;
-  try {
-    _activeCache = JSON.parse(await readFile(FEEDBACK_FILE, 'utf-8'));
-  } catch {
-    _activeCache = [];
-  }
+  _activeCache = await readJsonArray(FEEDBACK_FILE);
   return _activeCache;
 }
 
 async function loadPending() {
   if (_pendingCache !== null) return _pendingCache;
-  try {
-    _pendingCache = JSON.parse(await readFile(PENDING_FILE, 'utf-8'));
-  } catch {
-    _pendingCache = [];
-  }
+  _pendingCache = await readJsonArray(PENDING_FILE);
   return _pendingCache;
 }
 
 async function persistActive(entries) {
-  await mkdir(FEEDBACK_DIR, { recursive: true });
-  await writeFile(FEEDBACK_FILE, JSON.stringify(entries, null, 2));
+  await writeJsonAtomic(FEEDBACK_FILE, entries);
 }
 
 async function persistPending(entries) {
-  await mkdir(FEEDBACK_DIR, { recursive: true });
-  await writeFile(PENDING_FILE, JSON.stringify(entries, null, 2));
+  await writeJsonAtomic(PENDING_FILE, entries);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
