@@ -24,7 +24,9 @@ import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/pro
 import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
-import { buildNominationBlocks } from './src/slack/nominations.js';
+import { buildNominationBlocks, nominateResponse, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
+import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
@@ -987,6 +989,31 @@ assert(rejectPayload.nominationId === 'nom_test_001', 'reject button value encod
 const nomContextBlock = nomBlocks.find(b => b.type === 'context');
 assert(nomContextBlock !== undefined, 'buildNominationBlocks has context footer');
 assert(nomContextBlock.elements[0].text.includes('nom_test_001'), 'context footer includes nomination ID');
+
+// — persistence: pending nominations survive a restart —
+const nomTmp = join(tmpdir(), `noms-test-${Date.now()}.json`);
+_setStoreForTest(nomTmp);
+process.env.FEEDBACK_REVIEW_CHANNEL_ID = 'C_REVIEW';
+const mockNomClient = { chat: { postMessage: async () => ({ ts: '111.222' }), update: async () => ({}) } };
+
+const persistedNom = await nominateResponse(mockNomClient, {
+  integration: 'Zapier', issueTitle: 'API access never enabled', steps: ['Enable API access'], refs: ['slack'],
+});
+assert(persistedNom && persistedNom.id, 'nominateResponse returns a nomination with an id');
+
+// Simulate a restart/redeploy: drop the in-memory map, reload from the same file.
+_setStoreForTest(nomTmp);
+const survived = await rejectNomination(persistedNom.id, mockNomClient, 'Tester');
+assert(survived && survived.id === persistedNom.id, 'pending nomination survives restart — found from disk after reload');
+
+// And once handled, it's gone from disk (no double-processing on a later restart).
+_setStoreForTest(nomTmp);
+const goneAfter = await rejectNomination(persistedNom.id, mockNomClient, 'Tester');
+assert(goneAfter === null, 'handled nomination is removed from disk — idempotent across restarts');
+
+delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
+await rm(nomTmp, { force: true });
+_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store
 
 // ── 16. parseChatResponse ─────────────────────────────────────────────────────
 console.log('\n🔹 parseChatResponse');
