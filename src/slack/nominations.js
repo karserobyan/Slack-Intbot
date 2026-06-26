@@ -6,16 +6,65 @@
  *   2. Moderator clicks Approve → approveNomination() writes to knowledge.md, posts confirmation.
  *   3. Moderator clicks Reject → rejectNomination() removes from pending, no write.
  *
- * Pending nominations are stored in-memory — they do not survive bot restarts.
+ * Pending nominations are persisted to data/nominations-pending.json (atomic
+ * writes) so they survive bot restarts/redeploys — approve/reject still work
+ * after a deploy.
  */
 
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { appendBotResponse, DEFAULT_KB_FILE } from './knowledge-writer.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
 
 const NOMINATION_ID_PREFIX = 'nom_';
 
-/** @type {Map<string, object>} nominationId → record */
-const _pending = new Map();
+// Pending nominations persist to disk so they survive bot restarts/redeploys.
+// Without this, a moderator approving a review card after a redeploy hits an
+// empty in-memory map → silent no-op while the card still shows the buttons.
+// (Mirrors the atomic-write pattern in feedback.js.)
+let _file = join(process.cwd(), 'data', 'nominations-pending.json');
+/** @type {Map<string, object>|null} nominationId → record; null until first load */
+let _pending = null;
+let _writeQueue = Promise.resolve();
+
+async function loadPending() {
+  if (_pending !== null) return _pending;
+  let arr = [];
+  try {
+    arr = JSON.parse(await readFile(_file, 'utf-8'));
+  } catch (err) {
+    // ENOENT = no pending nominations yet (normal). Other errors: log and start
+    // empty — a corrupt low-stakes queue shouldn't block approve/reject.
+    if (err.code !== 'ENOENT') {
+      console.error(`[nominations] Failed to read ${_file} (${err.code ?? err.name}): ${err.message} — starting empty.`);
+    }
+  }
+  _pending = new Map(arr.map((r) => [r.id, r]));
+  return _pending;
+}
+
+// Atomic write (temp + rename) of the current pending map, serialised via a
+// queue so concurrent approvals can't clobber each other or truncate the file.
+function persistPending() {
+  const snapshot = [...(_pending?.values() ?? [])];
+  _writeQueue = _writeQueue
+    .then(async () => {
+      await mkdir(dirname(_file), { recursive: true });
+      const tmp = `${_file}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify(snapshot, null, 2));
+      await rename(tmp, _file);
+    })
+    .catch((err) => console.error('[nominations] persist failed:', err.message));
+  return _writeQueue;
+}
+
+// Test-only: point storage at a temp file and reset the in-memory cache so a
+// "restart" (fresh load from disk) can be simulated.
+export function _setStoreForTest(path) {
+  _file = path;
+  _pending = null;
+  _writeQueue = Promise.resolve();
+}
 
 /**
  * Builds Block Kit blocks for a nomination review card.
@@ -99,7 +148,9 @@ export async function nominateResponse(client, record) {
     reviewChannelId: channelId,
   };
 
-  _pending.set(nomination.id, nomination);
+  const pending = await loadPending();
+  pending.set(nomination.id, nomination);
+  await persistPending();
 
   try {
     const msg = await client.chat.postMessage({
@@ -108,9 +159,11 @@ export async function nominateResponse(client, record) {
       blocks: buildNominationBlocks(nomination),
     });
     nomination.reviewMessageTs = msg.ts;
+    await persistPending(); // save the review message ts for later card updates
   } catch (err) {
     console.error('[nominations] Failed to post nomination card:', err.message);
-    _pending.delete(nomination.id);
+    pending.delete(nomination.id);
+    await persistPending();
     return null;
   }
 
@@ -126,9 +179,11 @@ export async function nominateResponse(client, record) {
  * @returns {Promise<object|null>}
  */
 export async function approveNomination(id, client, reviewerName = 'Moderator') {
-  const record = _pending.get(id);
+  const pending = await loadPending();
+  const record = pending.get(id);
   if (!record) return null;
-  _pending.delete(id);
+  pending.delete(id);
+  await persistPending();
 
   try {
     await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, DEFAULT_KB_FILE, client);
@@ -160,9 +215,11 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
  * @returns {Promise<object|null>}
  */
 export async function rejectNomination(id, client, reviewerName = 'Moderator') {
-  const record = _pending.get(id);
+  const pending = await loadPending();
+  const record = pending.get(id);
   if (!record) return null;
-  _pending.delete(id);
+  pending.delete(id);
+  await persistPending();
 
   if (record.reviewMessageTs && client) {
     await client.chat.update({
