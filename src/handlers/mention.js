@@ -13,7 +13,7 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
 } from '../slack/blocks.js';
-import { getCached, setCached, setCachedMulti } from '../slack/cache.js';
+import { getCached, setCached, setCachedMulti, cacheStats } from '../slack/cache.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { nominateResponse } from '../slack/nominations.js';
@@ -353,6 +353,9 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
 
   // 6. Cache lookup
   const cached = getCached(query);
+  // Observability: is the 1-hour response cache actually earning its keep?
+  const _cs = cacheStats();
+  console.info(`[cache] ${cached ? 'hit' : 'miss'} hitRate=${_cs.hitRate} (${_cs.hits}h/${_cs.misses}m) size=${_cs.size}/${_cs.maxEntries}`);
   if (cached) {
     const cachedIntegration = (cached.integration_type ?? 'unknown').slice(0, 50);
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
