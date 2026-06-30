@@ -22,6 +22,7 @@ export async function searchSlackMessages(query, { signal: externalSignal } = {}
   try {
     const url = new URL(SEARCH_URL);
     url.searchParams.set('query', query);
+    // Top-5 matches; cap bounds the answerer prompt (rationale: MAX_RESULTS in kb-search.js).
     url.searchParams.set('count', '5');
 
     const res = await fetch(url.toString(), {
