@@ -28,7 +28,7 @@ async function buildFeedbackContext(rawQuery) {
   }
 }
 
-export async function runPipeline({ rawQuery, role, agentName = null, threadHistory = [], onProgress }) {
+export async function runPipeline({ rawQuery, role, agentName = null, threadHistory = [], onProgress, allowClarify = true }) {
   const overall = new AbortController();
   const overallTimer = setTimeout(() => overall.abort(), HARD_CAP_MS);
   const signal = overall.signal;
@@ -42,7 +42,11 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
     const interp = await runInterpreter(rawQuery, { threadHistory, signal });
     timings.interpreter = Date.now() - tInterp;
 
-    if (interp.question_confidence === 'low') {
+    // Only ask a clarifying question when clarification is still allowed. On a
+    // thread follow-up the caller passes allowClarify=false — the bot has already
+    // engaged, so re-asking would create the "answer → question → answer →
+    // question" loop. Instead we fall through and answer best-effort.
+    if (interp.question_confidence === 'low' && allowClarify) {
       console.info(`[pipeline] shortcut=clarifying interpreter=${timings.interpreter}ms total=${Date.now() - t0}ms`);
       return {
         clarifying_question: interp.clarifying_question,
@@ -50,9 +54,25 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
       };
     }
 
+    // A low-confidence interpret leaves search_plan null; when clarification is
+    // capped, synthesize a plan from the cleaned/raw question so the answerer
+    // still has something to work with (resolve-or-escalate, never loop). Uses
+    // the fast REST sources only — skip the slow KB web-search on a query too
+    // vague to have anchored it in the first place.
+    const searchPlan = interp.search_plan ?? {
+      sources: [
+        { name: 'confluence', priority: 'high', query: interp.cleaned_question || rawQuery },
+        { name: 'slack', priority: 'high', query: interp.cleaned_question || rawQuery },
+      ],
+      rationale: 'clarification capped — answering with best available context',
+    };
+    if (interp.question_confidence === 'low') {
+      console.info(`[pipeline] clarification capped — forcing best-effort answer (interpreter=${timings.interpreter}ms)`);
+    }
+
     onProgress?.({ phase: 'stage', stage: 'search-1' });
     const tSearch1 = Date.now();
-    let searchResults = await executeSearchPlan(interp.search_plan, { onProgress, signal });
+    let searchResults = await executeSearchPlan(searchPlan, { onProgress, signal });
     timings.search1 = Date.now() - tSearch1;
 
     onProgress?.({ phase: 'stage', stage: 'evaluator' });
@@ -60,7 +80,7 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
     const evaluation = await runEvaluator({
       cleanedQuestion: interp.cleaned_question,
       searchResults,
-      originalPlan: interp.search_plan,
+      originalPlan: searchPlan,
       signal,
     });
     timings.evaluator = Date.now() - tEval;
