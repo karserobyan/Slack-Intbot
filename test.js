@@ -1913,6 +1913,32 @@ const refinedResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' 
 assert(refinedResult.issue_title === 'T2', 'Answerer ran after refinement');
 assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (refinement triggers a second SEARCH, not a second Evaluator)');
 
+// Test D: low confidence BUT clarification capped (thread follow-up) → answers
+// best-effort instead of re-asking. Guards against the clarification loop.
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"still vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which one?","search_plan":null}'),
+  anthropicMock('{"sufficient":true,"rationale":"ok","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Best effort","integration_type":"General","is_accounting_topic":false,"confidence":"low","customer_message":"","escalate_decision":{"should_escalate":true,"reason":"thin"},"channel_recommendation":{"channel":"ask-integrations","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":[]}'),
+);
+globalThis.fetch = passThroughFetch;
+const cappedResult = await runPipeline({ rawQuery: 'still vague', role: 'csa', allowClarify: false });
+assert(!cappedResult.clarifying_question, 'allowClarify:false does NOT return a clarifying question on low confidence (no re-ask loop)');
+assert(cappedResult.issue_title === 'Best effort', 'clarification-capped low-confidence query still gets a best-effort answer');
+assert(stepCounter === 3, 'capped path runs Interpreter + Evaluator + Answerer instead of shortcutting to clarify');
+
+// Test E: low confidence with clarification allowed (initial turn) still asks once
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which integration?","search_plan":null}'),
+);
+globalThis.fetch = passThroughFetch;
+const firstAskResult = await runPipeline({ rawQuery: 'vague', role: 'csa', allowClarify: true });
+assert(firstAskResult.clarifying_question === 'Which integration?', 'allowClarify:true (initial turn) still asks exactly one clarifying question');
+assert(stepCounter === 1, 'clarify shortcut still short-circuits before search when allowed');
+
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
 

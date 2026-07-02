@@ -195,6 +195,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
           agentName: fuAgentName,
           threadHistory: history,
           onProgress: fuOnProgress,
+          allowClarify: false, // follow-up: never re-ask — answer or escalate (no clarification loop)
         });
       } catch (err) {
         console.error('[mention] pipeline (follow-up) failed:', err.message);
