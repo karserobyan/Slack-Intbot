@@ -233,16 +233,15 @@ export async function approveFeedback(id) {
       const idx = pending.findIndex((e) => e.id === id);
       if (idx === -1) return; // Already processed — idempotent
 
-      approved = pending[idx];
-      pending.splice(idx, 1);
-      _pendingCache = pending;
-      await persistPending(pending);
+      const record = pending[idx];
 
-      // Move to active
+      // Persist to active FIRST. If loadActive/persistActive throws (e.g. a
+      // corrupt feedback.json — readJsonArray deliberately rethrows), we bail
+      // out here with the entry STILL in pending, so it's recoverable. Removing
+      // from pending before the active write could lose the entry entirely.
       const active = await loadActive();
-      // Idempotent: don't add if already in active (double-approve)
-      if (!active.some(e => e.id === id)) {
-        active.push(approved);
+      if (!active.some((e) => e.id === id)) {
+        active.push(record);
         if (active.length > MAX_ACTIVE) {
           active.splice(0, active.length - MAX_ACTIVE);
         }
@@ -250,8 +249,15 @@ export async function approveFeedback(id) {
         await persistActive(active);
       }
 
+      // Active is safely written — now remove from pending.
+      pending.splice(idx, 1);
+      _pendingCache = pending;
+      await persistPending(pending);
+
+      approved = record;
+
       // Invalidate response cache for this query
-      deleteCache(approved.query);
+      deleteCache(record.query);
     })
     .catch((err) => {
       console.error('[feedback] approveFeedback write failed:', err.message);

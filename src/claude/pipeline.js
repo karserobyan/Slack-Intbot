@@ -4,6 +4,7 @@ import { runEvaluator } from './evaluator.js';
 import { runAnswerer } from './answerer.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
+import { appendKbArticle } from '../slack/knowledge-writer.js';
 
 const HARD_CAP_MS = 60000;
 
@@ -123,6 +124,37 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
       answer = await runAnswerer(answererArgs);
     }
     timings.answerer = Date.now() - tAnswer;
+
+    // Close the clarification loop at the ANSWERER stage too: allowClarify only
+    // gated the interpreter, but the answerer prompt is allowed to emit a
+    // clarifying-question-only response. On a capped follow-up we must never
+    // re-ask — strip it and coerce to a best-effort/escalate result.
+    if (!allowClarify && answer.clarifying_question) {
+      console.info('[pipeline] answerer tried to clarify on a capped follow-up — coercing to best-effort/escalate');
+      delete answer.clarifying_question;
+      if (!answer.issue_title && !(answer.agent_steps?.length)) {
+        answer.issue_title = 'Not enough detail to resolve';
+        answer.confidence = answer.confidence ?? 'low';
+        answer.escalate_decision = answer.escalate_decision ?? {
+          should_escalate: true,
+          reason: 'Not enough detail to resolve automatically — add specifics or escalate manually.',
+        };
+      }
+    }
+
+    // Parity with the legacy path (query.js): attach fetched KB refs so the
+    // "📚 Knowledge Base" links show deterministically even if the answerer omits
+    // them, and auto-save new KB articles to the team knowledge file — the new
+    // pipeline otherwise silently stopped growing the KB after the flag flip.
+    if (searchResults.kb?.refs?.length > 0) {
+      if (!(answer.kb_refs?.length)) answer.kb_refs = searchResults.kb.refs;
+      const integration = answer.integration_type || 'General';
+      for (const ref of searchResults.kb.refs) {
+        appendKbArticle(integration, ref.url, ref.title, ref.snippet ?? '').catch((err) => {
+          console.warn('[pipeline] KB auto-save failed for', ref.url, ':', err.message);
+        });
+      }
+    }
 
     answer._cleanedQuestion = interp.cleaned_question;
     const stageStr = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(' ');

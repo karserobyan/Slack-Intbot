@@ -1939,6 +1939,20 @@ const firstAskResult = await runPipeline({ rawQuery: 'vague', role: 'csa', allow
 assert(firstAskResult.clarifying_question === 'Which integration?', 'allowClarify:true (initial turn) still asks exactly one clarifying question');
 assert(stepCounter === 1, 'clarify shortcut still short-circuits before search when allowed');
 
+// Test F: even if the ANSWERER emits a clarifying-question-only response, a capped
+// follow-up must not re-ask — the pipeline strips it and coerces to best-effort.
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"ok","refined_plan":null}'),
+  anthropicMock('{"clarifying_question":"Is it the API or the webhook?"}'),
+);
+globalThis.fetch = passThroughFetch;
+const answererClarifyCapped = await runPipeline({ rawQuery: 'follow up', role: 'csa', allowClarify: false });
+assert(!answererClarifyCapped.clarifying_question, 'answerer clarifying-only is stripped when clarification is capped (no loop via the answerer stage)');
+assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'capped answerer-clarify coerces to an escalate-style best-effort result');
+
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
 
