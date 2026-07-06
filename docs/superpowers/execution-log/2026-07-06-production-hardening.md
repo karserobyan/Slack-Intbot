@@ -138,3 +138,17 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 549 passed, 0 failed.
 
 **Decision / Follow-up:** Task 1 helper coverage now exercises both unauthorized and authorized paths.
+
+## 2026-07-06 — Task 1 Review Gate Closed
+
+**Intent:** Mark the moderator authorization task complete only after independent review and controller-side verification.
+
+**Action Taken:** Re-reviewed the full Task 1 diff after the authorized-path coverage fix. Confirmed the branch descends from `codex/production-hardening-phase-1` and that unrelated dirty hunks remain outside the Task 1 commits.
+
+**Files Touched:**
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+- `.superpowers/sdd/progress.md`
+
+**Verification:** Task reviewer approved the full `28d2b9c..49dbc70` diff. Controller reran `node test.js`; result was 549 passed, 0 failed.
+
+**Decision / Follow-up:** Task 1 complete. Proceed to Task 2 durable feedback persistence.
