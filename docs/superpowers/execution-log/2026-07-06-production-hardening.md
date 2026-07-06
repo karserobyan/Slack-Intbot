@@ -92,3 +92,17 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** No actionable placeholder instructions remain. All in-scope design requirements map to implementation tasks.
 
 **Decision / Follow-up:** Offer execution options and begin implementation after the user chooses the execution mode.
+
+## 2026-07-06 — SDD Pre-Flight Plan Correction
+
+**Intent:** Prevent implementation commits from accidentally folding pre-existing uncommitted work into unrelated hardening commits.
+
+**Action Taken:** Updated the implementation plan's global constraints to require hunk-level staging when a task touches a file that was already dirty before the task began.
+
+**Files Touched:**
+- `docs/superpowers/plans/2026-07-06-production-hardening-phase-1.md`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** Pre-flight conflict resolved before dispatching Task 1.
+
+**Decision / Follow-up:** Proceed with subagent-driven execution, starting at Task 1.

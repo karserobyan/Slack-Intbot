@@ -19,6 +19,7 @@
 - All meaningful work must be tracked in `docs/superpowers/execution-log/2026-07-06-production-hardening.md`.
 - Auto-answer must remain disabled by default.
 - Dependency advisory scanning through external registries remains out of scope unless the user explicitly approves dependency inventory disclosure.
+- Commit commands list the files that belong to each task. If any listed file had pre-existing uncommitted changes before the task, stage only the task's hunks for that file with `git add -p` or equivalent, then verify with `git diff --cached --name-only` and `git diff --cached` before committing.
 
 ---
 
