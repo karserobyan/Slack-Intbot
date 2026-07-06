@@ -88,6 +88,7 @@ npm start
 | `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
+| `MODERATOR_USER_IDS` | Required for review actions | Comma-separated Slack user IDs allowed to approve/reject feedback and knowledge nominations. If unset, review actions fail closed. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-6`) |
 | `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |

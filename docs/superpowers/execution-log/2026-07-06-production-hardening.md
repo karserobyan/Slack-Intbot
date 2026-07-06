@@ -106,3 +106,21 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Pre-flight conflict resolved before dispatching Task 1.
 
 **Decision / Follow-up:** Proceed with subagent-driven execution, starting at Task 1.
+
+## 2026-07-06 — Task 1 Moderator Authorization Implemented
+
+**Intent:** Prevent unauthorized users from approving or rejecting feedback and knowledge nominations.
+
+**Action Taken:** Added moderator authorization helpers, testable review-action handlers, wired Slack action handlers through the guard, and documented `MODERATOR_USER_IDS`.
+
+**Files Touched:**
+- `src/slack/moderation.js`
+- `src/slack/review-actions.js`
+- `src/index.js`
+- `.env.example`
+- `README.md`
+- `test.js`
+
+**Verification:** `node test.js` passed with 0 failures.
+
+**Decision / Follow-up:** Continue to durable persistence semantics.

@@ -25,6 +25,16 @@ import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks, nominateResponse, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
+import {
+  getModeratorIds,
+  isAuthorizedModerator,
+  requireAuthorizedModerator,
+  sendUnauthorizedResponse,
+} from './src/slack/moderation.js';
+import {
+  handleFeedbackReviewAction,
+  handleNominationReviewAction,
+} from './src/slack/review-actions.js';
 import { tmpdir } from 'node:os';
 import { rm } from 'node:fs/promises';
 import { buildChannelPostModal } from './src/slack/modal.js';
@@ -1014,6 +1024,66 @@ assert(goneAfter === null, 'handled nomination is removed from disk — idempote
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
 _setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store
+
+// ── Moderation authorization ─────────────────────────────────────────────────
+console.log('\n🔹 Moderation authorization');
+
+const modEnv = { MODERATOR_USER_IDS: 'U1, U2 ,,U3' };
+assert([...getModeratorIds(modEnv)].join(',') === 'U1,U2,U3', 'moderator IDs parse comma-separated env');
+assert(isAuthorizedModerator('U2', modEnv) === true, 'configured moderator is authorized');
+assert(isAuthorizedModerator('U4', modEnv) === false, 'unlisted user is not authorized');
+assert(isAuthorizedModerator('U1', {}) === false, 'missing moderator list fails closed');
+
+let unauthorizedThrown = false;
+try { requireAuthorizedModerator('U4', modEnv); } catch (err) {
+  unauthorizedThrown = err.code === 'not_authorized' && err.userId === 'U4';
+}
+assert(unauthorizedThrown, 'requireAuthorizedModerator throws tagged authorization error');
+
+const denialCalls = [];
+await sendUnauthorizedResponse({
+  body: { user: { id: 'U4' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { postEphemeral: async (payload) => { denialCalls.push(['ephemeral', payload]); } } },
+  respond: async (payload) => { denialCalls.push(['respond', payload]); },
+  logger: { warn: () => {} },
+  actionName: 'approve_feedback',
+});
+assert(denialCalls.some(([kind]) => kind === 'respond'), 'unauthorized response prefers respond');
+assert(JSON.stringify(denialCalls).includes('not authorized'), 'unauthorized response explains denial');
+
+let approveFeedbackCalled = false;
+const unauthorizedFeedbackResult = await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_1',
+  body: { user: { id: 'U4', name: 'Nope' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { postMessage: async () => ({}), update: async () => ({}) }, users: { info: async () => ({ user: { profile: {} } }) } },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveFeedback: async () => { approveFeedbackCalled = true; return null; },
+    rejectFeedback: async () => { throw new Error('should not run'); },
+  },
+});
+assert(unauthorizedFeedbackResult.status === 'unauthorized', 'unauthorized feedback action returns unauthorized');
+assert(approveFeedbackCalled === false, 'unauthorized feedback approval does not mutate feedback');
+
+let approveNominationCalled = false;
+const unauthorizedNominationResult = await handleNominationReviewAction({
+  decision: 'approve',
+  nominationId: 'nom_1',
+  body: { user: { id: 'U4', name: 'Nope' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { update: async () => ({}) }, users: { info: async () => ({ user: { profile: {} } }) } },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveNomination: async () => { approveNominationCalled = true; return null; },
+    rejectNomination: async () => { throw new Error('should not run'); },
+  },
+});
+assert(unauthorizedNominationResult.status === 'unauthorized', 'unauthorized nomination action returns unauthorized');
+assert(approveNominationCalled === false, 'unauthorized nomination approval does not mutate nominations');
 
 // ── 16. parseChatResponse ─────────────────────────────────────────────────────
 console.log('\n🔹 parseChatResponse');
