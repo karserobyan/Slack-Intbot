@@ -161,7 +161,7 @@ export async function notifyFeedbackChannel(client, record) {
           type: 'section',
           fields: [
             { type: 'mrkdwn', text: `*Agent:*\n<@${record.agentId}>` },
-            { type: 'mrkdwn', text: `*Integration:*\n${record.integrationType}` },
+            { type: 'mrkdwn', text: `*Integration:*\n${escapeMrkdwn(record.integrationType)}` },
           ],
         },
         {

@@ -23,7 +23,7 @@ import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './s
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { parseChatResponse } from './src/claude/query.js';
-import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, _setFeedbackStorageForTest } from './src/slack/feedback.js';
+import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks, nominateResponse, approveNomination, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
 import {
@@ -256,6 +256,7 @@ console.log('\n🔹 Slack mrkdwn safety');
 
 assert(escapeMrkdwn('A&B <@U123> <https://evil.test|click>') === 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;', 'escapeMrkdwn escapes Slack control chars');
 assert(safeSlackLink('https://servicetitan.slack.com/archives/C123/p456', 'Safe <label>').includes('<https://servicetitan.slack.com/archives/C123/p456|Safe &lt;label&gt;'), 'safeSlackLink allows Slack host and escapes label');
+assert(safeSlackLink('https://slack.com/archives/C123/p456', 'Slack') === 'Slack', 'safeSlackLink rejects non-ServiceTitan Slack host');
 assert(safeSlackLink('https://evil.test/x', 'Bad <label>') === 'Bad &lt;label&gt;', 'safeSlackLink rejects unknown hosts');
 assert(safeSlackLink('not a url', 'Broken <label>') === 'Broken &lt;label&gt;', 'safeSlackLink rejects invalid URLs');
 
@@ -773,6 +774,33 @@ assert(matchCount === 1, 'Double-approve does not duplicate entry in active queu
 
 assert(typeof approveFeedback === 'function', 'approveFeedback is a function');
 assert(typeof rejectFeedback === 'function', 'rejectFeedback is a function');
+
+process.env.FEEDBACK_REVIEW_CHANNEL_ID = 'C_REVIEW';
+let postedFeedbackReviewBlocks = null;
+await notifyFeedbackChannel(
+  {
+    chat: {
+      postMessage: async ({ blocks }) => {
+        postedFeedbackReviewBlocks = blocks;
+        return { ts: '123.456' };
+      },
+    },
+  },
+  {
+    id: 'fb_escape_001',
+    timestamp: '2026-07-06T12:00:00.000Z',
+    query: 'query text',
+    issueTitle: 'Issue title',
+    integrationType: '<#C123>&bad',
+    feedbackType: 'wrong_answer',
+    correction: 'correct this',
+    agentId: 'U12345',
+    agentName: 'Test Agent',
+  },
+);
+const postedFeedbackReviewJson = JSON.stringify(postedFeedbackReviewBlocks);
+assert(postedFeedbackReviewJson.includes('&lt;#C123&gt;&amp;bad'), 'feedback review card escapes integrationType in mrkdwn');
+assert(!postedFeedbackReviewJson.includes('<#C123>&bad'), 'feedback review card does not include raw integrationType control chars');
 
 // ── feedback persistence failures ───────────────────────────────────────────
 

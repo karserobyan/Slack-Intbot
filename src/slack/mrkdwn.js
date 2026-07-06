@@ -2,9 +2,6 @@ const ALLOWED_LINK_HOSTS = new Set([
   'servicetitan.slack.com',
   'servicetitan.atlassian.net',
   'help.servicetitan.com',
-  'slack.com',
-  'atlassian.net',
-  'company.atlassian.net',
 ]);
 
 export function escapeMrkdwn(value) {

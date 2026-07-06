@@ -257,3 +257,19 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 573 passed, 0 failed.
 
 **Decision / Follow-up:** Continue to code-owned source sensitivity policy.
+
+## 2026-07-06 — Task 4 Review Fix Loop Applied
+
+**Intent:** Close the follow-up review findings without disturbing unrelated dirty work.
+
+**Action Taken:** Tightened the Slack link allowlist back to the three approved hosts, escaped `integrationType` inside feedback review-card mrkdwn fields, and added focused regression coverage for both cases.
+
+**Files Touched:**
+- `src/slack/mrkdwn.js`
+- `src/slack/feedback.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** `node test.js` passed with 576 passed, 0 failed.
+
+**Decision / Follow-up:** Task 4 review findings closed.
