@@ -10,6 +10,11 @@
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const KB_DOMAIN = 'help.servicetitan.com';
 const MODEL = 'claude-haiku-4-5-20251001';
+// Top-5 relevance-ranked results per source (same cap across slack/confluence/
+// jira/kb). Each hit's text is injected into the answerer prompt, so this bounds
+// prompt token cost + latency — search is ~half of total pipeline time. Revisit
+// only with evidence from the [search] logs (a known source missing from answers),
+// not by guessing; raising it trades latency/cost for recall.
 const MAX_RESULTS = 5;
 
 export async function searchKnowledgeBase(query, { signal: externalSignal } = {}) {

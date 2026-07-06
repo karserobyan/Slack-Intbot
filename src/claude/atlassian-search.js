@@ -37,6 +37,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
 
   try {
     const cql = `text ~ "${escapeQuery(query)}" AND type = page`;
+    // Top-5 results; cap bounds the answerer prompt (rationale: MAX_RESULTS in kb-search.js).
     const url = `${BASE_URL}/wiki/rest/api/search?` + new URLSearchParams({ cql, limit: '5' });
 
     const res = await fetch(url, {
@@ -90,6 +91,7 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     const jql = `text ~ "${escapeQuery(query)}" ORDER BY updated DESC`;
     const url = `${BASE_URL}/rest/api/3/search/jql?` + new URLSearchParams({
       jql,
+      // Top-5 results; cap bounds the answerer prompt (rationale: MAX_RESULTS in kb-search.js).
       maxResults: '5',
       fields: 'summary,status,issuetype',
     });
