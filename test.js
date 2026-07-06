@@ -1085,6 +1085,110 @@ const unauthorizedNominationResult = await handleNominationReviewAction({
 assert(unauthorizedNominationResult.status === 'unauthorized', 'unauthorized nomination action returns unauthorized');
 assert(approveNominationCalled === false, 'unauthorized nomination approval does not mutate nominations');
 
+const feedbackActionCalls = [];
+let approvedFeedbackId = null;
+const authorizedFeedbackResult = await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_2',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async ({ user }) => {
+        feedbackActionCalls.push(['users.info', user]);
+        return { user: { profile: { display_name: 'Mod Display' } } };
+      },
+    },
+    chat: {
+      update: async (payload) => {
+        feedbackActionCalls.push(['chat.update', payload]);
+        return {};
+      },
+      postMessage: async (payload) => {
+        feedbackActionCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {
+    feedbackActionCalls.push(['respond']);
+  },
+  logger: {
+    warn: (...args) => feedbackActionCalls.push(['warn', args]),
+    info: (...args) => feedbackActionCalls.push(['info', args]),
+  },
+  env: modEnv,
+  deps: {
+    approveFeedback: async (feedbackId) => {
+      approvedFeedbackId = feedbackId;
+      return {
+        id: feedbackId,
+        issueTitle: 'Broken sync',
+        agentId: 'U_AGENT',
+        reviewMessageTs: '111.222',
+        reviewChannelId: 'C_REVIEW',
+      };
+    },
+    rejectFeedback: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+assert(approvedFeedbackId === 'fb_2', 'authorized feedback action passes feedback id to approveFeedback');
+assert(authorizedFeedbackResult.status === 'approved', 'authorized feedback action returns approved');
+assert(feedbackActionCalls.some(([kind, value]) => kind === 'users.info' && value === 'U2'), 'authorized feedback action resolves reviewer profile');
+const feedbackUpdateCall = feedbackActionCalls.find(([kind]) => kind === 'chat.update');
+assert(feedbackUpdateCall?.[1]?.text === '✅ Approved by Mod Display', 'authorized feedback action updates review card with reviewer display name');
+assert(feedbackUpdateCall?.[1]?.blocks?.[0]?.text?.text?.includes('Approved by Mod Display'), 'authorized feedback action uses reviewer display name in review card block');
+const feedbackDmCall = feedbackActionCalls.find(([kind, value]) => kind === 'chat.postMessage' && value.channel === 'U_AGENT');
+assert(feedbackDmCall?.[1]?.text?.includes('Broken sync'), 'authorized feedback action DMs the submitting agent');
+assert(feedbackActionCalls.some(([kind, args]) => kind === 'info' && args[0].includes('Mod Display')), 'authorized feedback action logs resolved reviewer name');
+
+const nominationActionCalls = [];
+const nominationApproveCalls = [];
+const authorizedNominationResult = await handleNominationReviewAction({
+  decision: 'approve',
+  nominationId: 'nom_2',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async ({ user }) => {
+        nominationActionCalls.push(['users.info', user]);
+        return { user: { profile: { display_name: 'Nom Mod' } } };
+      },
+    },
+    chat: {
+      update: async (payload) => {
+        nominationActionCalls.push(['chat.update', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {
+    nominationActionCalls.push(['respond']);
+  },
+  logger: {
+    warn: (...args) => nominationActionCalls.push(['warn', args]),
+    info: (...args) => nominationActionCalls.push(['info', args]),
+  },
+  env: modEnv,
+  deps: {
+    approveNomination: async (...args) => {
+      nominationApproveCalls.push(args);
+      nominationActionCalls.push(['approveNomination', args]);
+      return { id: 'nom_2', integration: 'Zapier', issueTitle: 'Broken auth' };
+    },
+    rejectNomination: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+assert(nominationApproveCalls.length === 1, 'authorized nomination action calls approveNomination once');
+assert(nominationApproveCalls[0][0] === 'nom_2', 'authorized nomination action passes nomination id to approveNomination');
+assert(nominationApproveCalls[0][1] && nominationApproveCalls[0][1].users, 'authorized nomination action passes the Slack client to approveNomination');
+assert(nominationApproveCalls[0][2] === 'Nom Mod', 'authorized nomination action passes resolved reviewer name to approveNomination');
+assert(authorizedNominationResult.status === 'approved', 'authorized nomination action returns approved');
+assert(nominationActionCalls.some(([kind, value]) => kind === 'users.info' && value === 'U2'), 'authorized nomination action resolves reviewer profile');
+
 // ── 16. parseChatResponse ─────────────────────────────────────────────────────
 console.log('\n🔹 parseChatResponse');
 

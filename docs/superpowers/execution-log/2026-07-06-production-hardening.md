@@ -124,3 +124,17 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 0 failures.
 
 **Decision / Follow-up:** Continue to durable persistence semantics.
+
+## 2026-07-06 — Task 1 Authorized-Path Coverage Added
+
+**Intent:** Close the review gap in Task 1 by verifying the preserved mainline behavior through the new review-action helper layer.
+
+**Action Taken:** Added focused authorized-path tests for feedback and nomination approvals, covering dependency invocation, reviewer profile lookup, review-card update output, DM side effects, and reviewer-name wiring into nomination approval.
+
+**Files Touched:**
+- `test.js`
+- `.superpowers/sdd/task-1-report.md`
+
+**Verification:** `node test.js` passed with 549 passed, 0 failed.
+
+**Decision / Follow-up:** Task 1 helper coverage now exercises both unauthorized and authorized paths.
