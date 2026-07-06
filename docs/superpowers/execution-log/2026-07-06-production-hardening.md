@@ -167,3 +167,17 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Read the existing writer behavior and confirmed it recreates missing directories with `mkdir(..., { recursive: true })`; the corrected setup forces `EEXIST`/`ENOTDIR` instead.
 
 **Decision / Follow-up:** Dispatch Task 2 with the corrected brief.
+
+## 2026-07-06 — Task 2 Durable Feedback Persistence Implemented
+
+**Intent:** Prevent feedback storage from reporting success after critical persistence failures.
+
+**Action Taken:** Added storage-isolation failure tests for feedback saves, approvals, and rejections. Refactored feedback storage paths into test-overridable state, introduced a shared `enqueueWrite` helper, and changed the critical feedback mutation paths to reject on persistence failures instead of swallowing them.
+
+**Files Touched:**
+- `src/slack/feedback.js`
+- `test.js`
+
+**Verification:** `node test.js` passed with 553 passed, 0 failed.
+
+**Decision / Follow-up:** Continue to nomination persistence semantics.

@@ -22,7 +22,7 @@ import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './s
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { parseChatResponse } from './src/claude/query.js';
-import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
+import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, _setFeedbackStorageForTest } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks, nominateResponse, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
 import {
@@ -36,7 +36,7 @@ import {
   handleNominationReviewAction,
 } from './src/slack/review-actions.js';
 import { tmpdir } from 'node:os';
-import { rm } from 'node:fs/promises';
+import { rm, mkdtemp } from 'node:fs/promises';
 import { buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
@@ -762,6 +762,73 @@ assert(matchCount === 1, 'Double-approve does not duplicate entry in active queu
 
 assert(typeof approveFeedback === 'function', 'approveFeedback is a function');
 assert(typeof rejectFeedback === 'function', 'rejectFeedback is a function');
+
+// ── feedback persistence failures ───────────────────────────────────────────
+
+const feedbackTempDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-'));
+_setFeedbackStorageForTest({ dir: feedbackTempDir });
+const feedbackToApprove = await saveFeedback({
+  query: 'Zapier broken',
+  issueTitle: 'Zapier',
+  integrationType: 'Zapier',
+  feedbackType: 'wrong_answer',
+  correction: 'Correct it',
+  agentId: 'U_AGENT',
+  agentName: 'Agent',
+});
+const pendingBeforeFailure = await getPendingFeedback();
+assert(pendingBeforeFailure.length === 1, 'feedback test setup has one pending entry');
+
+await rm(feedbackTempDir, { recursive: true, force: true });
+await writeFile(feedbackTempDir, 'not a directory');
+let saveRejected = false;
+try {
+  await saveFeedback({
+    query: 'RwG broken',
+    issueTitle: 'RwG',
+    integrationType: 'RwG',
+    feedbackType: 'wrong_answer',
+    correction: 'Correct it',
+    agentId: 'U_AGENT',
+    agentName: 'Agent',
+  });
+} catch {
+  saveRejected = true;
+}
+assert(saveRejected, 'saveFeedback rejects when pending write fails');
+
+let approveRejected = false;
+try {
+  await approveFeedback(feedbackToApprove.id);
+} catch {
+  approveRejected = true;
+}
+assert(approveRejected, 'approveFeedback rejects when active/pending read or write fails');
+
+const feedbackRejectDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-reject-'));
+_setFeedbackStorageForTest({ dir: feedbackRejectDir });
+const feedbackToReject = await saveFeedback({
+  query: 'Angi broken',
+  issueTitle: 'Angi',
+  integrationType: 'Angi',
+  feedbackType: 'wrong_answer',
+  correction: 'Correct it',
+  agentId: 'U_AGENT',
+  agentName: 'Agent',
+});
+await rm(feedbackRejectDir, { recursive: true, force: true });
+await writeFile(feedbackRejectDir, 'not a directory');
+let rejectRejected = false;
+try {
+  await rejectFeedback(feedbackToReject.id);
+} catch {
+  rejectRejected = true;
+}
+assert(rejectRejected, 'rejectFeedback rejects when pending write fails');
+
+_setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
+await rm(feedbackTempDir, { force: true });
+await rm(feedbackRejectDir, { force: true });
 
 // ── 10. Help Blocks ───────────────────────────────────────────────────────────
 console.log('\n🔹 Help Blocks');
