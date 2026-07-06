@@ -137,6 +137,44 @@ export async function appendKbArticle(integration, url, title, snippet, filePath
   });
 }
 
+function appendBotResponseWithStatusInternal(integration, issueTitle, steps, refs, filePath, client, resolve) {
+  _writeQueue = _writeQueue
+    .then(async () => {
+      if (_failWritesForTest) throw new Error('knowledge writer failure injected for test');
+      if (await hasIssueTitle(integration, issueTitle, filePath)) {
+        resolve({ status: 'duplicate' });
+        return;
+      }
+      const refsText = refs.length > 0 ? ` Confirmed in ${refs.join(' + ')}.` : '';
+      const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;
+      await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
+      resolve({ status: 'written' });
+      clearKnowledgeCache();
+      if (client && getFeedbackChannelId()) {
+        await client.chat.postMessage({
+          channel: getFeedbackChannelId(),
+          text: `✅ Knowledge entry approved and saved: ${integration} — ${issueTitle}`,
+        }).catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
+      }
+    })
+    .catch((err) => {
+      console.error('[knowledge-writer] appendBotResponse failed:', err.message);
+      resolve({ status: 'failed', error: err.message });
+      if (client && getFeedbackChannelId()) {
+        client.chat.postMessage({
+          channel: getFeedbackChannelId(),
+          text: `⚠️ knowledge.md write failed: ${integration} — ${issueTitle}. ${err.message}`,
+        }).catch(() => {});
+      }
+    });
+}
+
+export async function appendBotResponseWithStatus(integration, issueTitle, steps, refs, filePath = defaultKbFile(), client = null) {
+  return new Promise((resolve) => {
+    appendBotResponseWithStatusInternal(integration, issueTitle, steps, refs, filePath, client, resolve);
+  });
+}
+
 /**
  * Appends an approved bot-response entry. Deduplicates by issue title within section.
  * @param {string} integration
@@ -149,31 +187,8 @@ export async function appendKbArticle(integration, url, title, snippet, filePath
  */
 export async function appendBotResponse(integration, issueTitle, steps, refs, filePath = defaultKbFile(), client = null) {
   return new Promise((resolve) => {
-    _writeQueue = _writeQueue
-      .then(async () => {
-        if (_failWritesForTest) throw new Error('knowledge writer failure injected for test');
-        if (await hasIssueTitle(integration, issueTitle, filePath)) { resolve(false); return; }
-        const refsText = refs.length > 0 ? ` Confirmed in ${refs.join(' + ')}.` : '';
-        const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;
-        await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
-        resolve(true);
-        clearKnowledgeCache();
-        if (client && getFeedbackChannelId()) {
-          await client.chat.postMessage({
-            channel: getFeedbackChannelId(),
-            text: `✅ Knowledge entry approved and saved: ${integration} — ${issueTitle}`,
-          }).catch((err) => console.warn('[knowledge-writer] Slack alert failed:', err.message));
-        }
-      })
-      .catch((err) => {
-        console.error('[knowledge-writer] appendBotResponse failed:', err.message);
-        resolve(false);
-        if (client && getFeedbackChannelId()) {
-          client.chat.postMessage({
-            channel: getFeedbackChannelId(),
-            text: `⚠️ knowledge.md write failed: ${integration} — ${issueTitle}. ${err.message}`,
-          }).catch(() => {});
-        }
-      });
+    appendBotResponseWithStatusInternal(integration, issueTitle, steps, refs, filePath, client, (result) => {
+      resolve(result.status === 'written');
+    });
   });
 }

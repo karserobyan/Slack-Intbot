@@ -1131,6 +1131,28 @@ _setKnowledgeWriterDefaultFileForTest(null);
 await rm(nomFailFile, { force: true });
 await rm(nomFailKb, { force: true });
 
+// — duplicate nomination approval succeeds and clears pending state —
+const nomDupFile = join(tmpdir(), `intbot-nominations-dup-${Date.now()}.json`);
+const nomDupKb = join(tmpdir(), `intbot-knowledge-dup-${Date.now()}.md`);
+_setStoreForTest(nomDupFile);
+_setKnowledgeWriterDefaultFileForTest(nomDupKb);
+await appendBotResponse('Zapier', 'Duplicate Nomination', ['Existing step'], [], nomDupKb, null);
+const nomDupClient = { chat: { postMessage: async () => ({ ts: '333.444' }), update: async () => ({}) } };
+const duplicateNomination = await nominateResponse(nomDupClient, {
+  integration: 'Zapier',
+  issueTitle: 'Duplicate Nomination',
+  steps: ['New step that should be skipped as duplicate'],
+  refs: ['Slack thread'],
+});
+const duplicateApproved = await approveNomination(duplicateNomination.id, nomDupClient, 'Reviewer');
+assert(duplicateApproved?.id === duplicateNomination.id, 'approveNomination succeeds for duplicate knowledge title');
+_setStoreForTest(nomDupFile);
+const duplicateGoneAfter = await approveNomination(duplicateNomination.id, nomDupClient, 'Reviewer');
+assert(duplicateGoneAfter === null, 'duplicate nomination approval clears pending state');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nomDupFile, { force: true });
+await rm(nomDupKb, { force: true });
+
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
 _setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store

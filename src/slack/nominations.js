@@ -13,7 +13,7 @@
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { appendBotResponse } from './knowledge-writer.js';
+import { appendBotResponseWithStatus } from './knowledge-writer.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
 
 const NOMINATION_ID_PREFIX = 'nom_';
@@ -183,9 +183,15 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
   const record = pending.get(id);
   if (!record) return null;
 
-  const written = await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, undefined, client);
-  if (!written) {
-    throw new Error(`Knowledge write failed for nomination ${id}`);
+  let result;
+  try {
+    result = await appendBotResponseWithStatus(record.integration, record.issueTitle, record.steps, record.refs, undefined, client);
+  } catch (err) {
+    throw new Error(`Knowledge write failed for nomination ${id}: ${err.message}`);
+  }
+
+  if (result.status === 'failed') {
+    throw new Error(`Knowledge write failed for nomination ${id}${result.error ? `: ${result.error}` : ''}`);
   }
 
   pending.delete(id);
