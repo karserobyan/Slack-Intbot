@@ -118,13 +118,13 @@ export async function saveFeedback(entry) {
   };
 
   await enqueueWrite(async () => {
-    const pending = await loadPending();
+    const pending = [...await loadPending()];
     pending.push(record);
     if (pending.length > MAX_PENDING) {
       pending.splice(0, pending.length - MAX_PENDING);
     }
-    _pendingCache = pending;
     await persistPending(pending);
+    _pendingCache = pending;
   });
   return record;
 }
@@ -208,13 +208,16 @@ export async function notifyFeedbackChannel(client, record) {
 
   // Update pending entry with message ts so action handlers can update it
   await enqueueWrite(async () => {
-    const pending = await loadPending();
+    const pending = [...await loadPending()];
     const idx = pending.findIndex((e) => e.id === record.id);
     if (idx !== -1) {
-      pending[idx].reviewMessageTs = messageTs;
-      pending[idx].reviewChannelId = getFeedbackChannelId();
-      _pendingCache = pending;
+      pending[idx] = {
+        ...pending[idx],
+        reviewMessageTs: messageTs,
+        reviewChannelId: getFeedbackChannelId(),
+      };
       await persistPending(pending);
+      _pendingCache = pending;
     }
   }).catch((err) => {
     console.error('[feedback] Failed to update pending entry with messageTs:', err.message);
@@ -232,24 +235,24 @@ export async function approveFeedback(id) {
   let approved = null;
 
   await enqueueWrite(async () => {
-    const pending = await loadPending();
+    const pending = [...await loadPending()];
     const idx = pending.findIndex((e) => e.id === id);
     if (idx === -1) return;
 
     const record = pending[idx];
-    const active = await loadActive();
+    const active = [...await loadActive()];
     if (!active.some((e) => e.id === id)) {
       active.push(record);
       if (active.length > MAX_ACTIVE) {
         active.splice(0, active.length - MAX_ACTIVE);
       }
-      _activeCache = active;
       await persistActive(active);
+      _activeCache = active;
     }
 
     pending.splice(idx, 1);
-    _pendingCache = pending;
     await persistPending(pending);
+    _pendingCache = pending;
 
     approved = record;
     deleteCache(record.query);
@@ -268,14 +271,14 @@ export async function rejectFeedback(id) {
   let rejected = null;
 
   await enqueueWrite(async () => {
-    const pending = await loadPending();
+    const pending = [...await loadPending()];
     const idx = pending.findIndex((e) => e.id === id);
     if (idx === -1) return;
 
     rejected = pending[idx];
     pending.splice(idx, 1);
-    _pendingCache = pending;
     await persistPending(pending);
+    _pendingCache = pending;
   });
   return rejected;
 }

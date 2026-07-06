@@ -778,6 +778,8 @@ const feedbackToApprove = await saveFeedback({
 });
 const pendingBeforeFailure = await getPendingFeedback();
 assert(pendingBeforeFailure.length === 1, 'feedback test setup has one pending entry');
+const activeBeforeFailure = await getAllFeedback();
+assert(activeBeforeFailure.length === 0, 'feedback failure test setup has empty active cache');
 
 await rm(feedbackTempDir, { recursive: true, force: true });
 await writeFile(feedbackTempDir, 'not a directory');
@@ -796,6 +798,9 @@ try {
   saveRejected = true;
 }
 assert(saveRejected, 'saveFeedback rejects when pending write fails');
+const pendingAfterFailedSave = await getPendingFeedback();
+assert(pendingAfterFailedSave.length === 1, 'failed save leaves pending count unchanged');
+assert(!pendingAfterFailedSave.some((e) => e.query === 'RwG broken'), 'failed save does not leak new entry into pending cache');
 
 let approveRejected = false;
 try {
@@ -804,6 +809,12 @@ try {
   approveRejected = true;
 }
 assert(approveRejected, 'approveFeedback rejects when active/pending read or write fails');
+const pendingAfterFailedApprove = await getPendingFeedback();
+assert(pendingAfterFailedApprove.length === 1, 'failed approve leaves pending count unchanged');
+assert(pendingAfterFailedApprove.some((e) => e.id === feedbackToApprove.id), 'failed approve keeps record pending in cache');
+const activeAfterFailedApprove = await getAllFeedback();
+assert(activeAfterFailedApprove.length === 0, 'failed approve leaves active count unchanged');
+assert(!activeAfterFailedApprove.some((e) => e.id === feedbackToApprove.id), 'failed approve does not leak record into active cache');
 
 const feedbackRejectDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-reject-'));
 _setFeedbackStorageForTest({ dir: feedbackRejectDir });
@@ -825,6 +836,9 @@ try {
   rejectRejected = true;
 }
 assert(rejectRejected, 'rejectFeedback rejects when pending write fails');
+const pendingAfterFailedReject = await getPendingFeedback();
+assert(pendingAfterFailedReject.length === 1, 'failed reject leaves pending count unchanged');
+assert(pendingAfterFailedReject.some((e) => e.id === feedbackToReject.id), 'failed reject keeps record pending in cache');
 
 _setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
 await rm(feedbackTempDir, { force: true });
