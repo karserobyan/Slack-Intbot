@@ -414,14 +414,14 @@ import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rej
 import { readFile, writeFile, rm, mkdtemp } from 'node:fs/promises';
 ```
 
-Then add the test body:
+Then add the test body. Force persistence failures by replacing the configured storage directory with a regular file; removing the directory alone is not enough because the writer creates missing directories.
 
 ```js
 // — feedback persistence failures —
 
 const feedbackTempDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-'));
 _setFeedbackStorageForTest({ dir: feedbackTempDir });
-await saveFeedback({
+const feedbackToApprove = await saveFeedback({
   query: 'Zapier broken',
   issueTitle: 'Zapier',
   integrationType: 'Zapier',
@@ -434,6 +434,7 @@ const pendingBeforeFailure = await getPendingFeedback();
 assert(pendingBeforeFailure.length === 1, 'feedback test setup has one pending entry');
 
 await rm(feedbackTempDir, { recursive: true, force: true });
+await writeFile(feedbackTempDir, 'not a directory');
 let saveRejected = false;
 try {
   await saveFeedback({
@@ -449,7 +450,39 @@ try {
   saveRejected = true;
 }
 assert(saveRejected, 'saveFeedback rejects when pending write fails');
+
+let approveRejected = false;
+try {
+  await approveFeedback(feedbackToApprove.id);
+} catch {
+  approveRejected = true;
+}
+assert(approveRejected, 'approveFeedback rejects when active/pending read or write fails');
+
+const feedbackRejectDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-reject-'));
+_setFeedbackStorageForTest({ dir: feedbackRejectDir });
+const feedbackToReject = await saveFeedback({
+  query: 'Angi broken',
+  issueTitle: 'Angi',
+  integrationType: 'Angi',
+  feedbackType: 'wrong_answer',
+  correction: 'Correct it',
+  agentId: 'U_AGENT',
+  agentName: 'Agent',
+});
+await rm(feedbackRejectDir, { recursive: true, force: true });
+await writeFile(feedbackRejectDir, 'not a directory');
+let rejectRejected = false;
+try {
+  await rejectFeedback(feedbackToReject.id);
+} catch {
+  rejectRejected = true;
+}
+assert(rejectRejected, 'rejectFeedback rejects when pending write fails');
+
 _setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
+await rm(feedbackTempDir, { force: true });
+await rm(feedbackRejectDir, { force: true });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -460,7 +493,7 @@ Run:
 node test.js
 ```
 
-Expected: FAIL with missing `_setFeedbackStorageForTest` or because `saveFeedback` still swallows write failure.
+Expected: FAIL with missing `_setFeedbackStorageForTest` or because feedback mutations still swallow persistence failures.
 
 - [ ] **Step 3: Refactor feedback storage paths and queue**
 

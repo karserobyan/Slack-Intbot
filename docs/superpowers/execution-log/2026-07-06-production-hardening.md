@@ -152,3 +152,18 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Task reviewer approved the full `28d2b9c..49dbc70` diff. Controller reran `node test.js`; result was 549 passed, 0 failed.
 
 **Decision / Follow-up:** Task 1 complete. Proceed to Task 2 durable feedback persistence.
+
+## 2026-07-06 — Task 2 Test Plan Corrected
+
+**Intent:** Ensure Task 2 persistence-failure tests exercise real write failures rather than missing-directory recovery.
+
+**Action Taken:** Updated the Task 2 instructions to replace the configured feedback storage directory with a regular file during failure tests. Added explicit rejection coverage for `saveFeedback`, `approveFeedback`, and `rejectFeedback`.
+
+**Files Touched:**
+- `docs/superpowers/plans/2026-07-06-production-hardening-phase-1.md`
+- `.superpowers/sdd/task-2-brief.md`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** Read the existing writer behavior and confirmed it recreates missing directories with `mkdir(..., { recursive: true })`; the corrected setup forces `EEXIST`/`ENOTDIR` instead.
+
+**Decision / Follow-up:** Dispatch Task 2 with the corrected brief.
