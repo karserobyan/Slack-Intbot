@@ -210,3 +210,18 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Task reviewer approved the full `0d40e6a..9e47066` diff. Controller reran `node test.js`; result was 562 passed, 0 failed.
 
 **Decision / Follow-up:** Task 2 complete. Proceed to Task 3 durable nomination approval.
+
+## 2026-07-06 — Task 3 Durable Nomination Approval Implemented
+
+**Intent:** Prevent approved knowledge nominations from being lost when `knowledge.md` cannot be written.
+
+**Action Taken:** Changed nomination approval to write knowledge before deleting pending state and added failure-injection coverage.
+
+**Files Touched:**
+- `src/slack/nominations.js`
+- `src/slack/knowledge-writer.js`
+- `test.js`
+
+**Verification:** `node test.js` passed with 0 failures.
+
+**Decision / Follow-up:** Continue to Slack rendering safety.

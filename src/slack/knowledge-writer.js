@@ -19,6 +19,20 @@ const DATA_DIR = join(process.cwd(), 'data');
 export const DEFAULT_KB_FILE = join(DATA_DIR, 'knowledge.md');
 
 let _writeQueue = Promise.resolve();
+let _failWritesForTest = false;
+let _defaultFileOverrideForTest = null;
+
+export function _setKnowledgeWriterFailureForTest(shouldFail) {
+  _failWritesForTest = shouldFail;
+}
+
+export function _setKnowledgeWriterDefaultFileForTest(filePath) {
+  _defaultFileOverrideForTest = filePath;
+}
+
+function defaultKbFile() {
+  return _defaultFileOverrideForTest ?? DEFAULT_KB_FILE;
+}
 
 async function readKb(filePath = DEFAULT_KB_FILE) {
   try {
@@ -93,10 +107,11 @@ export async function hasIssueTitle(integration, title, filePath = DEFAULT_KB_FI
  * @param {object} [client] - Slack WebClient for alert
  * @returns {Promise<boolean>} true if written, false if skipped
  */
-export async function appendKbArticle(integration, url, title, snippet, filePath = DEFAULT_KB_FILE, client = null) {
+export async function appendKbArticle(integration, url, title, snippet, filePath = defaultKbFile(), client = null) {
   return new Promise((resolve) => {
     _writeQueue = _writeQueue
       .then(async () => {
+        if (_failWritesForTest) throw new Error('knowledge writer failure injected for test');
         if (await hasKbUrl(url, filePath)) { resolve(false); return; }
         const line = `- [kb, ${today()}] ${title} — ${url} — ${snippet}`;
         await writeKb(insertUnderSection(await readKb(filePath), integration, line), filePath);
@@ -132,10 +147,11 @@ export async function appendKbArticle(integration, url, title, snippet, filePath
  * @param {object} [client] - Slack WebClient for alert
  * @returns {Promise<boolean>} true if written, false if skipped
  */
-export async function appendBotResponse(integration, issueTitle, steps, refs, filePath = DEFAULT_KB_FILE, client = null) {
+export async function appendBotResponse(integration, issueTitle, steps, refs, filePath = defaultKbFile(), client = null) {
   return new Promise((resolve) => {
     _writeQueue = _writeQueue
       .then(async () => {
+        if (_failWritesForTest) throw new Error('knowledge writer failure injected for test');
         if (await hasIssueTitle(integration, issueTitle, filePath)) { resolve(false); return; }
         const refsText = refs.length > 0 ? ` Confirmed in ${refs.join(' + ')}.` : '';
         const line = `- [auto, ${today()}] ${issueTitle}: ${steps.join('; ')}.${refsText}`;

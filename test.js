@@ -24,7 +24,7 @@ import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/pro
 import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, _setFeedbackStorageForTest } from './src/slack/feedback.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
-import { buildNominationBlocks, nominateResponse, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
+import { buildNominationBlocks, nominateResponse, approveNomination, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
 import {
   getModeratorIds,
   isAuthorizedModerator,
@@ -43,6 +43,8 @@ import {
   appendBotResponse,
   hasKbUrl,
   hasIssueTitle,
+  _setKnowledgeWriterFailureForTest,
+  _setKnowledgeWriterDefaultFileForTest,
 } from './src/slack/knowledge-writer.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -1101,6 +1103,33 @@ assert(survived && survived.id === persistedNom.id, 'pending nomination survives
 _setStoreForTest(nomTmp);
 const goneAfter = await rejectNomination(persistedNom.id, mockNomClient, 'Tester');
 assert(goneAfter === null, 'handled nomination is removed from disk — idempotent across restarts');
+
+// — nomination approval preserves pending state when knowledge write fails —
+const nomFailFile = join(tmpdir(), `intbot-nominations-${Date.now()}.json`);
+const nomFailKb = join(tmpdir(), `intbot-knowledge-${Date.now()}.md`);
+_setStoreForTest(nomFailFile);
+_setKnowledgeWriterDefaultFileForTest(nomFailKb);
+const nomFailClient = { chat: { postMessage: async () => ({ ts: '222.333' }), update: async () => ({}) } };
+const failingNomination = await nominateResponse(nomFailClient, {
+  integration: 'Zapier',
+  issueTitle: 'Write Failure Nomination',
+  steps: ['Do the thing'],
+  refs: ['Slack thread'],
+});
+_setKnowledgeWriterFailureForTest(true);
+let nominationRejected = false;
+try {
+  await approveNomination(failingNomination.id, nomFailClient, 'Reviewer');
+} catch {
+  nominationRejected = true;
+}
+_setKnowledgeWriterFailureForTest(false);
+assert(nominationRejected, 'approveNomination rejects when knowledge write fails');
+const stillPending = await approveNomination(failingNomination.id, nomFailClient, 'Reviewer');
+assert(stillPending?.id === failingNomination.id, 'nomination remains pending after failed knowledge write');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nomFailFile, { force: true });
+await rm(nomFailKb, { force: true });
 
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
