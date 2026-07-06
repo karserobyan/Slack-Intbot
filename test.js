@@ -18,6 +18,7 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
 } from './src/slack/blocks.js';
+import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
@@ -249,6 +250,14 @@ assert(!clarifyNullSummary.includes('Confidence:'), 'null confidence suppresses 
 
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');
+
+// ── Slack mrkdwn safety ──────────────────────────────────────────────────────
+console.log('\n🔹 Slack mrkdwn safety');
+
+assert(escapeMrkdwn('A&B <@U123> <https://evil.test|click>') === 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;', 'escapeMrkdwn escapes Slack control chars');
+assert(safeSlackLink('https://servicetitan.slack.com/archives/C123/p456', 'Safe <label>').includes('<https://servicetitan.slack.com/archives/C123/p456|Safe &lt;label&gt;'), 'safeSlackLink allows Slack host and escapes label');
+assert(safeSlackLink('https://evil.test/x', 'Bad <label>') === 'Bad &lt;label&gt;', 'safeSlackLink rejects unknown hosts');
+assert(safeSlackLink('not a url', 'Broken <label>') === 'Broken &lt;label&gt;', 'safeSlackLink rejects invalid URLs');
 
 const responseBlocks = buildResponseBlocks(sampleJson);
 assert(Array.isArray(responseBlocks), 'buildResponseBlocks returns array');
@@ -924,6 +933,14 @@ assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('🔍 Root Cause'
 // Missing arrays default gracefully (no crash)
 const noArgsModal = buildSourcesModal({});
 assert(noArgsModal.type === 'modal', 'buildSourcesModal handles missing arrays without crash');
+
+const unsafeSourcesModal = buildSourcesModal({
+  slack_refs: [{ url: 'https://evil.test/x', title: '<@U123> click', channel: '<#C123>' }],
+});
+const unsafeSourcesText = JSON.stringify(unsafeSourcesModal);
+assert(!unsafeSourcesText.includes('<https://evil.test'), 'unsafe source URL is not rendered as clickable Slack link');
+assert(unsafeSourcesText.includes('&lt;@U123&gt;'), 'unsafe source title is escaped');
+assert(unsafeSourcesText.includes('&lt;#C123&gt;'), 'unsafe source channel is escaped');
 
 // ── 12. Sources Button in buildResponseBlocks ─────────────────────────────────
 console.log('\n🔹 Sources Button');

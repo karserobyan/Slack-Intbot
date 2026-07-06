@@ -15,6 +15,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deleteCache } from './cache.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
+import { escapeMrkdwn } from './mrkdwn.js';
 
 let FEEDBACK_DIR = join(process.cwd(), 'data');
 let FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
@@ -165,15 +166,15 @@ export async function notifyFeedbackChannel(client, record) {
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Original query:*\n>${record.query}` },
+          text: { type: 'mrkdwn', text: `*Original query:*\n>${escapeMrkdwn(record.query)}` },
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Bot said:*\n>${record.issueTitle}` },
+          text: { type: 'mrkdwn', text: `*Bot said:*\n>${escapeMrkdwn(record.issueTitle)}` },
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Agent's correction:*\n>${record.correction}` },
+          text: { type: 'mrkdwn', text: `*Agent's correction:*\n>${escapeMrkdwn(record.correction)}` },
         },
         {
           type: 'actions',

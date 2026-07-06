@@ -239,3 +239,21 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Task reviewer approved the full `70cea8b..82a02de` diff. Controller reran `node test.js`; result was 566 passed, 0 failed.
 
 **Decision / Follow-up:** Task 3 complete. Proceed to Task 4 Slack markdown and link safety.
+
+## 2026-07-06 — Task 4 Slack Rendering Safety Implemented
+
+**Intent:** Prevent Slack mrkdwn/link injection in bot-rendered messages and modals.
+
+**Action Taken:** Added mrkdwn escaping and safe-link helpers, then routed source modals, feedback cards, nomination cards, channel-post copy modals, and response rendering through them.
+
+**Files Touched:**
+- `src/slack/mrkdwn.js`
+- `src/slack/blocks.js`
+- `src/slack/feedback.js`
+- `src/slack/nominations.js`
+- `src/slack/modal.js`
+- `test.js`
+
+**Verification:** `node test.js` passed with 573 passed, 0 failed.
+
+**Decision / Follow-up:** Continue to code-owned source sensitivity policy.

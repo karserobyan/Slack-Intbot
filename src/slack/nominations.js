@@ -15,6 +15,7 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { appendBotResponseWithStatus } from './knowledge-writer.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
+import { escapeMrkdwn } from './mrkdwn.js';
 
 const NOMINATION_ID_PREFIX = 'nom_';
 
@@ -73,7 +74,7 @@ export function _setStoreForTest(path) {
  */
 export function buildNominationBlocks(record) {
   const refsText = record.refs?.length > 0
-    ? `*References:* ${record.refs.join(', ')}`
+    ? `*References:* ${record.refs.map(escapeMrkdwn).join(', ')}`
     : '_No references_';
 
   return [
@@ -81,12 +82,12 @@ export function buildNominationBlocks(record) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*📝 Knowledge Nomination — ${record.integration}*\n_${record.issueTitle}_`,
+        text: `*📝 Knowledge Nomination — ${escapeMrkdwn(record.integration)}*\n_${escapeMrkdwn(record.issueTitle)}_`,
       },
     },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Proposed entry:*\n\`\`\`${record.proposedEntry}\`\`\`` },
+      text: { type: 'mrkdwn', text: `*Proposed entry:*\n\`\`\`${escapeMrkdwn(record.proposedEntry)}\`\`\`` },
     },
     {
       type: 'section',

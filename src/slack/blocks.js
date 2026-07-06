@@ -1,4 +1,5 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
+import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -102,7 +103,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (data.findings_summary?.diagnosis) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `🔍 _${data.findings_summary.diagnosis}_` }],
+      elements: [{ type: 'mrkdwn', text: `🔍 _${escapeMrkdwn(data.findings_summary.diagnosis)}_` }],
     });
   }
 
@@ -123,7 +124,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (data.customer_message) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `💬 _"${clamp(data.customer_message)}"_` },
+      text: { type: 'mrkdwn', text: `💬 _"${clamp(escapeMrkdwn(data.customer_message))}"_` },
     });
   }
 
@@ -136,8 +137,8 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${clamp(step.title, 200)}*  \`${step.tag}\`\n`;
-      const detailRaw = step.detail ?? '';
+      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*  \`${step.tag}\`\n`;
+      const detailRaw = escapeMrkdwn(step.detail);
       const budget = 2900 - prefix.length;
       const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
       blocks.push({
@@ -330,7 +331,7 @@ export function buildFeedbackModal(context) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Original query:*\n>${context.query || 'N/A'}\n\n*Bot answered:*\n>${context.issueTitle || 'N/A'} (${context.integrationType || 'N/A'})`,
+          text: `*Original query:*\n>${escapeMrkdwn(context.query || 'N/A')}\n\n*Bot answered:*\n>${escapeMrkdwn(context.issueTitle || 'N/A')} (${escapeMrkdwn(context.integrationType || 'N/A')})`,
         },
       },
       { type: 'divider' },
@@ -501,7 +502,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
   if (diagnosis) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*🔍 Root Cause*\n${diagnosis}`) },
+      text: { type: 'mrkdwn', text: clamp(`*🔍 Root Cause*\n${escapeMrkdwn(diagnosis)}`) },
     });
     blocks.push({ type: 'divider' });
   }
@@ -514,7 +515,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of slack_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.channel}_`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}\n  _${escapeMrkdwn(ref.channel)}_`) },
       });
     }
   }
@@ -527,7 +528,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of atlassian_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}`) },
       });
     }
   }
@@ -540,7 +541,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of kb_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.snippet}_`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}\n  _${escapeMrkdwn(ref.snippet)}_`) },
       });
     }
   }
