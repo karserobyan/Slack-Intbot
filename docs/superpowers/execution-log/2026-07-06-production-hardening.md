@@ -168,6 +168,21 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 
 **Decision / Follow-up:** Dispatch Task 2 with the corrected brief.
 
+## 2026-07-06 — Task 3 Test Plan Corrected
+
+**Intent:** Prevent nomination approval tests from writing to local product knowledge data.
+
+**Action Taken:** Added a test-only default knowledge-file override to the Task 3 instructions and updated the nomination retry test to use a temp `knowledge.md` path.
+
+**Files Touched:**
+- `docs/superpowers/plans/2026-07-06-production-hardening-phase-1.md`
+- `.superpowers/sdd/task-3-brief.md`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** Confirmed `data/knowledge.md` is local untracked data and `approveNomination` currently calls `appendBotResponse` with the default knowledge file.
+
+**Decision / Follow-up:** Dispatch Task 3 with isolated knowledge-writer storage after Task 2 review completes.
+
 ## 2026-07-06 — Task 2 Durable Feedback Persistence Implemented
 
 **Intent:** Prevent feedback storage from reporting success after critical persistence failures.
@@ -178,6 +193,20 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 - `src/slack/feedback.js`
 - `test.js`
 
-**Verification:** `node test.js` passed with 553 passed, 0 failed.
+**Verification:** `node test.js` passed with 562 passed, 0 failed after the cache-state fix loop.
 
 **Decision / Follow-up:** Continue to nomination persistence semantics.
+
+## 2026-07-06 — Task 2 Review Gate Closed
+
+**Intent:** Mark durable feedback persistence complete only after the cache-state review finding was fixed and independently re-reviewed.
+
+**Action Taken:** Re-reviewed the full Task 2 diff after switching feedback mutations to copy-on-write cache updates and removing `.superpowers/sdd/task-2-report.md` from the committed tree.
+
+**Files Touched:**
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+- `.superpowers/sdd/progress.md`
+
+**Verification:** Task reviewer approved the full `0d40e6a..9e47066` diff. Controller reran `node test.js`; result was 562 passed, 0 failed.
+
+**Decision / Follow-up:** Task 2 complete. Proceed to Task 3 durable nomination approval.

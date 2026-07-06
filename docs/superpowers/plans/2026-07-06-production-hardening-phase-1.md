@@ -614,6 +614,7 @@ git commit -m "fix: propagate feedback persistence failures"
   - `approveNomination(id, client, reviewerName): Promise<object|null>` only removes pending state after successful knowledge write.
   - `_setStoreForTest(path): void` remains available.
   - `_setKnowledgeWriterFailureForTest(shouldFail: boolean): void`
+  - `_setKnowledgeWriterDefaultFileForTest(filePath: string|null): void`
 
 - [ ] **Step 1: Write failing nomination persistence test**
 
@@ -628,6 +629,7 @@ import {
   hasKbUrl,
   hasIssueTitle,
   _setKnowledgeWriterFailureForTest,
+  _setKnowledgeWriterDefaultFileForTest,
 } from './src/slack/knowledge-writer.js';
 ```
 
@@ -637,7 +639,9 @@ Then add the test body:
 // — nomination approval preserves pending state when knowledge write fails —
 
 const nomFailFile = join(tmpdir(), `intbot-nominations-${Date.now()}.json`);
+const nomFailKb = join(tmpdir(), `intbot-knowledge-${Date.now()}.md`);
 _setStoreForTest(nomFailFile);
+_setKnowledgeWriterDefaultFileForTest(nomFailKb);
 const nomFailClient = { chat: { postMessage: async () => ({ ts: '222.333' }), update: async () => ({}) } };
 const failingNomination = await nominateResponse(nomFailClient, {
   integration: 'Zapier',
@@ -656,6 +660,9 @@ _setKnowledgeWriterFailureForTest(false);
 assert(nominationRejected, 'approveNomination rejects when knowledge write fails');
 const stillPending = await approveNomination(failingNomination.id, nomFailClient, 'Reviewer');
 assert(stillPending?.id === failingNomination.id, 'nomination remains pending after failed knowledge write');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nomFailFile, { force: true });
+await rm(nomFailKb, { force: true });
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -678,12 +685,30 @@ let _failWritesForTest = false;
 export function _setKnowledgeWriterFailureForTest(shouldFail) {
   _failWritesForTest = shouldFail;
 }
+
+let _defaultFileOverrideForTest = null;
+
+export function _setKnowledgeWriterDefaultFileForTest(filePath) {
+  _defaultFileOverrideForTest = filePath;
+}
 ```
 
 At the top of both `appendKbArticle` and `appendBotResponse` queued write functions, add:
 
 ```js
 if (_failWritesForTest) throw new Error('knowledge writer failure injected for test');
+```
+
+Add a helper and use it in default file arguments:
+
+```js
+function defaultKbFile() {
+  return _defaultFileOverrideForTest ?? DEFAULT_KB_FILE;
+}
+
+export async function appendBotResponse(integration, issueTitle, steps, refs, filePath = defaultKbFile(), client = null) {
+  // existing implementation
+}
 ```
 
 - [ ] **Step 4: Make `approveNomination` write before delete**
@@ -696,7 +721,7 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
   const record = pending.get(id);
   if (!record) return null;
 
-  const written = await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, DEFAULT_KB_FILE, client);
+  const written = await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, undefined, client);
   if (!written) {
     throw new Error(`Knowledge write failed for nomination ${id}`);
   }
