@@ -363,3 +363,19 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 0 failures.
 
 **Decision / Follow-up:** Keep Task 7 limited to Slack setup documentation and startup warning clarity.
+
+## 2026-07-06 — Task 7 Auto-Answer Configuration Documented
+
+**Intent:** Prevent silent auto-answer deployment failures caused by missing Slack scopes, events, or channel membership.
+
+**Action Taken:** Clarified required auto-answer Slack scopes, event subscriptions, channel ID requirements, and startup warnings.
+
+**Files Touched:**
+- `src/handlers/auto-answer.js`
+- `.env.example`
+- `README.md`
+- `test.js`
+
+**Verification:** `node test.js` passed with 0 failures.
+
+**Decision / Follow-up:** Run final Phase 1 verification.

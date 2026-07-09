@@ -126,9 +126,9 @@ export async function verifyChannelAccess(client, channelId, logger) {
   } catch (err) {
     const code = err.data?.error;
     if (code === 'missing_scope') {
-      log.warn?.(`[auto-answer] Missing Slack scope for source channel ${channelId}: needs "${err.data?.needed ?? 'channels:read'}". Add channels:read + channels:history to the bot token and reinstall the app.`);
+      log.warn?.(`[auto-answer] Missing Slack scope for source channel ${channelId}: needs "${err.data?.needed ?? 'channels:read'}". Add channels:read + channels:history to the bot token, subscribe to the message.channels event, reinstall the app, and invite the bot to the source channel.`);
     } else if (code === 'channel_not_found') {
-      log.warn?.(`[auto-answer] Source channel ${channelId} not found — AUTO_ANSWER_SOURCE_CHANNEL must be a channel ID (e.g. C0123ABCD), not a name.`);
+      log.warn?.(`[auto-answer] Source channel ${channelId} not found — AUTO_ANSWER_SOURCE_CHANNEL must be a channel ID (e.g. C0123ABCD), not a name. For private channels, the bot must be invited and may need groups:read/groups:history if private-channel support is added later.`);
     } else {
       log.warn?.(`[auto-answer] Could not verify access to source channel ${channelId}: ${err.message}`);
     }

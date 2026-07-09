@@ -2433,6 +2433,14 @@ const minimalBlocks = buildAutoAnswerBlocks({
 });
 assert(Array.isArray(minimalBlocks) && minimalBlocks.length >= 2, 'works with minimal result object (no crash)');
 
+// — auto-answer docs/config expectations —
+const readmeText = await readFile('README.md', 'utf-8');
+const envExampleText = await readFile('.env.example', 'utf-8');
+assert(readmeText.includes('message.channels'), 'README documents message.channels for auto-answer');
+assert(readmeText.includes('channels:read'), 'README documents channels:read for auto-answer');
+assert(readmeText.includes('channels:history'), 'README documents channels:history for auto-answer');
+assert(envExampleText.includes('AUTO_ANSWER_ENABLED=false'), '.env.example keeps auto-answer disabled by default');
+
 // — startup self-check (verifyChannelAccess): turns silent failure into a loud warning —
 function makeLogger() {
   const warns = [];
@@ -2460,6 +2468,14 @@ await verifyChannelAccess(
   'C_SRC', scopeLog,
 );
 assert(scopeLog.warns.some((m) => m.includes('channels:history')), 'missing_scope names the needed scope');
+
+const missingScopeLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('missing_scope'); e.data = { error: 'missing_scope', needed: 'channels:read' }; throw e; } } },
+  'C_SRC',
+  missingScopeLog,
+);
+assert(missingScopeLog.warns.some((m) => m.includes('message.channels')), 'auto-answer missing-scope warning mentions message.channels event setup');
 
 const notFoundLog = makeLogger();
 await verifyChannelAccess(
