@@ -81,3 +81,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing import/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/source-scoring.js`, as expected. After implementation, ran `node test.js`; result: 643 passed, 0 failed.
 
 **Decision / Follow-up:** Keep Task 2 as scorer-only infrastructure. Later tasks can consume the dimensional scores in shadow metadata without changing user-visible Slack answers.
+
+## 2026-07-09 - PR 1 Task 2 Review Fixes
+
+**Intent:** Address review findings before approval without changing Slack rendering, answerer prompts, nominations, mention handling, or `knowledge.md` behavior.
+
+**Action Taken:** Removed raw URL storage from evidence objects, keeping only `urlHash` and bounded hostname metadata. Updated scoring so prebuilt evidence-like inputs are passed through the existing `classifySourceRef` sensitivity boundary instead of silently defaulting missing sensitivity to `safe`, and stripped any caller-provided raw `url` from scored evidence output.
+
+**Files Touched:**
+
+- `src/quality/source-scoring.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing regression assertions first and ran `node test.js`; result: failed with 643 passed, 2 failed out of 645 tests for raw URL retention and unclassified sensitive evidence. After implementation, ran `node test.js`; result: 646 passed, 0 failed.
+
+**Decision / Follow-up:** Source scoring remains dimensional and scorer-only; source sensitivity continues to be owned by `src/slack/source-policy.js`.

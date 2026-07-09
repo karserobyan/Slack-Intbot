@@ -48,18 +48,36 @@ function inferFreshness(ref) {
   return ageDays > 730 ? 'stale' : 'fresh';
 }
 
+function hostnameFromUrl(value) {
+  try {
+    return new URL(String(value ?? '')).hostname;
+  } catch {
+    return '';
+  }
+}
+
+function inferSensitivity(value) {
+  if (value.sensitivity === 'specialist_only' || value.sensitive === true) return 'specialist_only';
+  const classified = classifySourceRef({
+    type: value.type ?? value.source,
+    title: value.title,
+    channel: value.channel,
+  });
+  return classified.sensitive === true ? 'specialist_only' : 'safe';
+}
+
 export function refToEvidence(ref, { source, query, integrationType, issueTitle }, index = 0) {
   const classified = classifySourceRef(ref ?? {});
-  const title = sanitizePreview(classified.title ?? classified.url ?? source, 120);
+  const hostname = hostnameFromUrl(classified.url);
+  const title = sanitizePreview((classified.title ?? hostname) || source, 120);
   const snippetPreview = sanitizePreview(classified.snippet ?? classified.text ?? '', 160);
   const text = [title, snippetPreview, classified.channel, classified.type].filter(Boolean).join(' ');
   const directness = inferDirectness(text, { query, integrationType, issueTitle });
-  const sensitivity = classified.sensitive === true ? 'specialist_only' : 'safe';
   const sourceName = source || classified.type || 'unknown';
   return {
     id: `ev_${index + 1}`,
     source: sourceName,
-    url: sanitizePreview(classified.url ?? '', 180),
+    hostname: sanitizePreview(hostname, 120),
     urlHash: hashValue(classified.url ?? ''),
     title,
     snippetPreview,
@@ -67,7 +85,7 @@ export function refToEvidence(ref, { source, query, integrationType, issueTitle 
     sourceQuality: inferSourceQuality(sourceName, directness, text),
     directness,
     freshness: inferFreshness(classified),
-    sensitivity,
+    sensitivity: inferSensitivity(classified),
     reuseValue: inferReuseValue(text, sourceName, directness),
     matchedIntegration: includesToken(text, integrationType),
     matchedSymptom: includesToken(text, issueTitle) || tokenOverlap(text, query) >= DIRECT_WORD_MIN,
@@ -78,12 +96,13 @@ export function refToEvidence(ref, { source, query, integrationType, issueTitle 
 export function scoreEvidenceSource(evidence, context) {
   const text = [evidence.title, evidence.snippetPreview, evidence.channel, evidence.source].filter(Boolean).join(' ');
   const directness = inferDirectness(text, context);
+  const { url, ...safeEvidence } = evidence;
   return {
-    ...evidence,
+    ...safeEvidence,
     directness,
     sourceQuality: inferSourceQuality(evidence.source, directness, text),
     reuseValue: inferReuseValue(text, evidence.source, directness),
-    sensitivity: evidence.sensitivity ?? 'safe',
+    sensitivity: inferSensitivity(evidence),
     freshness: evidence.freshness ?? 'unknown',
     matchedIntegration: includesToken(text, context.integrationType),
     matchedSymptom: includesToken(text, context.issueTitle) || tokenOverlap(text, context.query) >= DIRECT_WORD_MIN,

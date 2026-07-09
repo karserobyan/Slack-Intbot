@@ -2769,6 +2769,7 @@ const directConfluenceEvidence = refToEvidence({
 assert(directConfluenceEvidence.source === 'confluence', 'refToEvidence keeps confluence source');
 assert(directConfluenceEvidence.title === 'Zapier API access setup', 'refToEvidence keeps sanitized source title');
 assert(directConfluenceEvidence.snippetPreview.includes('Enable Zapier API access'), 'refToEvidence stores snippet preview only');
+assert(directConfluenceEvidence.url === undefined, 'refToEvidence does not store raw source URL');
 assert(directConfluenceEvidence.urlHash.startsWith('sha256:'), 'refToEvidence stores URL hash');
 
 const directScore = scoreEvidenceSource(directConfluenceEvidence, {
@@ -2816,6 +2817,20 @@ const sensitiveScore = scoreEvidenceSource(sensitiveEvidence, {
   issueTitle: 'Token issue',
 });
 assert(sensitiveScore.sensitivity === 'specialist_only', 'source scoring preserves source-policy sensitivity');
+
+const unclassifiedSensitiveScore = scoreEvidenceSource({
+  id: 'ev_unclassified',
+  source: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/SEC-1?token=secret',
+  title: 'Security incident backend-only token rotation',
+  snippetPreview: '',
+}, {
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+assert(unclassifiedSensitiveScore.sensitivity === 'specialist_only', 'source scoring applies source-policy to unclassified evidence-like inputs');
+assert(unclassifiedSensitiveScore.url === undefined, 'source scoring strips raw URL from prebuilt evidence-like inputs');
 
 const scoredSources = scoreEvidenceSources({
   slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access answer' }],
