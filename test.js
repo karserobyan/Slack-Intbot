@@ -62,6 +62,7 @@ import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answ
 import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
+import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
 
 let passed = 0;
 let failed = 0;
@@ -2843,6 +2844,63 @@ const scoredSources = scoreEvidenceSources({
 });
 assert(scoredSources.length === 3, 'scoreEvidenceSources flattens all current ref groups');
 assert(scoredSources.every(e => e.id.startsWith('ev_')), 'scoreEvidenceSources assigns evidence ids');
+
+// ── quality evidence contract ────────────────────────────────────────────────
+console.log('\n🔹 quality evidence contract');
+
+const contractAnswer = {
+  issue_title: 'Zapier API Access',
+  integration_type: 'Zapier',
+  confidence: 'high',
+  customer_message: 'Hi [Name], Zapier API access is disabled and we are enabling it.',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle this.' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Known setup issue.' },
+  findings_summary: { diagnosis: 'Zapier API access is disabled.', actions: ['Enable access'] },
+  agent_steps: [
+    { num: 1, title: 'Enable API access', detail: 'Enable Zapier API access for the tenant.', tag: 'backend' },
+    { num: 2, title: 'Verify reconnect', detail: 'Ask the customer to reconnect Zapier.', tag: 'verify' },
+  ],
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access fix' }],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/x', title: 'Zapier API access setup' }],
+  kb_refs: [{ url: 'https://help.servicetitan.com/docs/zapier', title: 'Zapier API access help', snippet: 'Enable access.' }],
+  sources_used: ['slack', 'confluence', 'kb'],
+};
+
+const contract = buildAnswerEvidenceContract({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+
+assert(isValidAnswerEvidenceContract(contract), 'contract validates');
+assert(contract.version === 1, 'contract version is 1');
+assert(contract.mode === 'shadow', 'contract mode is shadow');
+assert(contract.quality.approximateMapping === true, 'phase 1 contract marks approximate mapping');
+assert(contract.queryHash.startsWith('sha256:'), 'contract stores query hash');
+assert(contract.queryPreview === 'Zapier API access disabled', 'contract stores short sanitized query preview');
+assert(contract.issueTitle === 'Zapier API Access', 'contract maps issue title');
+assert(contract.integrationType === 'Zapier', 'contract maps integration type');
+assert(contract.sections.steps.length === 2, 'contract maps each agent step');
+assert(contract.sections.steps[0].id.startsWith('claim_'), 'contract creates claim ids');
+assert(contract.evidence.length === 3, 'contract maps all refs to evidence');
+assert(contract.evidence.every(e => e.snippet === undefined), 'contract does not store raw snippet field');
+assert(contract.evidence.some(e => e.snippetPreview), 'contract stores sanitized snippetPreview when present');
+assert(contract.sections.diagnosis.evidenceIds.length > 0, 'diagnosis gets approximate evidence ids');
+assert(contract.sections.customerMessage.evidenceIds.every(id => contract.evidence.find(e => e.id === id)?.sensitivity === 'safe'), 'customer message maps only safe evidence ids');
+
+const sparseContract = buildAnswerEvidenceContract({
+  answer: { issue_title: 'Unknown issue', agent_steps: [] },
+  query: '',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
+assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

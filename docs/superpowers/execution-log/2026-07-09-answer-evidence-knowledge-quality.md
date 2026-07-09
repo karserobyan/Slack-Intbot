@@ -97,3 +97,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing regression assertions first and ran `node test.js`; result: failed with 643 passed, 2 failed out of 645 tests for raw URL retention and unclassified sensitive evidence. After implementation, ran `node test.js`; result: 646 passed, 0 failed.
 
 **Decision / Follow-up:** Source scoring remains dimensional and scorer-only; source sensitivity continues to be owned by `src/slack/source-policy.js`.
+
+## 2026-07-09 - PR 1 Task 3 Answer Evidence Contract Builder
+
+**Intent:** Add the shadow-only Answer Evidence Contract Builder without changing Slack answer rendering, answerer prompts, nomination behavior, mention handling, or `knowledge.md` behavior.
+
+**Action Taken:** Added `buildAnswerEvidenceContract` and `isValidAnswerEvidenceContract` to derive sanitized shadow metadata from the current answer object. The builder maps issue metadata, confidence, diagnosis, customer message, escalation context, steps, and scored evidence references while marking Phase 1 evidence mapping as approximate and keeping nomination eligibility disabled.
+
+**Files Touched:**
+
+- `src/quality/evidence-contract.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing import/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/evidence-contract.js`, as expected. After implementation, ran `node test.js`; result: 663 passed, 0 failed.
+
+**Decision / Follow-up:** Keep Task 3 as contract-builder-only infrastructure. No shadow storage, mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed in this task.
