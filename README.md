@@ -54,6 +54,13 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) and create a new app.
 - `app_mention` — bot is mentioned in a channel
 - `message.im` — direct message to the bot
 
+**Additional setup for auto-answer channel watcher:**
+- Bot scopes: `channels:read`, `channels:history`, `chat:write`
+- Event subscription: `message.channels`
+- `AUTO_ANSWER_SOURCE_CHANNEL` and `AUTO_ANSWER_TARGET_CHANNEL` must be Slack channel IDs, not names
+- The bot must be a member of both channels
+- Auto-answer remains off unless `AUTO_ANSWER_ENABLED=true`
+
 **For Socket Mode** (recommended for development):
 - Enable Socket Mode in your app settings
 - Generate an App-Level Token with `connections:write` scope
@@ -87,7 +94,11 @@ npm start
 | `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
 | `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
+| `AUTO_ANSWER_ENABLED` | Optional | Set to `true` to enable the channel-watcher that auto-drafts answers for new posts in `AUTO_ANSWER_SOURCE_CHANNEL`. Default off. |
+| `AUTO_ANSWER_SOURCE_CHANNEL` | If auto-answer enabled | Channel ID the bot watches (e.g. `C0123ABCD`). Bot must be a member. |
+| `AUTO_ANSWER_TARGET_CHANNEL` | If auto-answer enabled | Channel ID where drafts are posted. Typically a private channel only you are in. |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
+| `MODERATOR_USER_IDS` | Required for review actions | Comma-separated Slack user IDs allowed to approve/reject feedback and knowledge nominations. If unset, review actions fail closed. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-6`) |
 | `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |

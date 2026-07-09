@@ -2,14 +2,24 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
+import { registerAutoAnswerHandler } from './handlers/auto-answer.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks } from './slack/blocks.js';
 import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
-import { saveFeedback, notifyFeedbackChannel, approveFeedback, rejectFeedback, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
-import { approveNomination, rejectNomination } from './slack/nominations.js';
+import { initFeedbackStorage, getUnpostedPending, notifyFeedbackChannel } from './slack/feedback.js';
+import { handleFeedbackSubmission } from './slack/feedback-submission.js';
 import { buildChannelPostModal } from './slack/modal.js';
+import { handleFeedbackReviewAction, handleNominationReviewAction } from './slack/review-actions.js';
+
+function decodeActionText(value) {
+  try {
+    return decodeURIComponent(String(value ?? ''));
+  } catch {
+    return String(value ?? '');
+  }
+}
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -41,6 +51,7 @@ const app = new App({
 // ── Register event handlers ──────────────────────────────────────────────────
 registerMentionHandler(app);
 registerDmHandler(app);
+registerAutoAnswerHandler(app);
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action, logger }) => {
@@ -52,6 +63,11 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action, logger }) =
   } catch {
     // fallback to empty context
   }
+  context = {
+    query: decodeActionText(context.query),
+    issueTitle: decodeActionText(context.issueTitle),
+    integrationType: decodeActionText(context.integrationType),
+  };
 
   try {
     await client.views.open({
@@ -171,166 +187,87 @@ app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
 // ── Feedback modal submission ────────────────────────────────────────────────
 app.view('feedback_submission', async ({ ack, body, view, client }) => {
   await ack();
-
-  let context = {};
-  try {
-    context = JSON.parse(view.private_metadata || '{}');
-  } catch {
-    app.logger.warn('[feedback] Could not parse private_metadata — proceeding with empty context');
-  }
-  const values = view.state.values;
-
-  const feedbackType = values.feedback_type_block?.feedback_type_select?.selected_option?.value ?? 'wrong_answer';
-  const correction = values.correction_block?.correction_input?.value ?? '';
-
-  const record = await saveFeedback({
-    query: context.query,
-    issueTitle: context.issueTitle,
-    integrationType: context.integrationType,
-    feedbackType,
-    correction,
-    agentId: body.user.id,
-    agentName: body.user.name,
-  });
-
-  app.logger.info(`[feedback] Saved ${record.id} from ${body.user.name}: ${feedbackType}`);
-
-  // Notify feedback channel if configured
-  await notifyFeedbackChannel(client, record);
-
-  // DM the submitting agent that feedback is pending review
-  try {
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `Thanks for the feedback! It's been sent for review — if approved, it'll help improve the bot.`,
-    });
-  } catch (err) {
-    app.logger.warn(`[feedback] Could not DM submission confirmation to ${body.user.name}: ${err.message}`);
-  }
+  await handleFeedbackSubmission({ body, view, client, logger: app.logger });
 });
 
 // ── Approve feedback ──────────────────────────────────────────────────────────
-app.action('approve_feedback', async ({ ack, body, client, action }) => {
+app.action('approve_feedback', async ({ ack, body, client, action, respond }) => {
   await ack();
-
   let payload = {};
   try { payload = JSON.parse(action.value); } catch { return; }
-  const { feedbackId } = payload;
-  if (!feedbackId) return;
-
-  const record = await approveFeedback(feedbackId);
-  if (!record) return; // Already processed
-
-  // Get reviewer name
-  let reviewerName = body.user.name;
   try {
-    const res = await client.users.info({ user: body.user.id });
-    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
-  } catch { /* use fallback */ }
-
-  // Update review card
-  if (record.reviewMessageTs && record.reviewChannelId) {
-    await client.chat.update({
-      channel: record.reviewChannelId,
-      ts: record.reviewMessageTs,
-      text: `✅ Approved by ${reviewerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: `✅ *Approved by ${reviewerName}*\n_Feedback ID: ${record.id}_` },
-        },
-      ],
-    }).catch((err) => app.logger.warn('[feedback] Failed to update review card:', err.message));
+    await handleFeedbackReviewAction({
+      decision: 'approve',
+      feedbackId: payload.feedbackId,
+      body,
+      client,
+      respond,
+      logger: app.logger,
+    });
+  } catch (err) {
+    app.logger.error(`[feedback] approve_feedback failed: ${err.message}`);
+    await respond?.({ response_type: 'ephemeral', text: 'Approval failed. The feedback was not changed.' }).catch(() => {});
   }
-
-  // DM the submitting agent
-  await client.chat.postMessage({
-    channel: record.agentId,
-    text: `✅ Your feedback on *"${record.issueTitle}"* was approved and applied — thanks for helping improve the bot!`,
-  }).catch((err) => app.logger.warn('[feedback] Failed to DM agent after approval:', err.message));
-
-  app.logger.info(`[feedback] ${feedbackId} approved by ${reviewerName}`);
 });
 
 // ── Reject feedback ───────────────────────────────────────────────────────────
-app.action('reject_feedback', async ({ ack, body, client, action }) => {
+app.action('reject_feedback', async ({ ack, body, client, action, respond }) => {
   await ack();
-
   let payload = {};
   try { payload = JSON.parse(action.value); } catch { return; }
-  const { feedbackId } = payload;
-  if (!feedbackId) return;
-
-  const record = await rejectFeedback(feedbackId);
-  if (!record) return; // Already processed
-
-  // Get reviewer name
-  let reviewerName = body.user.name;
   try {
-    const res = await client.users.info({ user: body.user.id });
-    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
-  } catch { /* use fallback */ }
-
-  // Update review card
-  if (record.reviewMessageTs && record.reviewChannelId) {
-    await client.chat.update({
-      channel: record.reviewChannelId,
-      ts: record.reviewMessageTs,
-      text: `❌ Rejected by ${reviewerName}`,
-      blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: `❌ *Rejected by ${reviewerName}*\n_Feedback ID: ${record.id}_` },
-        },
-      ],
-    }).catch((err) => app.logger.warn('[feedback] Failed to update review card:', err.message));
+    await handleFeedbackReviewAction({
+      decision: 'reject',
+      feedbackId: payload.feedbackId,
+      body,
+      client,
+      respond,
+      logger: app.logger,
+    });
+  } catch (err) {
+    app.logger.error(`[feedback] reject_feedback failed: ${err.message}`);
+    await respond?.({ response_type: 'ephemeral', text: 'Rejection failed. The feedback was not changed.' }).catch(() => {});
   }
-
-  // DM the submitting agent
-  await client.chat.postMessage({
-    channel: record.agentId,
-    text: `Your feedback on *"${record.issueTitle}"* was reviewed and not applied — thanks for flagging it.`,
-  }).catch((err) => app.logger.warn('[feedback] Failed to DM agent after rejection:', err.message));
-
-  app.logger.info(`[feedback] ${feedbackId} rejected by ${reviewerName}`);
 });
 
 // ── Approve nomination ────────────────────────────────────────────────────────
-app.action('approve_nomination', async ({ ack, body, client, action }) => {
+app.action('approve_nomination', async ({ ack, body, client, action, respond }) => {
   await ack();
   let payload = {};
   try { payload = JSON.parse(action.value); } catch { return; }
-  const { nominationId } = payload;
-  if (!nominationId) return;
-
-  let reviewerName = body.user.name;
   try {
-    const res = await client.users.info({ user: body.user.id });
-    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
-  } catch { /* use fallback */ }
-
-  const record = await approveNomination(nominationId, client, reviewerName);
-  if (!record) return;
-  app.logger.info(`[nominations] ${nominationId} approved by ${reviewerName} (${record.integration}: ${record.issueTitle})`);
+    await handleNominationReviewAction({
+      decision: 'approve',
+      nominationId: payload.nominationId,
+      body,
+      client,
+      respond,
+      logger: app.logger,
+    });
+  } catch (err) {
+    app.logger.error(`[nominations] approve_nomination failed: ${err.message}`);
+    await respond?.({ response_type: 'ephemeral', text: 'Approval failed. The nomination was not changed.' }).catch(() => {});
+  }
 });
 
 // ── Reject nomination ─────────────────────────────────────────────────────────
-app.action('reject_nomination', async ({ ack, body, client, action }) => {
+app.action('reject_nomination', async ({ ack, body, client, action, respond }) => {
   await ack();
   let payload = {};
   try { payload = JSON.parse(action.value); } catch { return; }
-  const { nominationId } = payload;
-  if (!nominationId) return;
-
-  let reviewerName = body.user.name;
   try {
-    const res = await client.users.info({ user: body.user.id });
-    reviewerName = res.user?.profile?.display_name || res.user?.profile?.real_name || reviewerName;
-  } catch { /* use fallback */ }
-
-  const record = await rejectNomination(nominationId, client, reviewerName);
-  if (!record) return;
-  app.logger.info(`[nominations] ${nominationId} rejected by ${reviewerName}`);
+    await handleNominationReviewAction({
+      decision: 'reject',
+      nominationId: payload.nominationId,
+      body,
+      client,
+      respond,
+      logger: app.logger,
+    });
+  } catch (err) {
+    app.logger.error(`[nominations] reject_nomination failed: ${err.message}`);
+    await respond?.({ response_type: 'ephemeral', text: 'Rejection failed. The nomination was not changed.' }).catch(() => {});
+  }
 });
 
 // ── Periodic cache prune (every 15 minutes) ──────────────────────────────────

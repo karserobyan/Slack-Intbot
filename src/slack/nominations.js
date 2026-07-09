@@ -13,8 +13,9 @@
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { appendBotResponse, DEFAULT_KB_FILE } from './knowledge-writer.js';
+import { appendBotResponseWithStatus } from './knowledge-writer.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
+import { escapeMrkdwn } from './mrkdwn.js';
 
 const NOMINATION_ID_PREFIX = 'nom_';
 
@@ -73,7 +74,7 @@ export function _setStoreForTest(path) {
  */
 export function buildNominationBlocks(record) {
   const refsText = record.refs?.length > 0
-    ? `*References:* ${record.refs.join(', ')}`
+    ? `*References:* ${record.refs.map(escapeMrkdwn).join(', ')}`
     : '_No references_';
 
   return [
@@ -81,12 +82,12 @@ export function buildNominationBlocks(record) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*📝 Knowledge Nomination — ${record.integration}*\n_${record.issueTitle}_`,
+        text: `*📝 Knowledge Nomination — ${escapeMrkdwn(record.integration)}*\n_${escapeMrkdwn(record.issueTitle)}_`,
       },
     },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Proposed entry:*\n\`\`\`${record.proposedEntry}\`\`\`` },
+      text: { type: 'mrkdwn', text: `*Proposed entry:*\n\`\`\`${escapeMrkdwn(record.proposedEntry)}\`\`\`` },
     },
     {
       type: 'section',
@@ -155,7 +156,7 @@ export async function nominateResponse(client, record) {
   try {
     const msg = await client.chat.postMessage({
       channel: channelId,
-      text: `📝 Knowledge Nomination — ${record.integration}: ${record.issueTitle}`,
+      text: `📝 Knowledge Nomination — ${escapeMrkdwn(record.integration)}: ${escapeMrkdwn(record.issueTitle)}`,
       blocks: buildNominationBlocks(nomination),
     });
     nomination.reviewMessageTs = msg.ts;
@@ -182,23 +183,32 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
   const pending = await loadPending();
   const record = pending.get(id);
   if (!record) return null;
+
+  let result;
+  try {
+    result = await appendBotResponseWithStatus(record.integration, record.issueTitle, record.steps, record.refs, undefined, client);
+  } catch (err) {
+    throw new Error(`Knowledge write failed for nomination ${id}: ${err.message}`);
+  }
+
+  if (result.status === 'failed') {
+    throw new Error(`Knowledge write failed for nomination ${id}${result.error ? `: ${result.error}` : ''}`);
+  }
+
   pending.delete(id);
   await persistPending();
 
-  try {
-    await appendBotResponse(record.integration, record.issueTitle, record.steps, record.refs, DEFAULT_KB_FILE, client);
-  } catch (err) {
-    console.error('[nominations] appendBotResponse failed during approve:', err.message);
-  }
-
   if (record.reviewMessageTs && client) {
+    const safeReviewerName = escapeMrkdwn(reviewerName);
+    const safeIntegration = escapeMrkdwn(record.integration);
+    const safeIssueTitle = escapeMrkdwn(record.issueTitle);
     await client.chat.update({
       channel: record.reviewChannelId,
       ts: record.reviewMessageTs,
-      text: `✅ Approved by ${reviewerName}`,
+      text: `✅ Approved by ${safeReviewerName}`,
       blocks: [{
         type: 'section',
-        text: { type: 'mrkdwn', text: `✅ *Approved by ${reviewerName}*\n_${record.id} — ${record.integration}: ${record.issueTitle}_` },
+        text: { type: 'mrkdwn', text: `✅ *Approved by ${safeReviewerName}*\n_${record.id} — ${safeIntegration}: ${safeIssueTitle}_` },
       }],
     }).catch((err) => console.warn('[nominations] Failed to update review card:', err.message));
   }
@@ -222,13 +232,16 @@ export async function rejectNomination(id, client, reviewerName = 'Moderator') {
   await persistPending();
 
   if (record.reviewMessageTs && client) {
+    const safeReviewerName = escapeMrkdwn(reviewerName);
+    const safeIntegration = escapeMrkdwn(record.integration);
+    const safeIssueTitle = escapeMrkdwn(record.issueTitle);
     await client.chat.update({
       channel: record.reviewChannelId,
       ts: record.reviewMessageTs,
-      text: `❌ Rejected by ${reviewerName}`,
+      text: `❌ Rejected by ${safeReviewerName}`,
       blocks: [{
         type: 'section',
-        text: { type: 'mrkdwn', text: `❌ *Rejected by ${reviewerName}*\n_${record.id} — ${record.integration}: ${record.issueTitle}_` },
+        text: { type: 'mrkdwn', text: `❌ *Rejected by ${safeReviewerName}*\n_${record.id} — ${safeIntegration}: ${safeIssueTitle}_` },
       }],
     }).catch((err) => console.warn('[nominations] Failed to update review card:', err.message));
   }

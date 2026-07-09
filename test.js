@@ -6,6 +6,7 @@
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
+  buildAutoAnswerBlocks,
   buildWelcomeCard,
   buildSessionCard,
   buildAccountingRedirectBlocks,
@@ -18,21 +19,35 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
 } from './src/slack/blocks.js';
+import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { parseChatResponse } from './src/claude/query.js';
-import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback } from './src/slack/feedback.js';
+import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
+import { handleFeedbackSubmission } from './src/slack/feedback-submission.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
-import { buildNominationBlocks, nominateResponse, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
+import { buildNominationBlocks, nominateResponse, approveNomination, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
+import {
+  getModeratorIds,
+  isAuthorizedModerator,
+  requireAuthorizedModerator,
+  sendUnauthorizedResponse,
+} from './src/slack/moderation.js';
+import {
+  handleFeedbackReviewAction,
+  handleNominationReviewAction,
+} from './src/slack/review-actions.js';
 import { tmpdir } from 'node:os';
-import { rm } from 'node:fs/promises';
+import { rm, mkdtemp } from 'node:fs/promises';
 import { buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
   appendBotResponse,
   hasKbUrl,
   hasIssueTitle,
+  _setKnowledgeWriterFailureForTest,
+  _setKnowledgeWriterDefaultFileForTest,
 } from './src/slack/knowledge-writer.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -40,9 +55,14 @@ import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
+import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
+import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
+import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
 
 let passed = 0;
 let failed = 0;
+const DANGEROUS_TEXT = 'A&B <@U123> <https://evil.test|click>';
+const DANGEROUS_ESCAPED = 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;';
 
 function assert(condition, label) {
   if (condition) {
@@ -238,6 +258,48 @@ assert(!clarifyNullSummary.includes('Confidence:'), 'null confidence suppresses 
 // ── 3. Block Kit Builders ────────────────────────────────────────────────────
 console.log('\n🔹 Block Kit Builders');
 
+// ── Slack mrkdwn safety ──────────────────────────────────────────────────────
+console.log('\n🔹 Slack mrkdwn safety');
+
+assert(escapeMrkdwn(DANGEROUS_TEXT) === DANGEROUS_ESCAPED, 'escapeMrkdwn escapes Slack control chars');
+assert(safeSlackLink('https://servicetitan.slack.com/archives/C123/p456', 'Safe <label>').includes('<https://servicetitan.slack.com/archives/C123/p456|Safe &lt;label&gt;'), 'safeSlackLink allows Slack host and escapes label');
+assert(safeSlackLink('https://slack.com/archives/C123/p456', 'Slack') === 'Slack', 'safeSlackLink rejects non-ServiceTitan Slack host');
+assert(safeSlackLink('https://evil.test/x', 'Bad <label>') === 'Bad &lt;label&gt;', 'safeSlackLink rejects unknown hosts');
+assert(safeSlackLink('http://help.servicetitan.com/article', 'KB') === 'KB', 'safeSlackLink rejects non-HTTPS allowlisted hosts');
+assert(safeSlackLink('not a url', 'Broken <label>') === 'Broken &lt;label&gt;', 'safeSlackLink rejects invalid URLs');
+
+// ── Source sensitivity policy ────────────────────────────────────────────────
+console.log('\n🔹 Source sensitivity policy');
+
+const modelSensitive = classifySourceRef({ title: 'Normal', sensitive: true });
+assert(modelSensitive.sensitive === true, 'source policy preserves model sensitive flag');
+const backendSlack = classifySourceRef({ channel: '#backend-tools', title: 'Zapier fix' });
+assert(backendSlack.sensitive === true, 'backend Slack channels are sensitive');
+const incidentJira = classifySourceRef({ type: 'jira', title: 'INC-123 customer incident' });
+assert(incidentJira.sensitive === true, 'incident-like Jira refs are sensitive');
+const publicKb = classifySourceRef({ url: 'https://help.servicetitan.com/article', title: 'Public KB' });
+assert(publicKb.sensitive !== true, 'KB host is not marked sensitive by default');
+const sensitiveKb = classifySourceRef({ url: 'https://help.servicetitan.com/private', title: 'Customer incident runbook' });
+assert(sensitiveKb.sensitive === true, 'KB refs with sensitive titles stay sensitive');
+const spoofedKb = classifySourceRef({ url: 'https://evil.test/help.servicetitan.com/private', title: 'Customer incident runbook' });
+assert(spoofedKb.sensitive === true, 'substring-spoofed KB URL does not bypass sensitivity checks');
+const csaRefs = filterRefsForRole([backendSlack, publicKb], 'csa');
+assert(csaRefs.length === 1 && csaRefs[0].title === 'Public KB', 'CSA refs filter sensitive refs');
+const specialistRefs = filterRefsForRole([backendSlack, publicKb], 'specialist');
+assert(specialistRefs.length === 2, 'Specialists see sensitive refs');
+
+const dangerousResponseBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'low',
+  escalate_decision: { should_escalate: true, reason: DANGEROUS_TEXT },
+  channel_recommendation: { channel: DANGEROUS_TEXT, reason: DANGEROUS_TEXT },
+  agent_steps: [{ num: 1, title: 'Safe title', detail: 'Safe detail', tag: DANGEROUS_TEXT }],
+  sources_used: [DANGEROUS_TEXT],
+});
+const dangerousResponseJson = JSON.stringify(dangerousResponseBlocks);
+assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous sources, routing text, and step tags');
+assert(dangerousResponseJson.includes(DANGEROUS_ESCAPED), 'response blocks keep escaped dangerous text visible');
+
 const responseBlocks = buildResponseBlocks(sampleJson);
 assert(Array.isArray(responseBlocks), 'buildResponseBlocks returns array');
 assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response blocks count: ${responseBlocks.length} (≤50 limit)`);
@@ -415,6 +477,53 @@ const csaAllSensSrcBtn = csaAllSensBlocks.find(b => b.type === 'actions')?.eleme
 assert(csaAllSensSrcBtn === undefined, 'sensitivity CSA: sources button absent when all refs are sensitive');
 const csaAllSensChip = csaAllSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('specialist-only'));
 assert(csaAllSensChip !== undefined, 'sensitivity CSA: specialist-only hint still shown when all refs sensitive');
+
+const codeSensitiveBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [
+    { url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#backend-tools', title: 'Backend fix' },
+  ],
+  atlassian_refs: [],
+  kb_refs: [],
+  sources_used: ['slack'],
+}, { role: 'csa' });
+const codeSensitiveText = JSON.stringify(codeSensitiveBlocks);
+assert(codeSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only refs');
+assert(!codeSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only refs');
+
+const kbSensitiveBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive KB Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
+  ],
+  sources_used: ['kb'],
+}, { role: 'csa' });
+const kbSensitiveText = JSON.stringify(kbSensitiveBlocks);
+assert(kbSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only KB refs');
+assert(!kbSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only KB refs');
+
+const kbSensitiveSpecialistBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive KB Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
+  ],
+  sources_used: ['kb'],
+}, { role: 'specialist' });
+const kbSensitiveSpecialistText = JSON.stringify(kbSensitiveSpecialistBlocks);
+assert(kbSensitiveSpecialistText.includes('Diagnosis + Sources'), 'Specialist response still exposes sensitive KB refs');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
@@ -753,6 +862,159 @@ assert(matchCount === 1, 'Double-approve does not duplicate entry in active queu
 assert(typeof approveFeedback === 'function', 'approveFeedback is a function');
 assert(typeof rejectFeedback === 'function', 'rejectFeedback is a function');
 
+process.env.FEEDBACK_REVIEW_CHANNEL_ID = 'C_REVIEW';
+let postedFeedbackReviewBlocks = null;
+await notifyFeedbackChannel(
+  {
+    chat: {
+      postMessage: async ({ blocks }) => {
+        postedFeedbackReviewBlocks = blocks;
+        return { ts: '123.456' };
+      },
+    },
+  },
+  {
+    id: 'fb_escape_001',
+    timestamp: '2026-07-06T12:00:00.000Z',
+    query: 'query text',
+    issueTitle: 'Issue title',
+    integrationType: '<#C123>&bad',
+    feedbackType: 'wrong_answer',
+    correction: 'correct this',
+    agentId: 'U12345',
+    agentName: 'Test Agent',
+  },
+);
+const postedFeedbackReviewJson = JSON.stringify(postedFeedbackReviewBlocks);
+assert(postedFeedbackReviewJson.includes('&lt;#C123&gt;&amp;bad'), 'feedback review card escapes integrationType in mrkdwn');
+assert(!postedFeedbackReviewJson.includes('<#C123>&bad'), 'feedback review card does not include raw integrationType control chars');
+
+// ── feedback persistence failures ───────────────────────────────────────────
+
+const feedbackTempDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-'));
+_setFeedbackStorageForTest({ dir: feedbackTempDir });
+const feedbackToApprove = await saveFeedback({
+  query: 'Zapier broken',
+  issueTitle: 'Zapier',
+  integrationType: 'Zapier',
+  feedbackType: 'wrong_answer',
+  correction: 'Correct it',
+  agentId: 'U_AGENT',
+  agentName: 'Agent',
+});
+const pendingBeforeFailure = await getPendingFeedback();
+assert(pendingBeforeFailure.length === 1, 'feedback test setup has one pending entry');
+const activeBeforeFailure = await getAllFeedback();
+assert(activeBeforeFailure.length === 0, 'feedback failure test setup has empty active cache');
+
+await rm(feedbackTempDir, { recursive: true, force: true });
+await writeFile(feedbackTempDir, 'not a directory');
+let saveRejected = false;
+try {
+  await saveFeedback({
+    query: 'RwG broken',
+    issueTitle: 'RwG',
+    integrationType: 'RwG',
+    feedbackType: 'wrong_answer',
+    correction: 'Correct it',
+    agentId: 'U_AGENT',
+    agentName: 'Agent',
+  });
+} catch {
+  saveRejected = true;
+}
+assert(saveRejected, 'saveFeedback rejects when pending write fails');
+const pendingAfterFailedSave = await getPendingFeedback();
+assert(pendingAfterFailedSave.length === 1, 'failed save leaves pending count unchanged');
+assert(!pendingAfterFailedSave.some((e) => e.query === 'RwG broken'), 'failed save does not leak new entry into pending cache');
+
+let approveRejected = false;
+try {
+  await approveFeedback(feedbackToApprove.id);
+} catch {
+  approveRejected = true;
+}
+assert(approveRejected, 'approveFeedback rejects when active/pending read or write fails');
+const pendingAfterFailedApprove = await getPendingFeedback();
+assert(pendingAfterFailedApprove.length === 1, 'failed approve leaves pending count unchanged');
+assert(pendingAfterFailedApprove.some((e) => e.id === feedbackToApprove.id), 'failed approve keeps record pending in cache');
+const activeAfterFailedApprove = await getAllFeedback();
+assert(activeAfterFailedApprove.length === 0, 'failed approve leaves active count unchanged');
+assert(!activeAfterFailedApprove.some((e) => e.id === feedbackToApprove.id), 'failed approve does not leak record into active cache');
+
+const feedbackRejectDir = await mkdtemp(join(tmpdir(), 'intbot-feedback-reject-'));
+_setFeedbackStorageForTest({ dir: feedbackRejectDir });
+const feedbackToReject = await saveFeedback({
+  query: 'Angi broken',
+  issueTitle: 'Angi',
+  integrationType: 'Angi',
+  feedbackType: 'wrong_answer',
+  correction: 'Correct it',
+  agentId: 'U_AGENT',
+  agentName: 'Agent',
+});
+await rm(feedbackRejectDir, { recursive: true, force: true });
+await writeFile(feedbackRejectDir, 'not a directory');
+let rejectRejected = false;
+try {
+  await rejectFeedback(feedbackToReject.id);
+} catch {
+  rejectRejected = true;
+}
+assert(rejectRejected, 'rejectFeedback rejects when pending write fails');
+const pendingAfterFailedReject = await getPendingFeedback();
+assert(pendingAfterFailedReject.length === 1, 'failed reject leaves pending count unchanged');
+assert(pendingAfterFailedReject.some((e) => e.id === feedbackToReject.id), 'failed reject keeps record pending in cache');
+
+_setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
+await rm(feedbackTempDir, { force: true });
+await rm(feedbackRejectDir, { force: true });
+
+const feedbackSubmissionCalls = [];
+const feedbackSubmissionResult = await handleFeedbackSubmission({
+  body: { user: { id: 'U_SUBMIT', name: 'Submitter' } },
+  view: {
+    private_metadata: JSON.stringify({
+      query: 'Dangerous query',
+      issueTitle: 'Dangerous issue',
+      integrationType: 'Dangerous integration',
+    }),
+    state: {
+      values: {
+        feedback_type_block: { feedback_type_select: { selected_option: { value: 'wrong_answer' } } },
+        correction_block: { correction_input: { value: 'Correct answer' } },
+      },
+    },
+  },
+  client: {
+    chat: {
+      postMessage: async (payload) => {
+        feedbackSubmissionCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  logger: {
+    error: (...args) => feedbackSubmissionCalls.push(['error', args]),
+    warn: (...args) => feedbackSubmissionCalls.push(['warn', args]),
+    info: (...args) => feedbackSubmissionCalls.push(['info', args]),
+  },
+  deps: {
+    saveFeedback: async () => {
+      throw new Error('disk full');
+    },
+    notifyFeedbackChannel: async () => {
+      feedbackSubmissionCalls.push(['notifyFeedbackChannel']);
+    },
+  },
+});
+assert(feedbackSubmissionResult.status === 'save_failed', 'feedback submission helper returns save_failed when persistence fails');
+assert(feedbackSubmissionCalls.some(([kind]) => kind === 'error'), 'feedback submission helper logs save failure context');
+assert(!feedbackSubmissionCalls.some(([kind]) => kind === 'notifyFeedbackChannel'), 'feedback submission helper skips review notification when save fails');
+const failedSaveDm = feedbackSubmissionCalls.find(([kind, payload]) => kind === 'chat.postMessage' && payload.channel === 'U_SUBMIT');
+assert(failedSaveDm?.[1]?.text?.includes("couldn't save your feedback"), 'feedback submission helper DMs controlled save failure message');
+assert(feedbackSubmissionCalls.filter(([kind]) => kind === 'chat.postMessage').length === 1, 'feedback submission helper skips success confirmation when save fails');
+
 // ── 10. Help Blocks ───────────────────────────────────────────────────────────
 console.log('\n🔹 Help Blocks');
 
@@ -831,6 +1093,14 @@ assert(!slackOnlyModal.blocks.some(b => b.text?.text?.includes('🔍 Root Cause'
 // Missing arrays default gracefully (no crash)
 const noArgsModal = buildSourcesModal({});
 assert(noArgsModal.type === 'modal', 'buildSourcesModal handles missing arrays without crash');
+
+const unsafeSourcesModal = buildSourcesModal({
+  slack_refs: [{ url: 'https://evil.test/x', title: '<@U123> click', channel: '<#C123>' }],
+});
+const unsafeSourcesText = JSON.stringify(unsafeSourcesModal);
+assert(!unsafeSourcesText.includes('<https://evil.test'), 'unsafe source URL is not rendered as clickable Slack link');
+assert(unsafeSourcesText.includes('&lt;@U123&gt;'), 'unsafe source title is escaped');
+assert(unsafeSourcesText.includes('&lt;#C123&gt;'), 'unsafe source channel is escaped');
 
 // ── 12. Sources Button in buildResponseBlocks ─────────────────────────────────
 console.log('\n🔹 Sources Button');
@@ -1011,9 +1281,304 @@ _setStoreForTest(nomTmp);
 const goneAfter = await rejectNomination(persistedNom.id, mockNomClient, 'Tester');
 assert(goneAfter === null, 'handled nomination is removed from disk — idempotent across restarts');
 
+// — nomination approval preserves pending state when knowledge write fails —
+const nomFailFile = join(tmpdir(), `intbot-nominations-${Date.now()}.json`);
+const nomFailKb = join(tmpdir(), `intbot-knowledge-${Date.now()}.md`);
+_setStoreForTest(nomFailFile);
+_setKnowledgeWriterDefaultFileForTest(nomFailKb);
+const nomFailClient = { chat: { postMessage: async () => ({ ts: '222.333' }), update: async () => ({}) } };
+const failingNomination = await nominateResponse(nomFailClient, {
+  integration: 'Zapier',
+  issueTitle: 'Write Failure Nomination',
+  steps: ['Do the thing'],
+  refs: ['Slack thread'],
+});
+_setKnowledgeWriterFailureForTest(true);
+let nominationRejected = false;
+try {
+  await approveNomination(failingNomination.id, nomFailClient, 'Reviewer');
+} catch {
+  nominationRejected = true;
+}
+_setKnowledgeWriterFailureForTest(false);
+assert(nominationRejected, 'approveNomination rejects when knowledge write fails');
+const stillPending = await approveNomination(failingNomination.id, nomFailClient, 'Reviewer');
+assert(stillPending?.id === failingNomination.id, 'nomination remains pending after failed knowledge write');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nomFailFile, { force: true });
+await rm(nomFailKb, { force: true });
+
+// — duplicate nomination approval succeeds and clears pending state —
+const nomDupFile = join(tmpdir(), `intbot-nominations-dup-${Date.now()}.json`);
+const nomDupKb = join(tmpdir(), `intbot-knowledge-dup-${Date.now()}.md`);
+_setStoreForTest(nomDupFile);
+_setKnowledgeWriterDefaultFileForTest(nomDupKb);
+await appendBotResponse('Zapier', 'Duplicate Nomination', ['Existing step'], [], nomDupKb, null);
+const nomDupClient = { chat: { postMessage: async () => ({ ts: '333.444' }), update: async () => ({}) } };
+const duplicateNomination = await nominateResponse(nomDupClient, {
+  integration: 'Zapier',
+  issueTitle: 'Duplicate Nomination',
+  steps: ['New step that should be skipped as duplicate'],
+  refs: ['Slack thread'],
+});
+const duplicateApproved = await approveNomination(duplicateNomination.id, nomDupClient, 'Reviewer');
+assert(duplicateApproved?.id === duplicateNomination.id, 'approveNomination succeeds for duplicate knowledge title');
+_setStoreForTest(nomDupFile);
+const duplicateGoneAfter = await approveNomination(duplicateNomination.id, nomDupClient, 'Reviewer');
+assert(duplicateGoneAfter === null, 'duplicate nomination approval clears pending state');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nomDupFile, { force: true });
+await rm(nomDupKb, { force: true });
+
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
 _setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store
+
+// ── Moderation authorization ─────────────────────────────────────────────────
+console.log('\n🔹 Moderation authorization');
+
+const modEnv = { MODERATOR_USER_IDS: 'U1, U2 ,,U3' };
+assert([...getModeratorIds(modEnv)].join(',') === 'U1,U2,U3', 'moderator IDs parse comma-separated env');
+assert(isAuthorizedModerator('U2', modEnv) === true, 'configured moderator is authorized');
+assert(isAuthorizedModerator('U4', modEnv) === false, 'unlisted user is not authorized');
+assert(isAuthorizedModerator('U1', {}) === false, 'missing moderator list fails closed');
+
+let unauthorizedThrown = false;
+try { requireAuthorizedModerator('U4', modEnv); } catch (err) {
+  unauthorizedThrown = err.code === 'not_authorized' && err.userId === 'U4';
+}
+assert(unauthorizedThrown, 'requireAuthorizedModerator throws tagged authorization error');
+
+const denialCalls = [];
+await sendUnauthorizedResponse({
+  body: { user: { id: 'U4' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { postEphemeral: async (payload) => { denialCalls.push(['ephemeral', payload]); } } },
+  respond: async (payload) => { denialCalls.push(['respond', payload]); },
+  logger: { warn: () => {} },
+  actionName: 'approve_feedback',
+});
+assert(denialCalls.some(([kind]) => kind === 'respond'), 'unauthorized response prefers respond');
+assert(JSON.stringify(denialCalls).includes('not authorized'), 'unauthorized response explains denial');
+
+let approveFeedbackCalled = false;
+const unauthorizedFeedbackResult = await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_1',
+  body: { user: { id: 'U4', name: 'Nope' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { postMessage: async () => ({}), update: async () => ({}) }, users: { info: async () => ({ user: { profile: {} } }) } },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveFeedback: async () => { approveFeedbackCalled = true; return null; },
+    rejectFeedback: async () => { throw new Error('should not run'); },
+  },
+});
+assert(unauthorizedFeedbackResult.status === 'unauthorized', 'unauthorized feedback action returns unauthorized');
+assert(approveFeedbackCalled === false, 'unauthorized feedback approval does not mutate feedback');
+
+let approveNominationCalled = false;
+const unauthorizedNominationResult = await handleNominationReviewAction({
+  decision: 'approve',
+  nominationId: 'nom_1',
+  body: { user: { id: 'U4', name: 'Nope' }, channel: { id: 'C_REVIEW' } },
+  client: { chat: { update: async () => ({}) }, users: { info: async () => ({ user: { profile: {} } }) } },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveNomination: async () => { approveNominationCalled = true; return null; },
+    rejectNomination: async () => { throw new Error('should not run'); },
+  },
+});
+assert(unauthorizedNominationResult.status === 'unauthorized', 'unauthorized nomination action returns unauthorized');
+assert(approveNominationCalled === false, 'unauthorized nomination approval does not mutate nominations');
+
+const feedbackActionCalls = [];
+let approvedFeedbackId = null;
+const authorizedFeedbackResult = await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_2',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async ({ user }) => {
+        feedbackActionCalls.push(['users.info', user]);
+        return { user: { profile: { display_name: 'Mod Display' } } };
+      },
+    },
+    chat: {
+      update: async (payload) => {
+        feedbackActionCalls.push(['chat.update', payload]);
+        return {};
+      },
+      postMessage: async (payload) => {
+        feedbackActionCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {
+    feedbackActionCalls.push(['respond']);
+  },
+  logger: {
+    warn: (...args) => feedbackActionCalls.push(['warn', args]),
+    info: (...args) => feedbackActionCalls.push(['info', args]),
+  },
+  env: modEnv,
+  deps: {
+    approveFeedback: async (feedbackId) => {
+      approvedFeedbackId = feedbackId;
+      return {
+        id: feedbackId,
+        issueTitle: 'Broken sync',
+        agentId: 'U_AGENT',
+        reviewMessageTs: '111.222',
+        reviewChannelId: 'C_REVIEW',
+      };
+    },
+    rejectFeedback: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+assert(approvedFeedbackId === 'fb_2', 'authorized feedback action passes feedback id to approveFeedback');
+assert(authorizedFeedbackResult.status === 'approved', 'authorized feedback action returns approved');
+assert(feedbackActionCalls.some(([kind, value]) => kind === 'users.info' && value === 'U2'), 'authorized feedback action resolves reviewer profile');
+const feedbackUpdateCall = feedbackActionCalls.find(([kind]) => kind === 'chat.update');
+assert(feedbackUpdateCall?.[1]?.text === '✅ Approved by Mod Display', 'authorized feedback action updates review card with reviewer display name');
+assert(feedbackUpdateCall?.[1]?.blocks?.[0]?.text?.text?.includes('Approved by Mod Display'), 'authorized feedback action uses reviewer display name in review card block');
+const feedbackDmCall = feedbackActionCalls.find(([kind, value]) => kind === 'chat.postMessage' && value.channel === 'U_AGENT');
+assert(feedbackDmCall?.[1]?.text?.includes('Broken sync'), 'authorized feedback action DMs the submitting agent');
+assert(feedbackActionCalls.some(([kind, args]) => kind === 'info' && args[0].includes('Mod Display')), 'authorized feedback action logs resolved reviewer name');
+
+const dangerousFeedbackCalls = [];
+await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_danger',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async () => ({ user: { profile: { display_name: DANGEROUS_TEXT } } }),
+    },
+    chat: {
+      update: async (payload) => {
+        dangerousFeedbackCalls.push(['chat.update', payload]);
+        return {};
+      },
+      postMessage: async (payload) => {
+        dangerousFeedbackCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveFeedback: async () => ({
+      id: 'fb_danger',
+      issueTitle: DANGEROUS_TEXT,
+      agentId: 'U_AGENT',
+      reviewMessageTs: '123.456',
+      reviewChannelId: 'C_REVIEW',
+    }),
+    rejectFeedback: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+const dangerousFeedbackJson = JSON.stringify(dangerousFeedbackCalls);
+assert(!dangerousFeedbackJson.includes(DANGEROUS_TEXT), 'feedback review action updates and DMs escape dangerous reviewer and title text');
+assert(dangerousFeedbackJson.includes(DANGEROUS_ESCAPED), 'feedback review action keeps escaped dangerous text visible');
+
+const nominationActionCalls = [];
+const nominationApproveCalls = [];
+const authorizedNominationResult = await handleNominationReviewAction({
+  decision: 'approve',
+  nominationId: 'nom_2',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async ({ user }) => {
+        nominationActionCalls.push(['users.info', user]);
+        return { user: { profile: { display_name: 'Nom Mod' } } };
+      },
+    },
+    chat: {
+      update: async (payload) => {
+        nominationActionCalls.push(['chat.update', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {
+    nominationActionCalls.push(['respond']);
+  },
+  logger: {
+    warn: (...args) => nominationActionCalls.push(['warn', args]),
+    info: (...args) => nominationActionCalls.push(['info', args]),
+  },
+  env: modEnv,
+  deps: {
+    approveNomination: async (...args) => {
+      nominationApproveCalls.push(args);
+      nominationActionCalls.push(['approveNomination', args]);
+      return { id: 'nom_2', integration: 'Zapier', issueTitle: 'Broken auth' };
+    },
+    rejectNomination: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+assert(nominationApproveCalls.length === 1, 'authorized nomination action calls approveNomination once');
+assert(nominationApproveCalls[0][0] === 'nom_2', 'authorized nomination action passes nomination id to approveNomination');
+assert(nominationApproveCalls[0][1] && nominationApproveCalls[0][1].users, 'authorized nomination action passes the Slack client to approveNomination');
+assert(nominationApproveCalls[0][2] === 'Nom Mod', 'authorized nomination action passes resolved reviewer name to approveNomination');
+assert(authorizedNominationResult.status === 'approved', 'authorized nomination action returns approved');
+assert(nominationActionCalls.some(([kind, value]) => kind === 'users.info' && value === 'U2'), 'authorized nomination action resolves reviewer profile');
+
+process.env.FEEDBACK_REVIEW_CHANNEL_ID = 'C_REVIEW';
+const nominationEscapeFile = join(tmpdir(), `intbot-nominations-escape-${Date.now()}.json`);
+const nominationEscapeKb = join(tmpdir(), `intbot-knowledge-escape-${Date.now()}.md`);
+const nominationUpdateCalls = [];
+_setStoreForTest(nominationEscapeFile);
+_setKnowledgeWriterDefaultFileForTest(nominationEscapeKb);
+const nominationEscapeClient = {
+  chat: {
+    postMessage: async () => ({ ts: '444.555' }),
+    update: async (payload) => {
+      nominationUpdateCalls.push(payload);
+      return {};
+    },
+  },
+};
+const nominationForApprove = await nominateResponse(nominationEscapeClient, {
+  integration: DANGEROUS_TEXT,
+  issueTitle: DANGEROUS_TEXT,
+  steps: ['Do the safe thing'],
+  refs: [DANGEROUS_TEXT],
+});
+await approveNomination(nominationForApprove.id, nominationEscapeClient, DANGEROUS_TEXT);
+const approvedNominationJson = JSON.stringify(nominationUpdateCalls.at(-1));
+assert(!approvedNominationJson.includes(DANGEROUS_TEXT), 'approveNomination review update escapes dangerous reviewer and nomination text');
+assert(approvedNominationJson.includes(DANGEROUS_ESCAPED), 'approveNomination keeps escaped dangerous text visible');
+
+const nominationForReject = await nominateResponse(nominationEscapeClient, {
+  integration: DANGEROUS_TEXT,
+  issueTitle: DANGEROUS_TEXT,
+  steps: ['Do the safe thing'],
+  refs: [DANGEROUS_TEXT],
+});
+await rejectNomination(nominationForReject.id, nominationEscapeClient, DANGEROUS_TEXT);
+const rejectedNominationJson = JSON.stringify(nominationUpdateCalls.at(-1));
+assert(!rejectedNominationJson.includes(DANGEROUS_TEXT), 'rejectNomination review update escapes dangerous reviewer and nomination text');
+assert(rejectedNominationJson.includes(DANGEROUS_ESCAPED), 'rejectNomination keeps escaped dangerous text visible');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nominationEscapeFile, { force: true });
+await rm(nominationEscapeKb, { force: true });
+_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json'));
+delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 
 // ── 16. parseChatResponse ─────────────────────────────────────────────────────
 console.log('\n🔹 parseChatResponse');
@@ -1172,6 +1737,19 @@ const noRefsData = { ...resolvedData, refs: [] };
 const noRefsChatBlocks = buildChatResolutionBlocks(noRefsData);
 const noRefsChip = noRefsChatBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
 assert(noRefsChip === undefined, 'no source chips when refs is empty');
+
+const dangerousChatBlocks = buildChatResolutionBlocks({
+  title: DANGEROUS_TEXT,
+  diagnosis: DANGEROUS_TEXT,
+  steps: [{ tag: DANGEROUS_TEXT, text: DANGEROUS_TEXT }],
+  escalate: true,
+  escalation_path: DANGEROUS_TEXT,
+  suggested_channel_post: 'Escalate this.',
+  refs: [{ source: 'kb', title: 'KB ref' }],
+});
+const dangerousChatJson = JSON.stringify(dangerousChatBlocks);
+assert(!dangerousChatJson.includes(DANGEROUS_TEXT), 'chat resolution blocks escape dangerous mrkdwn fields');
+assert(dangerousChatJson.includes(DANGEROUS_ESCAPED), 'chat resolution blocks keep escaped dangerous text visible');
 
 // ── 19. buildChannelPostModal ─────────────────────────────────────────────────
 console.log('\n🔹 buildChannelPostModal');
@@ -1343,6 +1921,11 @@ assert(!progWritingOverSlack[1].elements[0].text.includes('searching Slack'),
 const longQ = 'Zapier integration is not syncing leads after the recent tenant migration and customer is asking when it will be fixed';
 const progLongQ = buildProgressBlocks(longQ, [{ tool: 'slack', phase: 'tool_start', count: null }]);
 assert(progLongQ[1].elements[0].text.includes('…'), 'long query truncated with …');
+
+const dangerousProgress = buildProgressBlocks(DANGEROUS_TEXT, [{ tool: 'slack', phase: 'tool_start', count: null }]);
+const dangerousProgressJson = JSON.stringify(dangerousProgress);
+assert(!dangerousProgressJson.includes(DANGEROUS_TEXT), 'progress blocks escape the live Slack query text');
+assert(dangerousProgressJson.includes(DANGEROUS_ESCAPED), 'progress blocks preserve escaped query text');
 
 // Multi-step: confluence done, jira 0 — slack and writing surface via context
 const progMulti = buildProgressBlocks('Zapier stopped syncing after API access enabled', [
@@ -1765,8 +2348,6 @@ assert(getCached('valid key') !== null, 'valid key in mixed array is written');
 // ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
 console.log('\n🔹 transient cache fields');
 
-import { stripTransient, withRequestContext } from './src/handlers/mention.js';
-
 const bakedResult = {
   issue_title: 'Zapier broke',
   integration_type: 'Zapier',
@@ -1955,6 +2536,155 @@ assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'ca
 
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
+
+// ── auto-answer ───────────────────────────────────────────────────────────────
+console.log('\n🔹 auto-answer');
+
+process.env.AUTO_ANSWER_SOURCE_CHANNEL = 'C_ASK_INTEGRATIONS';
+process.env.AUTO_ANSWER_TARGET_CHANNEL = 'C_BOT_DRAFTS';
+
+const procTs = new Set();
+
+// — filter rules —
+assert(shouldSkipMessage(null, { processedTs: procTs }) === true, 'null event is skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '1.0', text: 'hello world here' }, { processedTs: procTs }) === false, 'plain top-level msg passes');
+assert(shouldSkipMessage({ channel: 'C_OTHER', ts: '2.0', text: 'hello world here' }, { processedTs: procTs }) === true, 'wrong channel skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '3.0', text: 'short' }, { processedTs: procTs }) === true, 'too-short text skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '4.0', text: 'hello world here', subtype: 'message_changed' }, { processedTs: procTs }) === true, 'edited msg skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '5.0', text: 'hello world here', subtype: 'bot_message' }, { processedTs: procTs }) === true, 'bot_message subtype skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '6.0', text: 'hello world here', bot_id: 'B123' }, { processedTs: procTs }) === true, 'bot_id present skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '7.0', thread_ts: '6.5', text: 'hello world here' }, { processedTs: procTs }) === true, 'thread reply skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '8.0', thread_ts: '8.0', text: 'hello world here' }, { processedTs: procTs }) === false, 'thread parent (thread_ts === ts) passes');
+
+procTs.add('9.0');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '9.0', text: 'hello world here' }, { processedTs: procTs }) === true, 'already-processed ts deduped');
+
+// — block-kit shape —
+const sampleResult = {
+  issue_title: 'Zapier API access',
+  confidence: 'high',
+  customer_message: 'Hi customer, here is the fix.',
+  findings_summary: { diagnosis: 'API access disabled at backend.' },
+  agent_steps: [
+    { num: 1, title: 'Enable API access', detail: 'Toggle in admin settings.', tag: 'action' },
+    { num: 2, title: 'Verify token', detail: 'Reissue if needed.', tag: 'verify' },
+  ],
+  sources_used: ['slack', 'kb'],
+};
+const aaBlocks = buildAutoAnswerBlocks({
+  originalUrl: 'https://servicetitan.slack.com/archives/C_ASK_INTEGRATIONS/p123',
+  sourceChannelId: 'C_ASK_INTEGRATIONS',
+  originalUserId: 'U999',
+  query: 'Customer says Zapier broke after migration',
+  result: sampleResult,
+});
+assert(Array.isArray(aaBlocks), 'buildAutoAnswerBlocks returns array');
+assert(aaBlocks.length > 0 && aaBlocks.length < 50, 'block count is within Slack 50-block limit');
+const firstCtx = JSON.stringify(aaBlocks[0]);
+assert(firstCtx.includes('View original') && firstCtx.includes('U999') && firstCtx.includes('C_ASK_INTEGRATIONS'), 'first block has link, author, and source channel');
+const allText = JSON.stringify(aaBlocks);
+assert(allText.includes('Zapier API access'), 'issue title rendered');
+assert(allText.includes('Diagnosis'), 'diagnosis section rendered');
+assert(allText.includes('Draft email'), 'customer_message section rendered');
+assert(allText.includes('Suggested steps'), 'steps section rendered');
+assert(allText.includes('Enable API access'), 'first step rendered');
+assert(allText.includes('High confidence'), 'confidence rendered');
+assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
+
+const dangerousAutoAnswerBlocks = buildAutoAnswerBlocks({
+  query: DANGEROUS_TEXT,
+  result: {
+    confidence: 'medium',
+    issue_title: 'Safe title',
+    sources_used: [DANGEROUS_TEXT],
+  },
+});
+const dangerousAutoAnswerJson = JSON.stringify(dangerousAutoAnswerBlocks);
+assert(!dangerousAutoAnswerJson.includes(DANGEROUS_TEXT), 'auto-answer blocks escape dangerous source chips and mrkdwn text');
+assert(dangerousAutoAnswerJson.includes(DANGEROUS_ESCAPED), 'auto-answer blocks keep escaped dangerous text visible');
+
+// graceful with missing fields
+const minimalBlocks = buildAutoAnswerBlocks({
+  query: 'q',
+  result: { confidence: 'low' },
+});
+assert(Array.isArray(minimalBlocks) && minimalBlocks.length >= 2, 'works with minimal result object (no crash)');
+
+// — auto-answer docs/config expectations —
+const readmeText = await readFile('README.md', 'utf-8');
+const envExampleText = await readFile('.env.example', 'utf-8');
+assert(readmeText.includes('message.channels'), 'README documents message.channels for auto-answer');
+assert(readmeText.includes('channels:read'), 'README documents channels:read for auto-answer');
+assert(readmeText.includes('channels:history'), 'README documents channels:history for auto-answer');
+assert(envExampleText.includes('AUTO_ANSWER_ENABLED=false'), '.env.example keeps auto-answer disabled by default');
+
+// — startup self-check (verifyChannelAccess): turns silent failure into a loud warning —
+function makeLogger() {
+  const warns = [];
+  const infos = [];
+  return { warn: (m) => warns.push(m), info: (m) => infos.push(m), warns, infos };
+}
+
+const memberLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => ({ ok: true, channel: { is_member: true } }) } },
+  'C_SRC', memberLog,
+);
+assert(memberLog.warns.length === 0 && memberLog.infos.some((m) => m.includes('access verified')), 'member channel verifies with no warning');
+
+const notMemberLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => ({ ok: true, channel: { is_member: false } }) } },
+  'C_SRC', notMemberLog,
+);
+assert(notMemberLog.warns.some((m) => m.includes('NOT a member')), 'non-member channel warns to invite the bot');
+
+const scopeLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('missing_scope'); e.data = { error: 'missing_scope', needed: 'channels:history' }; throw e; } } },
+  'C_SRC', scopeLog,
+);
+assert(scopeLog.warns.some((m) => m.includes('channels:history')), 'missing_scope names the needed scope');
+
+const missingScopeLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('missing_scope'); e.data = { error: 'missing_scope', needed: 'channels:read' }; throw e; } } },
+  'C_SRC',
+  missingScopeLog,
+);
+assert(missingScopeLog.warns.some((m) => m.includes('message.channels')), 'auto-answer missing-scope warning mentions message.channels event setup');
+
+const notFoundLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('channel_not_found'); e.data = { error: 'channel_not_found' }; throw e; } } },
+  'BADID', notFoundLog,
+);
+assert(notFoundLog.warns.some((m) => m.includes('not found')), 'channel_not_found warns about bad channel ID');
+
+delete process.env.AUTO_ANSWER_SOURCE_CHANNEL;
+delete process.env.AUTO_ANSWER_TARGET_CHANNEL;
+
+// ── mention handler event-boundary catch ─────────────────────────────────────
+console.log('\n🔹 mention handler event-boundary catch');
+
+let mentionCallback;
+const mentionPosts = [];
+const mentionLogs = [];
+registerMentionHandler({
+  event: (_name, cb) => { mentionCallback = cb; },
+}, {
+  dedupeTtlMs: 0,
+  queryHandler: async () => { throw new Error('forced handler failure'); },
+});
+await mentionCallback({
+  event: { channel: 'C123', user: 'U123', ts: '123.456', text: '<@UBOT> Zapier broken' },
+  body: { event_id: 'Ev123' },
+  client: { chat: { postMessage: async (payload) => { mentionPosts.push(payload); } } },
+  logger: { warn: (m) => mentionLogs.push(m), error: (m) => mentionLogs.push(m), info: () => {} },
+});
+assert(mentionPosts.length === 1, 'mention top-level catch posts fallback');
+assert(mentionPosts[0].thread_ts === '123.456', 'mention fallback posts in the request thread');
+assert(JSON.stringify(mentionLogs).includes('unhandled failure'), 'mention top-level catch logs failure');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

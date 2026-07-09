@@ -711,29 +711,39 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   }
 }
 
-export function registerMentionHandler(app) {
+export function registerMentionHandler(app, { queryHandler = handleQuery, dedupeTtlMs = 60_000 } = {}) {
   const _inFlight = new Set();
 
-  app.event('app_mention', async ({ event, client, logger }) => {
+  app.event('app_mention', async ({ event, body, client, logger }) => {
     if (event.channel_type === 'im' || event.channel.startsWith('D')) return;
-    if (_inFlight.has(event.ts)) {
-      logger.warn(`[mention] Duplicate event ${event.ts} — skipping`);
+    const eventKey = body?.event_id ?? event.ts;
+    if (_inFlight.has(eventKey)) {
+      logger.warn(`[mention] Duplicate event ${eventKey} — skipping`);
       return;
     }
-    _inFlight.add(event.ts);
+    _inFlight.add(eventKey);
 
     logger.info(`[mention] ${event.user} in ${event.channel}: ${event.text?.slice(0, 80)}`);
 
     try {
-      await handleQuery({
+      await queryHandler({
         rawText:   event.text ?? '',
         channelId: event.channel,
         threadTs:  event.thread_ts ?? event.ts,
         client,
         userId:    event.user,
       });
+    } catch (err) {
+      logger.error?.(`[mention] unhandled failure event=${eventKey} channel=${event.channel} ts=${event.ts} user=${event.user}: ${err.message}`);
+      await client.chat.postMessage({
+        channel: event.channel,
+        thread_ts: event.thread_ts ?? event.ts,
+        text: 'I hit an internal error handling this request. Please retry or escalate manually.',
+      }).catch((postErr) => {
+        logger.error?.(`[mention] failed to post fallback for event=${eventKey}: ${postErr.message}`);
+      });
     } finally {
-      setTimeout(() => _inFlight.delete(event.ts), 60_000);
+      setTimeout(() => _inFlight.delete(eventKey), dedupeTtlMs);
     }
   });
 }

@@ -15,10 +15,11 @@ import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deleteCache } from './cache.js';
 import { getFeedbackChannelId } from '../utils/feedback-channel.js';
+import { escapeMrkdwn } from './mrkdwn.js';
 
-const FEEDBACK_DIR = join(process.cwd(), 'data');
-const FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
-const PENDING_FILE = join(FEEDBACK_DIR, 'feedback-pending.json');
+let FEEDBACK_DIR = join(process.cwd(), 'data');
+let FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
+let PENDING_FILE = join(FEEDBACK_DIR, 'feedback-pending.json');
 const MAX_ACTIVE = 500;
 const MAX_PENDING = 200;
 
@@ -28,6 +29,12 @@ let _pendingCache = null;
 
 // Single write queue for both files — prevents any concurrent write races.
 let _writeQueue = Promise.resolve();
+
+function enqueueWrite(fn) {
+  const job = _writeQueue.then(fn, fn);
+  _writeQueue = job.catch(() => {});
+  return job;
+}
 
 // ── Disk I/O helpers ──────────────────────────────────────────────────────
 
@@ -75,6 +82,15 @@ async function persistPending(entries) {
   await writeJsonAtomic(PENDING_FILE, entries);
 }
 
+export function _setFeedbackStorageForTest({ dir }) {
+  FEEDBACK_DIR = dir;
+  FEEDBACK_FILE = join(FEEDBACK_DIR, 'feedback.json');
+  PENDING_FILE = join(FEEDBACK_DIR, 'feedback-pending.json');
+  _activeCache = null;
+  _pendingCache = null;
+  _writeQueue = Promise.resolve();
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 /**
@@ -102,22 +118,15 @@ export async function saveFeedback(entry) {
     reviewChannelId: getFeedbackChannelId(),
   };
 
-  _writeQueue = _writeQueue
-    .then(async () => {
-      const pending = await loadPending();
-      pending.push(record);
-      // Cap at MAX_PENDING — silently evict oldest
-      if (pending.length > MAX_PENDING) {
-        pending.splice(0, pending.length - MAX_PENDING);
-      }
-      _pendingCache = pending;
-      await persistPending(pending);
-    })
-    .catch((err) => {
-      console.error('[feedback] Pending write failed:', err.message);
-    });
-
-  await _writeQueue;
+  await enqueueWrite(async () => {
+    const pending = [...await loadPending()];
+    pending.push(record);
+    if (pending.length > MAX_PENDING) {
+      pending.splice(0, pending.length - MAX_PENDING);
+    }
+    await persistPending(pending);
+    _pendingCache = pending;
+  });
   return record;
 }
 
@@ -152,20 +161,20 @@ export async function notifyFeedbackChannel(client, record) {
           type: 'section',
           fields: [
             { type: 'mrkdwn', text: `*Agent:*\n<@${record.agentId}>` },
-            { type: 'mrkdwn', text: `*Integration:*\n${record.integrationType}` },
+            { type: 'mrkdwn', text: `*Integration:*\n${escapeMrkdwn(record.integrationType)}` },
           ],
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Original query:*\n>${record.query}` },
+          text: { type: 'mrkdwn', text: `*Original query:*\n>${escapeMrkdwn(record.query)}` },
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Bot said:*\n>${record.issueTitle}` },
+          text: { type: 'mrkdwn', text: `*Bot said:*\n>${escapeMrkdwn(record.issueTitle)}` },
         },
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: `*Agent's correction:*\n>${record.correction}` },
+          text: { type: 'mrkdwn', text: `*Agent's correction:*\n>${escapeMrkdwn(record.correction)}` },
         },
         {
           type: 'actions',
@@ -199,22 +208,21 @@ export async function notifyFeedbackChannel(client, record) {
   }
 
   // Update pending entry with message ts so action handlers can update it
-  _writeQueue = _writeQueue
-    .then(async () => {
-      const pending = await loadPending();
-      const idx = pending.findIndex((e) => e.id === record.id);
-      if (idx !== -1) {
-        pending[idx].reviewMessageTs = messageTs;
-        pending[idx].reviewChannelId = getFeedbackChannelId();
-        _pendingCache = pending;
-        await persistPending(pending);
-      }
-    })
-    .catch((err) => {
-      console.error('[feedback] Failed to update pending entry with messageTs:', err.message);
-    });
-
-  await _writeQueue;
+  await enqueueWrite(async () => {
+    const pending = [...await loadPending()];
+    const idx = pending.findIndex((e) => e.id === record.id);
+    if (idx !== -1) {
+      pending[idx] = {
+        ...pending[idx],
+        reviewMessageTs: messageTs,
+        reviewChannelId: getFeedbackChannelId(),
+      };
+      await persistPending(pending);
+      _pendingCache = pending;
+    }
+  }).catch((err) => {
+    console.error('[feedback] Failed to update pending entry with messageTs:', err.message);
+  });
 }
 
 /**
@@ -227,43 +235,29 @@ export async function notifyFeedbackChannel(client, record) {
 export async function approveFeedback(id) {
   let approved = null;
 
-  _writeQueue = _writeQueue
-    .then(async () => {
-      const pending = await loadPending();
-      const idx = pending.findIndex((e) => e.id === id);
-      if (idx === -1) return; // Already processed — idempotent
+  await enqueueWrite(async () => {
+    const pending = [...await loadPending()];
+    const idx = pending.findIndex((e) => e.id === id);
+    if (idx === -1) return;
 
-      const record = pending[idx];
-
-      // Persist to active FIRST. If loadActive/persistActive throws (e.g. a
-      // corrupt feedback.json — readJsonArray deliberately rethrows), we bail
-      // out here with the entry STILL in pending, so it's recoverable. Removing
-      // from pending before the active write could lose the entry entirely.
-      const active = await loadActive();
-      if (!active.some((e) => e.id === id)) {
-        active.push(record);
-        if (active.length > MAX_ACTIVE) {
-          active.splice(0, active.length - MAX_ACTIVE);
-        }
-        _activeCache = active;
-        await persistActive(active);
+    const record = pending[idx];
+    const active = [...await loadActive()];
+    if (!active.some((e) => e.id === id)) {
+      active.push(record);
+      if (active.length > MAX_ACTIVE) {
+        active.splice(0, active.length - MAX_ACTIVE);
       }
+      await persistActive(active);
+      _activeCache = active;
+    }
 
-      // Active is safely written — now remove from pending.
-      pending.splice(idx, 1);
-      _pendingCache = pending;
-      await persistPending(pending);
+    pending.splice(idx, 1);
+    await persistPending(pending);
+    _pendingCache = pending;
 
-      approved = record;
-
-      // Invalidate response cache for this query
-      deleteCache(record.query);
-    })
-    .catch((err) => {
-      console.error('[feedback] approveFeedback write failed:', err.message);
-    });
-
-  await _writeQueue;
+    approved = record;
+    deleteCache(record.query);
+  });
   return approved;
 }
 
@@ -277,22 +271,16 @@ export async function approveFeedback(id) {
 export async function rejectFeedback(id) {
   let rejected = null;
 
-  _writeQueue = _writeQueue
-    .then(async () => {
-      const pending = await loadPending();
-      const idx = pending.findIndex((e) => e.id === id);
-      if (idx === -1) return; // Already processed — idempotent
+  await enqueueWrite(async () => {
+    const pending = [...await loadPending()];
+    const idx = pending.findIndex((e) => e.id === id);
+    if (idx === -1) return;
 
-      rejected = pending[idx];
-      pending.splice(idx, 1);
-      _pendingCache = pending;
-      await persistPending(pending);
-    })
-    .catch((err) => {
-      console.error('[feedback] rejectFeedback write failed:', err.message);
-    });
-
-  await _writeQueue;
+    rejected = pending[idx];
+    pending.splice(idx, 1);
+    await persistPending(pending);
+    _pendingCache = pending;
+  });
   return rejected;
 }
 

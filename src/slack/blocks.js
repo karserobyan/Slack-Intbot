@@ -1,4 +1,6 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
+import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
+import { classifySourceRef, filterRefsForRole } from './source-policy.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -23,6 +25,18 @@ const HEADER_MAX = 140;   // headroom under 150
 function clamp(str, max = SECTION_MAX) {
   const s = String(str ?? '');
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function joinEscaped(values = []) {
+  return values.map((value) => escapeMrkdwn(value)).join(', ');
+}
+
+function renderEscapedCode(value) {
+  return `\`${escapeMrkdwn(value)}\``;
+}
+
+function encodeActionText(value) {
+  return encodeURIComponent(String(value ?? ''));
 }
 
 /**
@@ -64,11 +78,17 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const atlassianRefs = data.atlassian_refs ?? [];
   const kbRefs        = data.kb_refs        ?? [];
 
-  // Sensitive refs are hidden from CSAs; Specialists see everything
-  const isSpecialist  = role === 'specialist';
-  const visibleSlack      = isSpecialist ? slackRefs     : slackRefs.filter(r => !r.sensitive);
-  const visibleAtlassian  = isSpecialist ? atlassianRefs : atlassianRefs.filter(r => !r.sensitive);
-  const hiddenCount   = (slackRefs.length - visibleSlack.length) + (atlassianRefs.length - visibleAtlassian.length);
+  const isSpecialist = role === 'specialist';
+  const classifiedSlack = slackRefs.map(classifySourceRef);
+  const classifiedAtlassian = atlassianRefs.map(classifySourceRef);
+  const classifiedKb = kbRefs.map(classifySourceRef);
+  const visibleSlack = filterRefsForRole(classifiedSlack, role);
+  const visibleAtlassian = filterRefsForRole(classifiedAtlassian, role);
+  const visibleKb = filterRefsForRole(classifiedKb, role);
+  const hiddenCount =
+    (classifiedSlack.length - visibleSlack.length) +
+    (classifiedAtlassian.length - visibleAtlassian.length) +
+    (classifiedKb.length - visibleKb.length);
 
   // 1. Header
   blocks.push({
@@ -78,18 +98,20 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   blocks.push({ type: 'divider' });
 
   // 2. Compact info line
-  const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
+  const sourcesText = joinEscaped(data.sources_used ?? []) || 'none';
   let infoText;
   if (data.escalate_decision) {
     const ed = data.escalate_decision;
     const channel = data.channel_recommendation?.channel ?? 'ask-integrations';
     const reason = (data.channel_recommendation?.reason ?? ed.reason ?? '').slice(0, 120);
+    const safeChannel = escapeMrkdwn(channel);
+    const safeReason = escapeMrkdwn(reason);
     if (ed.should_escalate) {
-      infoText = `📢 Post in #${channel} · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `📢 Post in #${safeChannel} · ${conf.icon} ${conf.label} · ${safeReason}`;
     } else if (data.confidence === 'low' || data.confidence === 'medium') {
-      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${safeReason}`;
     } else {
-      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${safeReason}`;
     }
   } else {
     infoText = `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}`;
@@ -102,7 +124,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (data.findings_summary?.diagnosis) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `🔍 _${data.findings_summary.diagnosis}_` }],
+      elements: [{ type: 'mrkdwn', text: `🔍 _${escapeMrkdwn(data.findings_summary.diagnosis)}_` }],
     });
   }
 
@@ -110,7 +132,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
   if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
   if (visibleSlack.length > 0)                             chips.push('💬 Slack');
-  if (kbRefs.length > 0)                                   chips.push('📖 KB');
+  if (visibleKb.length > 0)                                chips.push('📖 KB');
   if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
   if (chips.length > 0) {
     blocks.push({
@@ -123,7 +145,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (data.customer_message) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `💬 _"${clamp(data.customer_message)}"_` },
+      text: { type: 'mrkdwn', text: `💬 _"${clamp(escapeMrkdwn(data.customer_message))}"_` },
     });
   }
 
@@ -136,8 +158,9 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${clamp(step.title, 200)}*  \`${step.tag}\`\n`;
-      const detailRaw = step.detail ?? '';
+      const safeTag = renderEscapedCode(step.tag ?? 'step');
+      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*  ${safeTag}\n`;
+      const detailRaw = escapeMrkdwn(step.detail);
       const budget = 2900 - prefix.length;
       const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
       blocks.push({
@@ -155,14 +178,14 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
       action_id: 'wrong_answer_modal',
       style: 'danger',
       value: JSON.stringify({
-        query: (data._originalQuery ?? '').slice(0, 400),
-        issueTitle: (data.issue_title ?? '').slice(0, 100),
-        integrationType: (data.integration_type ?? '').slice(0, 50),
+        query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
+        issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
+        integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
       }),
     },
   ];
 
-  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + kbRefs.length;
+  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + visibleKb.length;
   if (totalVisibleRefs > 0) {
     actionElements.push({
       type: 'button',
@@ -171,7 +194,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
       value: _buildSourcesButtonValue(
         visibleSlack,
         visibleAtlassian,
-        kbRefs,
+        visibleKb,
         data.findings_summary?.diagnosis ?? null,
       ),
     });
@@ -256,12 +279,15 @@ export function buildSessionCard() {
  * Builds Block Kit blocks for the accounting topic redirect.
  */
 export function buildAccountingRedirectBlocks(query) {
+  const q = String(query ?? '');
+  const preview = q.slice(0, 200);
+  const safePreview = escapeMrkdwn(`${preview}${q.length > 200 ? '…' : ''}`);
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*⚠️ This question is outside this team's scope.*\n\nIt looks like your question is about an *accounting integration* (e.g. QuickBooks, Sage Intacct, NetSuite, Xero, or similar). Accounting integrations are handled by a different team.\n\nPlease post your question in ${ACCOUNTING_REDIRECT_CHANNEL} and tag the accounting integrations team there. They'll be able to help you out!\n\n_Original question: "${query.slice(0, 200)}${query.length > 200 ? '…' : ''}"_`,
+        text: `*⚠️ This question is outside this team's scope.*\n\nIt looks like your question is about an *accounting integration* (e.g. QuickBooks, Sage Intacct, NetSuite, Xero, or similar). Accounting integrations are handled by a different team.\n\nPlease post your question in ${ACCOUNTING_REDIRECT_CHANNEL} and tag the accounting integrations team there. They'll be able to help you out!\n\n_Original question: "${safePreview}"_`,
       },
     },
     {
@@ -296,12 +322,15 @@ export function buildThinkingBlocks(_query) {
  * Builds an error block for unexpected failures.
  */
 export function buildErrorBlocks(query) {
+  const q = String(query ?? '');
+  const preview = q.slice(0, 120);
+  const safePreview = escapeMrkdwn(`${preview}${q.length > 120 ? '…' : ''}`);
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
+        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${safePreview}"_`,
       },
     },
     {
@@ -330,7 +359,7 @@ export function buildFeedbackModal(context) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*Original query:*\n>${context.query || 'N/A'}\n\n*Bot answered:*\n>${context.issueTitle || 'N/A'} (${context.integrationType || 'N/A'})`,
+          text: `*Original query:*\n>${escapeMrkdwn(context.query || 'N/A')}\n\n*Bot answered:*\n>${escapeMrkdwn(context.issueTitle || 'N/A')} (${escapeMrkdwn(context.integrationType || 'N/A')})`,
         },
       },
       { type: 'divider' },
@@ -501,7 +530,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
   if (diagnosis) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*🔍 Root Cause*\n${diagnosis}`) },
+      text: { type: 'mrkdwn', text: clamp(`*🔍 Root Cause*\n${escapeMrkdwn(diagnosis)}`) },
     });
     blocks.push({ type: 'divider' });
   }
@@ -514,7 +543,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of slack_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.channel}_`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}\n  _${escapeMrkdwn(ref.channel)}_`) },
       });
     }
   }
@@ -527,7 +556,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of atlassian_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}`) },
       });
     }
   }
@@ -540,7 +569,7 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
     for (const ref of kb_refs) {
       blocks.push({
         type: 'section',
-        text: { type: 'mrkdwn', text: clamp(`• <${ref.url}|${ref.title}>\n  _${ref.snippet}_`) },
+        text: { type: 'mrkdwn', text: clamp(`• ${safeSlackLink(ref.url, ref.title)}\n  _${escapeMrkdwn(ref.snippet)}_`) },
       });
     }
   }
@@ -566,6 +595,8 @@ const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', sl
 export function buildChatResolutionBlocks(data) {
   const blocks = [];
   const isEscalation = data.escalate === true;
+  const safeTitle = clamp(escapeMrkdwn(data.title), 200);
+  const safeDiagnosis = escapeMrkdwn(data.diagnosis);
 
   blocks.push({
     type: 'context',
@@ -574,13 +605,13 @@ export function buildChatResolutionBlocks(data) {
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: clamp(`*${clamp(data.title, 200)}*\n_${data.diagnosis}_`) },
+    text: { type: 'mrkdwn', text: clamp(`*${safeTitle}*\n_${safeDiagnosis}_`) },
   });
 
   if (isEscalation && data.escalation_path) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${data.escalation_path}` }],
+      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${escapeMrkdwn(data.escalation_path)}` }],
     });
   }
 
@@ -588,7 +619,7 @@ export function buildChatResolutionBlocks(data) {
     const circle = TAG_CIRCLE[step.tag] ?? '⚪';
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`${circle} \`${step.tag}\` ${step.text}`) },
+      text: { type: 'mrkdwn', text: clamp(`${circle} ${renderEscapedCode(step.tag ?? 'step')} ${escapeMrkdwn(step.text)}`) },
     });
   }
 
@@ -610,7 +641,11 @@ export function buildChatResolutionBlocks(data) {
       text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
       action_id: 'wrong_answer_modal',
       style: 'danger',
-      value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
+      value: JSON.stringify({
+        query: encodeActionText((data.title ?? '').slice(0, 400)),
+        issueTitle: encodeActionText((data.title ?? '').slice(0, 100)),
+        integrationType: '',
+      }),
     },
   ];
 
@@ -631,6 +666,78 @@ export function buildChatResolutionBlocks(data) {
   });
 
   blocks.push({ type: 'actions', elements: actionElements });
+
+  return blocks;
+}
+
+/**
+ * Compact block-kit for the auto-answer drafts channel.
+ * Layout: link to original + author → question → diagnosis → draft email →
+ * numbered steps → footer (confidence + sources). Stays well under Slack's
+ * 50-block limit even with the maximum 8 steps.
+ */
+export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUserId, query, result }) {
+  const blocks = [];
+  const conf = CONFIDENCE_META[result.confidence] ?? CONFIDENCE_META.medium;
+
+  const headerParts = ['🔔 New post'];
+  if (sourceChannelId) headerParts.push(`in <#${sourceChannelId}>`);
+  if (originalUserId) headerParts.push(`by <@${originalUserId}>`);
+  if (originalUrl) headerParts.push(`· <${originalUrl}|View original>`);
+  if (originalUrl) headerParts[headerParts.length - 1] = `· ${safeSlackLink(originalUrl, 'View original')}`;
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: headerParts.join(' ') }],
+  });
+
+  const qTrim = query.length > 300 ? `${query.slice(0, 300)}…` : query;
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
+  });
+
+  if (result.findings_summary?.diagnosis) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: clamp(`*Diagnosis:* ${escapeMrkdwn(result.findings_summary.diagnosis)}`) },
+    });
+  }
+
+  if (result.customer_message) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: clamp(`*📧 Draft email*\n${escapeMrkdwn(result.customer_message)}`) },
+    });
+  }
+
+  const steps = Array.isArray(result.agent_steps) ? result.agent_steps.slice(0, 8) : [];
+  if (steps.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🔧 Suggested steps*' },
+    });
+    for (const step of steps) {
+      const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+      const num = step.num ? `${step.num}. ` : '';
+      const title = step.title ? `*${num}${escapeMrkdwn(step.title)}*` : `*${num}${escapeMrkdwn(step.tag ?? 'step')}*`;
+      const detail = step.detail ? `\n${escapeMrkdwn(step.detail)}` : '';
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: clamp(`${circle} ${title}${detail}`) },
+      });
+    }
+  }
+
+  const sourceChips = (result.sources_used ?? []).map((source) => renderEscapedCode(source)).join('  ·  ');
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `${conf.icon} ${conf.label} confidence${sourceChips ? `  ·  Sources: ${sourceChips}` : ''}`,
+    }],
+  });
 
   return blocks;
 }
@@ -692,7 +799,7 @@ export function buildProgressBlocks(query, steps) {
   if (isWriting) {
     statusLine = '_Now: writing answer…_';
   } else if (slackSearching) {
-    const q = truncateQuery(query);
+    const q = escapeMrkdwn(truncateQuery(query));
     statusLine = q ? `_Now: searching Slack for "${q}"_` : '_Now: searching Slack…_';
   }
 

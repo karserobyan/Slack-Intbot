@@ -1,5 +1,7 @@
+import { escapeMrkdwn } from './mrkdwn.js';
+
 export function buildChannelPostModal(text) {
-  const safeText = text || '_No channel post text was generated._';
+  const safeText = text ? escapeMrkdwn(text) : '_No channel post text was generated._';
   return {
     type: 'modal',
     title: { type: 'plain_text', text: '📋 Channel post', emoji: true },
