@@ -331,3 +331,17 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Task reviewer approved the full `62ed209..f295efc` diff. Controller reran `node test.js`; result was 587 passed, 0 failed.
 
 **Decision / Follow-up:** Task 5 complete. Proceed to Task 6 mention handler event-boundary catch.
+
+## 2026-07-06 — Task 6 Mention Event Boundary Catch Implemented
+
+**Intent:** Ensure unexpected mention handling failures are logged and visible instead of bubbling to Bolt.
+
+**Action Taken:** Added a top-level catch around mention query handling and dependency injection for focused tests.
+
+**Files Touched:**
+- `src/handlers/mention.js`
+- `test.js`
+
+**Verification:** `node test.js` passed with 0 failures.
+
+**Decision / Follow-up:** Continue to auto-answer configuration validation and docs.

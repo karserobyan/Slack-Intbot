@@ -2180,7 +2180,7 @@ assert(getCached('valid key') !== null, 'valid key in mixed array is written');
 // ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
 console.log('\n🔹 transient cache fields');
 
-import { stripTransient, withRequestContext } from './src/handlers/mention.js';
+import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 
 const bakedResult = {
   issue_title: 'Zapier broke',
@@ -2370,6 +2370,28 @@ assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'ca
 
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
+
+// ── mention handler event-boundary catch ─────────────────────────────────────
+console.log('\n🔹 mention handler event-boundary catch');
+
+let mentionCallback;
+const mentionPosts = [];
+const mentionLogs = [];
+registerMentionHandler({
+  event: (_name, cb) => { mentionCallback = cb; },
+}, {
+  dedupeTtlMs: 0,
+  queryHandler: async () => { throw new Error('forced handler failure'); },
+});
+await mentionCallback({
+  event: { channel: 'C123', user: 'U123', ts: '123.456', text: '<@UBOT> Zapier broken' },
+  body: { event_id: 'Ev123' },
+  client: { chat: { postMessage: async (payload) => { mentionPosts.push(payload); } } },
+  logger: { warn: (m) => mentionLogs.push(m), error: (m) => mentionLogs.push(m), info: () => {} },
+});
+assert(mentionPosts.length === 1, 'mention top-level catch posts fallback');
+assert(mentionPosts[0].thread_ts === '123.456', 'mention fallback posts in the request thread');
+assert(JSON.stringify(mentionLogs).includes('unhandled failure'), 'mention top-level catch logs failure');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
