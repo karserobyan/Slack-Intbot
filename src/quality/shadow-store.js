@@ -94,9 +94,13 @@ async function enforceByteLimit(file, retention, now) {
   }
 }
 
+function recoverWriteQueue() {
+  return _writeQueue.catch(() => {});
+}
+
 export function appendQualityShadowRecord(record, { retention = getQualityShadowRetention(), now = new Date() } = {}) {
   const sanitized = sanitizeShadowRecord(record);
-  _writeQueue = _writeQueue.catch(() => {}).then(async () => {
+  _writeQueue = recoverWriteQueue().then(async () => {
     const records = pruneRecords([...(await readRecords(_shadowFile)), sanitized], retention, now);
     await writeJsonlAtomic(_shadowFile, records);
     await enforceByteLimit(_shadowFile, retention, now);

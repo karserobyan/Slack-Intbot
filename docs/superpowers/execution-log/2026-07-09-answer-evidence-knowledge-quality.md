@@ -130,3 +130,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing imports/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/shadow-store.js`, as expected. After implementation, ran `node test.js`; result: 670 passed, 0 failed.
 
 **Decision / Follow-up:** Keep Task 4 as storage/audit infrastructure only. No mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed in this task.
+
+## 2026-07-09 - PR 1 Task 4 Review Fix: Shadow Queue Recovery
+
+**Intent:** Address review feedback that a failed shadow-store append must not poison the process-local write queue.
+
+**Action Taken:** Added a deterministic regression test that forces one shadow append to fail by pointing the store under a file path, then repoints the store to a valid temp JSONL file and verifies a later append succeeds in the same process. Named the shadow queue recovery boundary in `appendQualityShadowRecord` so failed writes are explicitly cleared before the next queued write starts.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 672 passed, 0 failed.
+
+**Decision / Follow-up:** Shadow storage remains metadata-only and sanitized. No mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed.

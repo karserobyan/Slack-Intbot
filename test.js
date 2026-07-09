@@ -2932,6 +2932,37 @@ assert(!shadowJson.includes('user4@example.com'), 'quality shadow store redacts 
 assert(!shadowJson.includes('xoxb-secret'), 'quality shadow store redacts Slack-like tokens');
 assert(!shadowJson.includes('raw source body raw source body raw source body'), 'quality shadow store avoids large raw snippets');
 
+const invalidShadowParent = join(qualityTempDir, 'not-a-directory');
+await writeFile(invalidShadowParent, 'plain file');
+_setQualityShadowFileForTest(join(invalidShadowParent, 'quality-shadow.jsonl'));
+let shadowAppendRejected = false;
+try {
+  await appendQualityShadowRecord({
+    createdAt: '2026-07-09T00:02:00.000Z',
+    answerId: 'ans_failed',
+    queryPreview: 'this write should fail',
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-09T00:02:00.000Z'),
+  });
+} catch {
+  shadowAppendRejected = true;
+}
+assert(shadowAppendRejected, 'quality shadow store surfaces failed append');
+
+const recoveredShadowFile = join(qualityTempDir, 'quality-shadow-recovered.jsonl');
+_setQualityShadowFileForTest(recoveredShadowFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-09T00:03:00.000Z',
+  answerId: 'ans_recovered',
+  queryPreview: 'later write succeeds after failure',
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-09T00:03:00.000Z'),
+});
+const recoveredShadowText = await readFile(recoveredShadowFile, 'utf-8');
+assert(recoveredShadowText.includes('ans_recovered'), 'quality shadow store recovers after failed append');
+
 await appendQualityAuditEvent({
   type: 'contract_created',
   actor: { type: 'bot', userId: 'U123', name: 'Bot User' },
