@@ -1,5 +1,6 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
+import { classifySourceRef, filterRefsForRole } from './source-policy.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -65,11 +66,12 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const atlassianRefs = data.atlassian_refs ?? [];
   const kbRefs        = data.kb_refs        ?? [];
 
-  // Sensitive refs are hidden from CSAs; Specialists see everything
-  const isSpecialist  = role === 'specialist';
-  const visibleSlack      = isSpecialist ? slackRefs     : slackRefs.filter(r => !r.sensitive);
-  const visibleAtlassian  = isSpecialist ? atlassianRefs : atlassianRefs.filter(r => !r.sensitive);
-  const hiddenCount   = (slackRefs.length - visibleSlack.length) + (atlassianRefs.length - visibleAtlassian.length);
+  const isSpecialist = role === 'specialist';
+  const classifiedSlack = slackRefs.map(classifySourceRef);
+  const classifiedAtlassian = atlassianRefs.map(classifySourceRef);
+  const visibleSlack = filterRefsForRole(classifiedSlack, role);
+  const visibleAtlassian = filterRefsForRole(classifiedAtlassian, role);
+  const hiddenCount = (classifiedSlack.length - visibleSlack.length) + (classifiedAtlassian.length - visibleAtlassian.length);
 
   // 1. Header
   blocks.push({

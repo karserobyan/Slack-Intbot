@@ -287,3 +287,18 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** Task reviewer approved the full `9bbdcbe..61dd558` diff. Controller reran `node test.js`; result was 576 passed, 0 failed.
 
 **Decision / Follow-up:** Task 4 complete. Proceed to Task 5 source sensitivity policy.
+
+## 2026-07-06 — Task 5 Source Sensitivity Policy Implemented
+
+**Intent:** Stop relying only on model-provided sensitivity labels before rendering sources to CSAs.
+
+**Action Taken:** Added source classification and role filtering, then applied it in response rendering.
+
+**Files Touched:**
+- `src/slack/source-policy.js`
+- `src/slack/blocks.js`
+- `test.js`
+
+**Verification:** `node test.js` passed with 584 passed, 0 failed.
+
+**Decision / Follow-up:** Continue to Slack event-boundary failure handling.

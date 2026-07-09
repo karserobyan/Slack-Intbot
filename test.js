@@ -53,6 +53,7 @@ import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
+import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 
 let passed = 0;
 let failed = 0;
@@ -260,6 +261,22 @@ assert(safeSlackLink('https://slack.com/archives/C123/p456', 'Slack') === 'Slack
 assert(safeSlackLink('https://evil.test/x', 'Bad <label>') === 'Bad &lt;label&gt;', 'safeSlackLink rejects unknown hosts');
 assert(safeSlackLink('not a url', 'Broken <label>') === 'Broken &lt;label&gt;', 'safeSlackLink rejects invalid URLs');
 
+// ── Source sensitivity policy ────────────────────────────────────────────────
+console.log('\n🔹 Source sensitivity policy');
+
+const modelSensitive = classifySourceRef({ title: 'Normal', sensitive: true });
+assert(modelSensitive.sensitive === true, 'source policy preserves model sensitive flag');
+const backendSlack = classifySourceRef({ channel: '#backend-tools', title: 'Zapier fix' });
+assert(backendSlack.sensitive === true, 'backend Slack channels are sensitive');
+const incidentJira = classifySourceRef({ type: 'jira', title: 'INC-123 customer incident' });
+assert(incidentJira.sensitive === true, 'incident-like Jira refs are sensitive');
+const publicKb = classifySourceRef({ url: 'https://help.servicetitan.com/article', title: 'Public KB' });
+assert(publicKb.sensitive !== true, 'KB host is not marked sensitive by default');
+const csaRefs = filterRefsForRole([backendSlack, publicKb], 'csa');
+assert(csaRefs.length === 1 && csaRefs[0].title === 'Public KB', 'CSA refs filter sensitive refs');
+const specialistRefs = filterRefsForRole([backendSlack, publicKb], 'specialist');
+assert(specialistRefs.length === 2, 'Specialists see sensitive refs');
+
 const responseBlocks = buildResponseBlocks(sampleJson);
 assert(Array.isArray(responseBlocks), 'buildResponseBlocks returns array');
 assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response blocks count: ${responseBlocks.length} (≤50 limit)`);
@@ -437,6 +454,22 @@ const csaAllSensSrcBtn = csaAllSensBlocks.find(b => b.type === 'actions')?.eleme
 assert(csaAllSensSrcBtn === undefined, 'sensitivity CSA: sources button absent when all refs are sensitive');
 const csaAllSensChip = csaAllSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('specialist-only'));
 assert(csaAllSensChip !== undefined, 'sensitivity CSA: specialist-only hint still shown when all refs sensitive');
+
+const codeSensitiveBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [
+    { url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#backend-tools', title: 'Backend fix' },
+  ],
+  atlassian_refs: [],
+  kb_refs: [],
+  sources_used: ['slack'],
+}, { role: 'csa' });
+const codeSensitiveText = JSON.stringify(codeSensitiveBlocks);
+assert(codeSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only refs');
+assert(!codeSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only refs');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
