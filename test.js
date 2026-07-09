@@ -471,6 +471,37 @@ const codeSensitiveText = JSON.stringify(codeSensitiveBlocks);
 assert(codeSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only refs');
 assert(!codeSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only refs');
 
+const kbSensitiveBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive KB Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
+  ],
+  sources_used: ['kb'],
+}, { role: 'csa' });
+const kbSensitiveText = JSON.stringify(kbSensitiveBlocks);
+assert(kbSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only KB refs');
+assert(!kbSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only KB refs');
+
+const kbSensitiveSpecialistBlocks = buildResponseBlocks({
+  issue_title: 'Sensitive KB Source',
+  confidence: 'high',
+  customer_message: 'Hi [Name], done.',
+  agent_steps: [],
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
+  ],
+  sources_used: ['kb'],
+}, { role: 'specialist' });
+const kbSensitiveSpecialistText = JSON.stringify(kbSensitiveSpecialistBlocks);
+assert(kbSensitiveSpecialistText.includes('Diagnosis + Sources'), 'Specialist response still exposes sensitive KB refs');
+
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
 assert(redirectBlocks.length === 2, 'Redirect has 2 blocks');

@@ -69,9 +69,14 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   const isSpecialist = role === 'specialist';
   const classifiedSlack = slackRefs.map(classifySourceRef);
   const classifiedAtlassian = atlassianRefs.map(classifySourceRef);
+  const classifiedKb = kbRefs.map(classifySourceRef);
   const visibleSlack = filterRefsForRole(classifiedSlack, role);
   const visibleAtlassian = filterRefsForRole(classifiedAtlassian, role);
-  const hiddenCount = (classifiedSlack.length - visibleSlack.length) + (classifiedAtlassian.length - visibleAtlassian.length);
+  const visibleKb = filterRefsForRole(classifiedKb, role);
+  const hiddenCount =
+    (classifiedSlack.length - visibleSlack.length) +
+    (classifiedAtlassian.length - visibleAtlassian.length) +
+    (classifiedKb.length - visibleKb.length);
 
   // 1. Header
   blocks.push({
@@ -113,7 +118,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
   if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
   if (visibleSlack.length > 0)                             chips.push('💬 Slack');
-  if (kbRefs.length > 0)                                   chips.push('📖 KB');
+  if (visibleKb.length > 0)                                chips.push('📖 KB');
   if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
   if (chips.length > 0) {
     blocks.push({
@@ -165,7 +170,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     },
   ];
 
-  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + kbRefs.length;
+  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + visibleKb.length;
   if (totalVisibleRefs > 0) {
     actionElements.push({
       type: 'button',
@@ -174,7 +179,7 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
       value: _buildSourcesButtonValue(
         visibleSlack,
         visibleAtlassian,
-        kbRefs,
+        visibleKb,
         data.findings_summary?.diagnosis ?? null,
       ),
     });
