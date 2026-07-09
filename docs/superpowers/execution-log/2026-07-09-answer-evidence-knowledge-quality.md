@@ -47,3 +47,21 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran plan placeholder/scope scans. No unresolved plan placeholders were found. Ran `node test.js`; result: 617 passed, 0 failed.
 
 **Decision / Follow-up:** Ask the user to choose subagent-driven or inline execution after tests and commit are complete.
+
+## 2026-07-09 - PR 1 Task 1 Quality Flags And Privacy Helpers
+
+**Intent:** Add the first shadow-mode-only quality layer primitives without changing Slack answer rendering, answerer prompts, nominations, mention handling, or `knowledge.md` behavior.
+
+**Action Taken:** Added disabled-by-default quality feature flags and bounded shadow-retention config, privacy helpers for sanitized previews, stable hashes, quality IDs, and normalized comparison text, documented the env flags, and added focused coverage to `test.js`.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/privacy.js`
+- `.env.example`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing imports/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/config.js`, as expected. After implementation, ran `node test.js`; result: 630 passed, 0 failed.
+
+**Decision / Follow-up:** Keep PR 1 Task 1 strictly metadata/helper-only. Later tasks can consume these helpers for shadow-only evidence and quality metadata.

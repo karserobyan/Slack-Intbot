@@ -40,6 +40,7 @@ import {
 } from './src/slack/review-actions.js';
 import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
+import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
@@ -58,6 +59,8 @@ import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
+import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
+import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +76,15 @@ function assert(condition, label) {
     failed++;
   }
 }
+
+assert.deepEqual = (actual, expected, label) => {
+  try {
+    deepEqual(actual, expected);
+    assert(true, label);
+  } catch {
+    assert(false, label);
+  }
+};
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');
@@ -2685,6 +2697,58 @@ await mentionCallback({
 assert(mentionPosts.length === 1, 'mention top-level catch posts fallback');
 assert(mentionPosts[0].thread_ts === '123.456', 'mention fallback posts in the request thread');
 assert(JSON.stringify(mentionLogs).includes('unhandled failure'), 'mention top-level catch logs failure');
+
+// ── quality config/privacy ───────────────────────────────────────────────────
+console.log('\n🔹 quality config/privacy');
+
+const originalQualityEnv = {
+  QUALITY_LAYER_ENABLED: process.env.QUALITY_LAYER_ENABLED,
+  QUALITY_LAYER_SHADOW_MODE: process.env.QUALITY_LAYER_SHADOW_MODE,
+  QUALITY_SHADOW_MAX_RECORDS: process.env.QUALITY_SHADOW_MAX_RECORDS,
+  QUALITY_SHADOW_MAX_AGE_DAYS: process.env.QUALITY_SHADOW_MAX_AGE_DAYS,
+  QUALITY_SHADOW_MAX_BYTES: process.env.QUALITY_SHADOW_MAX_BYTES,
+};
+
+delete process.env.QUALITY_LAYER_ENABLED;
+delete process.env.QUALITY_LAYER_SHADOW_MODE;
+delete process.env.QUALITY_SHADOW_MAX_RECORDS;
+delete process.env.QUALITY_SHADOW_MAX_AGE_DAYS;
+delete process.env.QUALITY_SHADOW_MAX_BYTES;
+
+assert(isQualityLayerEnabled() === false, 'quality layer defaults disabled');
+assert(isQualityShadowMode() === true, 'quality shadow mode defaults true');
+assert.deepEqual(getQualityShadowRetention(), {
+  maxRecords: 2000,
+  maxAgeDays: 14,
+  maxBytes: 5 * 1024 * 1024,
+}, 'quality shadow retention defaults are fixed');
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
+process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
+process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
+
+assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
+assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
+assert.deepEqual(getQualityShadowRetention(), {
+  maxRecords: 3,
+  maxAgeDays: 2,
+  maxBytes: 1000,
+}, 'quality shadow retention reads env overrides');
+
+for (const [key, value] of Object.entries(originalQualityEnv)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+assert(sanitizePreview('  hello\nworld  ', 20) === 'hello world', 'sanitizePreview collapses whitespace');
+assert(sanitizePreview('secret '.repeat(50), 30).length <= 30, 'sanitizePreview clamps long text');
+assert(!sanitizePreview('xoxb-1234567890-secret').includes('xoxb-1234567890-secret'), 'sanitizePreview redacts Slack-like tokens');
+assert(hashValue('same input') === hashValue('same input'), 'hashValue is stable');
+assert(hashValue('same input') !== hashValue('different input'), 'hashValue changes with input');
+assert(makeQualityId('ans', new Date('2026-07-09T00:00:00.000Z')).startsWith('ans_20260709T000000000Z_'), 'makeQualityId includes prefix and timestamp');
+assert(normalizeForQuality(' Zapier API   Access! ') === 'zapier api access', 'normalizeForQuality lowercases and strips punctuation');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
