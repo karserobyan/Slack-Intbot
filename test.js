@@ -54,6 +54,7 @@ import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
+import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 
 let passed = 0;
 let failed = 0;
@@ -2179,8 +2180,6 @@ assert(getCached('valid key') !== null, 'valid key in mixed array is written');
 
 // ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
 console.log('\n🔹 transient cache fields');
-
-import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 
 const bakedResult = {
   issue_title: 'Zapier broke',
