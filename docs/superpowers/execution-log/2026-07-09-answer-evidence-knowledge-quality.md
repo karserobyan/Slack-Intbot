@@ -146,3 +146,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `node test.js`; result: 672 passed, 0 failed.
 
 **Decision / Follow-up:** Shadow storage remains metadata-only and sanitized. No mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed.
+
+## 2026-07-09 - PR 1 Task 4 Review Fix: Audit Actor Name Privacy
+
+**Intent:** Remove actor display names from audit events because names can be PII and are outside the approved audit surface.
+
+**Action Taken:** Added regression coverage that audit JSONL does not include the supplied actor name and does not persist an actor `name` field. Updated audit event sanitization to keep actor type, actor user ID, and an actor user hash, without storing the actor display name.
+
+**Files Touched:**
+
+- `src/quality/audit-log.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing audit privacy assertions first and ran `node test.js`; result: 672 passed, 2 failed out of 674 tests for actor name persistence. After implementation, ran `node test.js`; result: 674 passed, 0 failed.
+
+**Decision / Follow-up:** Audit logging remains metadata-only and sanitized. No mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed.

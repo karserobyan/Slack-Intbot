@@ -19,7 +19,7 @@ function sanitizeAuditEvent(event, now) {
     actor: {
       type: sanitizePreview(event.actor?.type ?? 'bot', 40),
       userId: sanitizePreview(event.actor?.userId ?? '', 80) || null,
-      name: sanitizePreview(event.actor?.name ?? '', 80) || null,
+      userHash: event.actor?.userId ? hashValue(event.actor.userId) : null,
     },
     entity: {
       type: sanitizePreview(event.entity?.type ?? '', 80),

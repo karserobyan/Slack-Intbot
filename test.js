@@ -2978,6 +2978,8 @@ const auditText = await readFile(auditFile, 'utf-8');
 assert(auditText.includes('contract_created'), 'quality audit stores event type');
 assert(auditText.includes('queryHash'), 'quality audit stores query hash');
 assert(!auditText.includes('Full customer query should become hash/preview only'), 'quality audit does not store raw query');
+assert(!auditText.includes('Bot User'), 'quality audit does not store actor names');
+assert(!auditText.includes('"name"'), 'quality audit omits actor name field');
 
 await rm(qualityTempDir, { recursive: true, force: true });
 
