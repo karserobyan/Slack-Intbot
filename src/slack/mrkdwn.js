@@ -15,7 +15,7 @@ export function safeSlackLink(url, label) {
   const safeLabel = escapeMrkdwn(label);
   try {
     const parsed = new URL(String(url ?? ''));
-    if (!ALLOWED_LINK_HOSTS.has(parsed.hostname)) return safeLabel;
+    if (parsed.protocol !== 'https:' || !ALLOWED_LINK_HOSTS.has(parsed.hostname)) return safeLabel;
     return `<${parsed.href}|${safeLabel}>`;
   } catch {
     return safeLabel;

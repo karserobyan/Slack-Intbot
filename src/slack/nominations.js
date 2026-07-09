@@ -156,7 +156,7 @@ export async function nominateResponse(client, record) {
   try {
     const msg = await client.chat.postMessage({
       channel: channelId,
-      text: `📝 Knowledge Nomination — ${record.integration}: ${record.issueTitle}`,
+      text: `📝 Knowledge Nomination — ${escapeMrkdwn(record.integration)}: ${escapeMrkdwn(record.issueTitle)}`,
       blocks: buildNominationBlocks(nomination),
     });
     nomination.reviewMessageTs = msg.ts;
@@ -199,13 +199,16 @@ export async function approveNomination(id, client, reviewerName = 'Moderator') 
   await persistPending();
 
   if (record.reviewMessageTs && client) {
+    const safeReviewerName = escapeMrkdwn(reviewerName);
+    const safeIntegration = escapeMrkdwn(record.integration);
+    const safeIssueTitle = escapeMrkdwn(record.issueTitle);
     await client.chat.update({
       channel: record.reviewChannelId,
       ts: record.reviewMessageTs,
-      text: `✅ Approved by ${reviewerName}`,
+      text: `✅ Approved by ${safeReviewerName}`,
       blocks: [{
         type: 'section',
-        text: { type: 'mrkdwn', text: `✅ *Approved by ${reviewerName}*\n_${record.id} — ${record.integration}: ${record.issueTitle}_` },
+        text: { type: 'mrkdwn', text: `✅ *Approved by ${safeReviewerName}*\n_${record.id} — ${safeIntegration}: ${safeIssueTitle}_` },
       }],
     }).catch((err) => console.warn('[nominations] Failed to update review card:', err.message));
   }
@@ -229,13 +232,16 @@ export async function rejectNomination(id, client, reviewerName = 'Moderator') {
   await persistPending();
 
   if (record.reviewMessageTs && client) {
+    const safeReviewerName = escapeMrkdwn(reviewerName);
+    const safeIntegration = escapeMrkdwn(record.integration);
+    const safeIssueTitle = escapeMrkdwn(record.issueTitle);
     await client.chat.update({
       channel: record.reviewChannelId,
       ts: record.reviewMessageTs,
-      text: `❌ Rejected by ${reviewerName}`,
+      text: `❌ Rejected by ${safeReviewerName}`,
       blocks: [{
         type: 'section',
-        text: { type: 'mrkdwn', text: `❌ *Rejected by ${reviewerName}*\n_${record.id} — ${record.integration}: ${record.issueTitle}_` },
+        text: { type: 'mrkdwn', text: `❌ *Rejected by ${safeReviewerName}*\n_${record.id} — ${safeIntegration}: ${safeIssueTitle}_` },
       }],
     }).catch((err) => console.warn('[nominations] Failed to update review card:', err.message));
   }

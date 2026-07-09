@@ -25,6 +25,7 @@ import { getHistory, appendToHistory, hasHistory, pruneConversations } from './s
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
+import { handleFeedbackSubmission } from './src/slack/feedback-submission.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
 import { buildNominationBlocks, nominateResponse, approveNomination, rejectNomination, _setStoreForTest } from './src/slack/nominations.js';
 import {
@@ -60,6 +61,8 @@ import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answ
 
 let passed = 0;
 let failed = 0;
+const DANGEROUS_TEXT = 'A&B <@U123> <https://evil.test|click>';
+const DANGEROUS_ESCAPED = 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;';
 
 function assert(condition, label) {
   if (condition) {
@@ -258,10 +261,11 @@ console.log('\n🔹 Block Kit Builders');
 // ── Slack mrkdwn safety ──────────────────────────────────────────────────────
 console.log('\n🔹 Slack mrkdwn safety');
 
-assert(escapeMrkdwn('A&B <@U123> <https://evil.test|click>') === 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;', 'escapeMrkdwn escapes Slack control chars');
+assert(escapeMrkdwn(DANGEROUS_TEXT) === DANGEROUS_ESCAPED, 'escapeMrkdwn escapes Slack control chars');
 assert(safeSlackLink('https://servicetitan.slack.com/archives/C123/p456', 'Safe <label>').includes('<https://servicetitan.slack.com/archives/C123/p456|Safe &lt;label&gt;'), 'safeSlackLink allows Slack host and escapes label');
 assert(safeSlackLink('https://slack.com/archives/C123/p456', 'Slack') === 'Slack', 'safeSlackLink rejects non-ServiceTitan Slack host');
 assert(safeSlackLink('https://evil.test/x', 'Bad <label>') === 'Bad &lt;label&gt;', 'safeSlackLink rejects unknown hosts');
+assert(safeSlackLink('http://help.servicetitan.com/article', 'KB') === 'KB', 'safeSlackLink rejects non-HTTPS allowlisted hosts');
 assert(safeSlackLink('not a url', 'Broken <label>') === 'Broken &lt;label&gt;', 'safeSlackLink rejects invalid URLs');
 
 // ── Source sensitivity policy ────────────────────────────────────────────────
@@ -275,10 +279,26 @@ const incidentJira = classifySourceRef({ type: 'jira', title: 'INC-123 customer 
 assert(incidentJira.sensitive === true, 'incident-like Jira refs are sensitive');
 const publicKb = classifySourceRef({ url: 'https://help.servicetitan.com/article', title: 'Public KB' });
 assert(publicKb.sensitive !== true, 'KB host is not marked sensitive by default');
+const sensitiveKb = classifySourceRef({ url: 'https://help.servicetitan.com/private', title: 'Customer incident runbook' });
+assert(sensitiveKb.sensitive === true, 'KB refs with sensitive titles stay sensitive');
+const spoofedKb = classifySourceRef({ url: 'https://evil.test/help.servicetitan.com/private', title: 'Customer incident runbook' });
+assert(spoofedKb.sensitive === true, 'substring-spoofed KB URL does not bypass sensitivity checks');
 const csaRefs = filterRefsForRole([backendSlack, publicKb], 'csa');
 assert(csaRefs.length === 1 && csaRefs[0].title === 'Public KB', 'CSA refs filter sensitive refs');
 const specialistRefs = filterRefsForRole([backendSlack, publicKb], 'specialist');
 assert(specialistRefs.length === 2, 'Specialists see sensitive refs');
+
+const dangerousResponseBlocks = buildResponseBlocks({
+  ...sampleJson,
+  confidence: 'low',
+  escalate_decision: { should_escalate: true, reason: DANGEROUS_TEXT },
+  channel_recommendation: { channel: DANGEROUS_TEXT, reason: DANGEROUS_TEXT },
+  agent_steps: [{ num: 1, title: 'Safe title', detail: 'Safe detail', tag: DANGEROUS_TEXT }],
+  sources_used: [DANGEROUS_TEXT],
+});
+const dangerousResponseJson = JSON.stringify(dangerousResponseBlocks);
+assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous sources, routing text, and step tags');
+assert(dangerousResponseJson.includes(DANGEROUS_ESCAPED), 'response blocks keep escaped dangerous text visible');
 
 const responseBlocks = buildResponseBlocks(sampleJson);
 assert(Array.isArray(responseBlocks), 'buildResponseBlocks returns array');
@@ -950,6 +970,51 @@ _setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
 await rm(feedbackTempDir, { force: true });
 await rm(feedbackRejectDir, { force: true });
 
+const feedbackSubmissionCalls = [];
+const feedbackSubmissionResult = await handleFeedbackSubmission({
+  body: { user: { id: 'U_SUBMIT', name: 'Submitter' } },
+  view: {
+    private_metadata: JSON.stringify({
+      query: 'Dangerous query',
+      issueTitle: 'Dangerous issue',
+      integrationType: 'Dangerous integration',
+    }),
+    state: {
+      values: {
+        feedback_type_block: { feedback_type_select: { selected_option: { value: 'wrong_answer' } } },
+        correction_block: { correction_input: { value: 'Correct answer' } },
+      },
+    },
+  },
+  client: {
+    chat: {
+      postMessage: async (payload) => {
+        feedbackSubmissionCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  logger: {
+    error: (...args) => feedbackSubmissionCalls.push(['error', args]),
+    warn: (...args) => feedbackSubmissionCalls.push(['warn', args]),
+    info: (...args) => feedbackSubmissionCalls.push(['info', args]),
+  },
+  deps: {
+    saveFeedback: async () => {
+      throw new Error('disk full');
+    },
+    notifyFeedbackChannel: async () => {
+      feedbackSubmissionCalls.push(['notifyFeedbackChannel']);
+    },
+  },
+});
+assert(feedbackSubmissionResult.status === 'save_failed', 'feedback submission helper returns save_failed when persistence fails');
+assert(feedbackSubmissionCalls.some(([kind]) => kind === 'error'), 'feedback submission helper logs save failure context');
+assert(!feedbackSubmissionCalls.some(([kind]) => kind === 'notifyFeedbackChannel'), 'feedback submission helper skips review notification when save fails');
+const failedSaveDm = feedbackSubmissionCalls.find(([kind, payload]) => kind === 'chat.postMessage' && payload.channel === 'U_SUBMIT');
+assert(failedSaveDm?.[1]?.text?.includes("couldn't save your feedback"), 'feedback submission helper DMs controlled save failure message');
+assert(feedbackSubmissionCalls.filter(([kind]) => kind === 'chat.postMessage').length === 1, 'feedback submission helper skips success confirmation when save fails');
+
 // ── 10. Help Blocks ───────────────────────────────────────────────────────────
 console.log('\n🔹 Help Blocks');
 
@@ -1387,6 +1452,46 @@ const feedbackDmCall = feedbackActionCalls.find(([kind, value]) => kind === 'cha
 assert(feedbackDmCall?.[1]?.text?.includes('Broken sync'), 'authorized feedback action DMs the submitting agent');
 assert(feedbackActionCalls.some(([kind, args]) => kind === 'info' && args[0].includes('Mod Display')), 'authorized feedback action logs resolved reviewer name');
 
+const dangerousFeedbackCalls = [];
+await handleFeedbackReviewAction({
+  decision: 'approve',
+  feedbackId: 'fb_danger',
+  body: { user: { id: 'U2', name: 'Fallback Reviewer' }, channel: { id: 'C_REVIEW' } },
+  client: {
+    users: {
+      info: async () => ({ user: { profile: { display_name: DANGEROUS_TEXT } } }),
+    },
+    chat: {
+      update: async (payload) => {
+        dangerousFeedbackCalls.push(['chat.update', payload]);
+        return {};
+      },
+      postMessage: async (payload) => {
+        dangerousFeedbackCalls.push(['chat.postMessage', payload]);
+        return {};
+      },
+    },
+  },
+  respond: async () => {},
+  logger: { warn: () => {}, info: () => {} },
+  env: modEnv,
+  deps: {
+    approveFeedback: async () => ({
+      id: 'fb_danger',
+      issueTitle: DANGEROUS_TEXT,
+      agentId: 'U_AGENT',
+      reviewMessageTs: '123.456',
+      reviewChannelId: 'C_REVIEW',
+    }),
+    rejectFeedback: async () => {
+      throw new Error('should not run');
+    },
+  },
+});
+const dangerousFeedbackJson = JSON.stringify(dangerousFeedbackCalls);
+assert(!dangerousFeedbackJson.includes(DANGEROUS_TEXT), 'feedback review action updates and DMs escape dangerous reviewer and title text');
+assert(dangerousFeedbackJson.includes(DANGEROUS_ESCAPED), 'feedback review action keeps escaped dangerous text visible');
+
 const nominationActionCalls = [];
 const nominationApproveCalls = [];
 const authorizedNominationResult = await handleNominationReviewAction({
@@ -1432,6 +1537,48 @@ assert(nominationApproveCalls[0][1] && nominationApproveCalls[0][1].users, 'auth
 assert(nominationApproveCalls[0][2] === 'Nom Mod', 'authorized nomination action passes resolved reviewer name to approveNomination');
 assert(authorizedNominationResult.status === 'approved', 'authorized nomination action returns approved');
 assert(nominationActionCalls.some(([kind, value]) => kind === 'users.info' && value === 'U2'), 'authorized nomination action resolves reviewer profile');
+
+process.env.FEEDBACK_REVIEW_CHANNEL_ID = 'C_REVIEW';
+const nominationEscapeFile = join(tmpdir(), `intbot-nominations-escape-${Date.now()}.json`);
+const nominationEscapeKb = join(tmpdir(), `intbot-knowledge-escape-${Date.now()}.md`);
+const nominationUpdateCalls = [];
+_setStoreForTest(nominationEscapeFile);
+_setKnowledgeWriterDefaultFileForTest(nominationEscapeKb);
+const nominationEscapeClient = {
+  chat: {
+    postMessage: async () => ({ ts: '444.555' }),
+    update: async (payload) => {
+      nominationUpdateCalls.push(payload);
+      return {};
+    },
+  },
+};
+const nominationForApprove = await nominateResponse(nominationEscapeClient, {
+  integration: DANGEROUS_TEXT,
+  issueTitle: DANGEROUS_TEXT,
+  steps: ['Do the safe thing'],
+  refs: [DANGEROUS_TEXT],
+});
+await approveNomination(nominationForApprove.id, nominationEscapeClient, DANGEROUS_TEXT);
+const approvedNominationJson = JSON.stringify(nominationUpdateCalls.at(-1));
+assert(!approvedNominationJson.includes(DANGEROUS_TEXT), 'approveNomination review update escapes dangerous reviewer and nomination text');
+assert(approvedNominationJson.includes(DANGEROUS_ESCAPED), 'approveNomination keeps escaped dangerous text visible');
+
+const nominationForReject = await nominateResponse(nominationEscapeClient, {
+  integration: DANGEROUS_TEXT,
+  issueTitle: DANGEROUS_TEXT,
+  steps: ['Do the safe thing'],
+  refs: [DANGEROUS_TEXT],
+});
+await rejectNomination(nominationForReject.id, nominationEscapeClient, DANGEROUS_TEXT);
+const rejectedNominationJson = JSON.stringify(nominationUpdateCalls.at(-1));
+assert(!rejectedNominationJson.includes(DANGEROUS_TEXT), 'rejectNomination review update escapes dangerous reviewer and nomination text');
+assert(rejectedNominationJson.includes(DANGEROUS_ESCAPED), 'rejectNomination keeps escaped dangerous text visible');
+_setKnowledgeWriterDefaultFileForTest(null);
+await rm(nominationEscapeFile, { force: true });
+await rm(nominationEscapeKb, { force: true });
+_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json'));
+delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 
 // ── 16. parseChatResponse ─────────────────────────────────────────────────────
 console.log('\n🔹 parseChatResponse');
@@ -1590,6 +1737,19 @@ const noRefsData = { ...resolvedData, refs: [] };
 const noRefsChatBlocks = buildChatResolutionBlocks(noRefsData);
 const noRefsChip = noRefsChatBlocks.find(b => b.type === 'context' && b.elements[0].text?.includes('Verified:'));
 assert(noRefsChip === undefined, 'no source chips when refs is empty');
+
+const dangerousChatBlocks = buildChatResolutionBlocks({
+  title: DANGEROUS_TEXT,
+  diagnosis: DANGEROUS_TEXT,
+  steps: [{ tag: DANGEROUS_TEXT, text: DANGEROUS_TEXT }],
+  escalate: true,
+  escalation_path: DANGEROUS_TEXT,
+  suggested_channel_post: 'Escalate this.',
+  refs: [{ source: 'kb', title: 'KB ref' }],
+});
+const dangerousChatJson = JSON.stringify(dangerousChatBlocks);
+assert(!dangerousChatJson.includes(DANGEROUS_TEXT), 'chat resolution blocks escape dangerous mrkdwn fields');
+assert(dangerousChatJson.includes(DANGEROUS_ESCAPED), 'chat resolution blocks keep escaped dangerous text visible');
 
 // ── 19. buildChannelPostModal ─────────────────────────────────────────────────
 console.log('\n🔹 buildChannelPostModal');
@@ -1761,6 +1921,11 @@ assert(!progWritingOverSlack[1].elements[0].text.includes('searching Slack'),
 const longQ = 'Zapier integration is not syncing leads after the recent tenant migration and customer is asking when it will be fixed';
 const progLongQ = buildProgressBlocks(longQ, [{ tool: 'slack', phase: 'tool_start', count: null }]);
 assert(progLongQ[1].elements[0].text.includes('…'), 'long query truncated with …');
+
+const dangerousProgress = buildProgressBlocks(DANGEROUS_TEXT, [{ tool: 'slack', phase: 'tool_start', count: null }]);
+const dangerousProgressJson = JSON.stringify(dangerousProgress);
+assert(!dangerousProgressJson.includes(DANGEROUS_TEXT), 'progress blocks escape the live Slack query text');
+assert(dangerousProgressJson.includes(DANGEROUS_ESCAPED), 'progress blocks preserve escaped query text');
 
 // Multi-step: confluence done, jira 0 — slack and writing surface via context
 const progMulti = buildProgressBlocks('Zapier stopped syncing after API access enabled', [
@@ -2425,6 +2590,18 @@ assert(allText.includes('Suggested steps'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
 assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
+
+const dangerousAutoAnswerBlocks = buildAutoAnswerBlocks({
+  query: DANGEROUS_TEXT,
+  result: {
+    confidence: 'medium',
+    issue_title: 'Safe title',
+    sources_used: [DANGEROUS_TEXT],
+  },
+});
+const dangerousAutoAnswerJson = JSON.stringify(dangerousAutoAnswerBlocks);
+assert(!dangerousAutoAnswerJson.includes(DANGEROUS_TEXT), 'auto-answer blocks escape dangerous source chips and mrkdwn text');
+assert(dangerousAutoAnswerJson.includes(DANGEROUS_ESCAPED), 'auto-answer blocks keep escaped dangerous text visible');
 
 // graceful with missing fields
 const minimalBlocks = buildAutoAnswerBlocks({

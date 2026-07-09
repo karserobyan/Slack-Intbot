@@ -8,9 +8,18 @@ import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations, appendToHistory } from './slack/conversation.js';
 import { queryWithContext } from './claude/query.js';
-import { saveFeedback, notifyFeedbackChannel, initFeedbackStorage, getUnpostedPending } from './slack/feedback.js';
+import { initFeedbackStorage, getUnpostedPending, notifyFeedbackChannel } from './slack/feedback.js';
+import { handleFeedbackSubmission } from './slack/feedback-submission.js';
 import { buildChannelPostModal } from './slack/modal.js';
 import { handleFeedbackReviewAction, handleNominationReviewAction } from './slack/review-actions.js';
+
+function decodeActionText(value) {
+  try {
+    return decodeURIComponent(String(value ?? ''));
+  } catch {
+    return String(value ?? '');
+  }
+}
 
 // ── Validate required environment variables ──────────────────────────────────
 const REQUIRED_ENV = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'ANTHROPIC_API_KEY'];
@@ -54,6 +63,11 @@ app.action('wrong_answer_modal', async ({ ack, body, client, action, logger }) =
   } catch {
     // fallback to empty context
   }
+  context = {
+    query: decodeActionText(context.query),
+    issueTitle: decodeActionText(context.issueTitle),
+    integrationType: decodeActionText(context.integrationType),
+  };
 
   try {
     await client.views.open({
@@ -173,42 +187,7 @@ app.action('show_specialist_detail', async ({ ack, body, client, action }) => {
 // ── Feedback modal submission ────────────────────────────────────────────────
 app.view('feedback_submission', async ({ ack, body, view, client }) => {
   await ack();
-
-  let context = {};
-  try {
-    context = JSON.parse(view.private_metadata || '{}');
-  } catch {
-    app.logger.warn('[feedback] Could not parse private_metadata — proceeding with empty context');
-  }
-  const values = view.state.values;
-
-  const feedbackType = values.feedback_type_block?.feedback_type_select?.selected_option?.value ?? 'wrong_answer';
-  const correction = values.correction_block?.correction_input?.value ?? '';
-
-  const record = await saveFeedback({
-    query: context.query,
-    issueTitle: context.issueTitle,
-    integrationType: context.integrationType,
-    feedbackType,
-    correction,
-    agentId: body.user.id,
-    agentName: body.user.name,
-  });
-
-  app.logger.info(`[feedback] Saved ${record.id} from ${body.user.name}: ${feedbackType}`);
-
-  // Notify feedback channel if configured
-  await notifyFeedbackChannel(client, record);
-
-  // DM the submitting agent that feedback is pending review
-  try {
-    await client.chat.postMessage({
-      channel: body.user.id,
-      text: `Thanks for the feedback! It's been sent for review — if approved, it'll help improve the bot.`,
-    });
-  } catch (err) {
-    app.logger.warn(`[feedback] Could not DM submission confirmation to ${body.user.name}: ${err.message}`);
-  }
+  await handleFeedbackSubmission({ body, view, client, logger: app.logger });
 });
 
 // ── Approve feedback ──────────────────────────────────────────────────────────

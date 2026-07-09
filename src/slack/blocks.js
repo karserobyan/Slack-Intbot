@@ -27,6 +27,18 @@ function clamp(str, max = SECTION_MAX) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
+function joinEscaped(values = []) {
+  return values.map((value) => escapeMrkdwn(value)).join(', ');
+}
+
+function renderEscapedCode(value) {
+  return `\`${escapeMrkdwn(value)}\``;
+}
+
+function encodeActionText(value) {
+  return encodeURIComponent(String(value ?? ''));
+}
+
 /**
  * Builds the Block Kit payload for a successful (non-accounting) response.
  * Stays well under Slack's 50-block limit by capping steps and refs.
@@ -86,18 +98,20 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   blocks.push({ type: 'divider' });
 
   // 2. Compact info line
-  const sourcesText = (data.sources_used ?? []).join(', ') || 'none';
+  const sourcesText = joinEscaped(data.sources_used ?? []) || 'none';
   let infoText;
   if (data.escalate_decision) {
     const ed = data.escalate_decision;
     const channel = data.channel_recommendation?.channel ?? 'ask-integrations';
     const reason = (data.channel_recommendation?.reason ?? ed.reason ?? '').slice(0, 120);
+    const safeChannel = escapeMrkdwn(channel);
+    const safeReason = escapeMrkdwn(reason);
     if (ed.should_escalate) {
-      infoText = `📢 Post in #${channel} · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `📢 Post in #${safeChannel} · ${conf.icon} ${conf.label} · ${safeReason}`;
     } else if (data.confidence === 'low' || data.confidence === 'medium') {
-      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${safeReason}`;
     } else {
-      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${reason}`;
+      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${safeReason}`;
     }
   } else {
     infoText = `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}`;
@@ -144,7 +158,8 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*  \`${step.tag}\`\n`;
+      const safeTag = renderEscapedCode(step.tag ?? 'step');
+      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*  ${safeTag}\n`;
       const detailRaw = escapeMrkdwn(step.detail);
       const budget = 2900 - prefix.length;
       const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
@@ -163,9 +178,9 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
       action_id: 'wrong_answer_modal',
       style: 'danger',
       value: JSON.stringify({
-        query: (data._originalQuery ?? '').slice(0, 400),
-        issueTitle: (data.issue_title ?? '').slice(0, 100),
-        integrationType: (data.integration_type ?? '').slice(0, 50),
+        query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
+        issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
+        integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
       }),
     },
   ];
@@ -264,12 +279,15 @@ export function buildSessionCard() {
  * Builds Block Kit blocks for the accounting topic redirect.
  */
 export function buildAccountingRedirectBlocks(query) {
+  const q = String(query ?? '');
+  const preview = q.slice(0, 200);
+  const safePreview = escapeMrkdwn(`${preview}${q.length > 200 ? '…' : ''}`);
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*⚠️ This question is outside this team's scope.*\n\nIt looks like your question is about an *accounting integration* (e.g. QuickBooks, Sage Intacct, NetSuite, Xero, or similar). Accounting integrations are handled by a different team.\n\nPlease post your question in ${ACCOUNTING_REDIRECT_CHANNEL} and tag the accounting integrations team there. They'll be able to help you out!\n\n_Original question: "${query.slice(0, 200)}${query.length > 200 ? '…' : ''}"_`,
+        text: `*⚠️ This question is outside this team's scope.*\n\nIt looks like your question is about an *accounting integration* (e.g. QuickBooks, Sage Intacct, NetSuite, Xero, or similar). Accounting integrations are handled by a different team.\n\nPlease post your question in ${ACCOUNTING_REDIRECT_CHANNEL} and tag the accounting integrations team there. They'll be able to help you out!\n\n_Original question: "${safePreview}"_`,
       },
     },
     {
@@ -304,12 +322,15 @@ export function buildThinkingBlocks(_query) {
  * Builds an error block for unexpected failures.
  */
 export function buildErrorBlocks(query) {
+  const q = String(query ?? '');
+  const preview = q.slice(0, 120);
+  const safePreview = escapeMrkdwn(`${preview}${q.length > 120 ? '…' : ''}`);
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"_`,
+        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${safePreview}"_`,
       },
     },
     {
@@ -574,6 +595,8 @@ const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', sl
 export function buildChatResolutionBlocks(data) {
   const blocks = [];
   const isEscalation = data.escalate === true;
+  const safeTitle = clamp(escapeMrkdwn(data.title), 200);
+  const safeDiagnosis = escapeMrkdwn(data.diagnosis);
 
   blocks.push({
     type: 'context',
@@ -582,13 +605,13 @@ export function buildChatResolutionBlocks(data) {
 
   blocks.push({
     type: 'section',
-    text: { type: 'mrkdwn', text: clamp(`*${clamp(data.title, 200)}*\n_${data.diagnosis}_`) },
+    text: { type: 'mrkdwn', text: clamp(`*${safeTitle}*\n_${safeDiagnosis}_`) },
   });
 
   if (isEscalation && data.escalation_path) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${data.escalation_path}` }],
+      elements: [{ type: 'mrkdwn', text: `📍 *Escalation path:* ${escapeMrkdwn(data.escalation_path)}` }],
     });
   }
 
@@ -596,7 +619,7 @@ export function buildChatResolutionBlocks(data) {
     const circle = TAG_CIRCLE[step.tag] ?? '⚪';
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`${circle} \`${step.tag}\` ${step.text}`) },
+      text: { type: 'mrkdwn', text: clamp(`${circle} ${renderEscapedCode(step.tag ?? 'step')} ${escapeMrkdwn(step.text)}`) },
     });
   }
 
@@ -618,7 +641,11 @@ export function buildChatResolutionBlocks(data) {
       text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
       action_id: 'wrong_answer_modal',
       style: 'danger',
-      value: JSON.stringify({ query: (data.title ?? '').slice(0, 400), issueTitle: (data.title ?? '').slice(0, 100), integrationType: '' }),
+      value: JSON.stringify({
+        query: encodeActionText((data.title ?? '').slice(0, 400)),
+        issueTitle: encodeActionText((data.title ?? '').slice(0, 100)),
+        integrationType: '',
+      }),
     },
   ];
 
@@ -703,7 +730,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     }
   }
 
-  const sourceChips = (result.sources_used ?? []).map((s) => `\`${s}\``).join('  ·  ');
+  const sourceChips = (result.sources_used ?? []).map((source) => renderEscapedCode(source)).join('  ·  ');
   blocks.push({
     type: 'context',
     elements: [{
@@ -772,7 +799,7 @@ export function buildProgressBlocks(query, steps) {
   if (isWriting) {
     statusLine = '_Now: writing answer…_';
   } else if (slackSearching) {
-    const q = truncateQuery(query);
+    const q = escapeMrkdwn(truncateQuery(query));
     statusLine = q ? `_Now: searching Slack for "${q}"_` : '_Now: searching Slack…_';
   }
 

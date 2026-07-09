@@ -392,3 +392,24 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 595 passed, 0 failed. `git status --short --branch` showed no tracked Phase 1 changes remaining; only untracked `AGENTS.md` remained as the local repo instruction file.
 
 **Decision / Follow-up:** Run whole-branch code review, then use `superpowers:finishing-a-development-branch` before PR creation.
+
+## 2026-07-09 — Final Review Gaps Closed
+
+**Intent:** Resolve the merge-blocking whole-branch review findings and close the cheap HTTPS link gap in one verification-backed patch.
+
+**Action Taken:** Added focused regression coverage for dangerous mrkdwn fixtures across review-action updates/DMs, nomination approve/reject updates, response routing lines, chat-resolution blocks, progress blocks, auto-answer source chips, KB sensitivity classification, HTTPS-only safe Slack links, and feedback submission save failures. Hardened every flagged mrkdwn interpolation path, required `https:` in `safeSlackLink`, changed source-policy KB detection to exact-host parsing without bypassing sensitive text checks, encoded wrong-answer action payload text to keep raw control strings out of serialized Block Kit, and extracted a small feedback-submission helper so save failures are logged, DM the submitter with a controlled retry message, and skip review notification/success confirmation.
+
+**Files Touched:**
+- `src/slack/mrkdwn.js`
+- `src/slack/source-policy.js`
+- `src/slack/blocks.js`
+- `src/slack/review-actions.js`
+- `src/slack/nominations.js`
+- `src/slack/feedback-submission.js`
+- `src/index.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** `node test.js` passed with 617 passed, 0 failed.
+
+**Decision / Follow-up:** Write the detailed final-review fix report, stage only the intended tracked files, and commit with `fix: close final hardening review gaps`.

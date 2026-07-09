@@ -1,4 +1,5 @@
 import { approveFeedback, rejectFeedback } from './feedback.js';
+import { escapeMrkdwn } from './mrkdwn.js';
 import { approveNomination, rejectNomination } from './nominations.js';
 import { isAuthorizedModerator, sendUnauthorizedResponse } from './moderation.js';
 
@@ -43,22 +44,24 @@ export async function handleFeedbackReviewAction({
   const approved = decision === 'approve';
   const icon = approved ? '✅' : '❌';
   const verb = approved ? 'Approved' : 'Rejected';
+  const safeReviewerName = escapeMrkdwn(reviewerName);
+  const safeIssueTitle = escapeMrkdwn(record.issueTitle);
 
   if (record.reviewMessageTs && record.reviewChannelId) {
     await client.chat.update({
       channel: record.reviewChannelId,
       ts: record.reviewMessageTs,
-      text: `${icon} ${verb} by ${reviewerName}`,
+      text: `${icon} ${verb} by ${safeReviewerName}`,
       blocks: [{
         type: 'section',
-        text: { type: 'mrkdwn', text: `${icon} *${verb} by ${reviewerName}*\n_Feedback ID: ${record.id}_` },
+        text: { type: 'mrkdwn', text: `${icon} *${verb} by ${safeReviewerName}*\n_Feedback ID: ${record.id}_` },
       }],
     }).catch((err) => logger?.warn?.(`[feedback] Failed to update review card: ${err.message}`));
   }
 
   const dmText = approved
-    ? `✅ Your feedback on *"${record.issueTitle}"* was approved and applied — thanks for helping improve the bot!`
-    : `Your feedback on *"${record.issueTitle}"* was reviewed and not applied — thanks for flagging it.`;
+    ? `✅ Your feedback on *"${safeIssueTitle}"* was approved and applied — thanks for helping improve the bot!`
+    : `Your feedback on *"${safeIssueTitle}"* was reviewed and not applied — thanks for flagging it.`;
   await client.chat.postMessage({ channel: record.agentId, text: dmText })
     .catch((err) => logger?.warn?.(`[feedback] Failed to DM agent after ${decision}: ${err.message}`));
 
