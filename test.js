@@ -6,6 +6,7 @@
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
+  buildAutoAnswerBlocks,
   buildWelcomeCard,
   buildSessionCard,
   buildAccountingRedirectBlocks,
@@ -55,6 +56,7 @@ import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
+import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
 
 let passed = 0;
 let failed = 0;
@@ -2369,6 +2371,105 @@ assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'ca
 
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
+
+// ── auto-answer ───────────────────────────────────────────────────────────────
+console.log('\n🔹 auto-answer');
+
+process.env.AUTO_ANSWER_SOURCE_CHANNEL = 'C_ASK_INTEGRATIONS';
+process.env.AUTO_ANSWER_TARGET_CHANNEL = 'C_BOT_DRAFTS';
+
+const procTs = new Set();
+
+// — filter rules —
+assert(shouldSkipMessage(null, { processedTs: procTs }) === true, 'null event is skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '1.0', text: 'hello world here' }, { processedTs: procTs }) === false, 'plain top-level msg passes');
+assert(shouldSkipMessage({ channel: 'C_OTHER', ts: '2.0', text: 'hello world here' }, { processedTs: procTs }) === true, 'wrong channel skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '3.0', text: 'short' }, { processedTs: procTs }) === true, 'too-short text skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '4.0', text: 'hello world here', subtype: 'message_changed' }, { processedTs: procTs }) === true, 'edited msg skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '5.0', text: 'hello world here', subtype: 'bot_message' }, { processedTs: procTs }) === true, 'bot_message subtype skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '6.0', text: 'hello world here', bot_id: 'B123' }, { processedTs: procTs }) === true, 'bot_id present skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '7.0', thread_ts: '6.5', text: 'hello world here' }, { processedTs: procTs }) === true, 'thread reply skipped');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '8.0', thread_ts: '8.0', text: 'hello world here' }, { processedTs: procTs }) === false, 'thread parent (thread_ts === ts) passes');
+
+procTs.add('9.0');
+assert(shouldSkipMessage({ channel: 'C_ASK_INTEGRATIONS', ts: '9.0', text: 'hello world here' }, { processedTs: procTs }) === true, 'already-processed ts deduped');
+
+// — block-kit shape —
+const sampleResult = {
+  issue_title: 'Zapier API access',
+  confidence: 'high',
+  customer_message: 'Hi customer, here is the fix.',
+  findings_summary: { diagnosis: 'API access disabled at backend.' },
+  agent_steps: [
+    { num: 1, title: 'Enable API access', detail: 'Toggle in admin settings.', tag: 'action' },
+    { num: 2, title: 'Verify token', detail: 'Reissue if needed.', tag: 'verify' },
+  ],
+  sources_used: ['slack', 'kb'],
+};
+const aaBlocks = buildAutoAnswerBlocks({
+  originalUrl: 'https://servicetitan.slack.com/archives/C_ASK_INTEGRATIONS/p123',
+  sourceChannelId: 'C_ASK_INTEGRATIONS',
+  originalUserId: 'U999',
+  query: 'Customer says Zapier broke after migration',
+  result: sampleResult,
+});
+assert(Array.isArray(aaBlocks), 'buildAutoAnswerBlocks returns array');
+assert(aaBlocks.length > 0 && aaBlocks.length < 50, 'block count is within Slack 50-block limit');
+const firstCtx = JSON.stringify(aaBlocks[0]);
+assert(firstCtx.includes('View original') && firstCtx.includes('U999') && firstCtx.includes('C_ASK_INTEGRATIONS'), 'first block has link, author, and source channel');
+const allText = JSON.stringify(aaBlocks);
+assert(allText.includes('Zapier API access'), 'issue title rendered');
+assert(allText.includes('Diagnosis'), 'diagnosis section rendered');
+assert(allText.includes('Draft email'), 'customer_message section rendered');
+assert(allText.includes('Suggested steps'), 'steps section rendered');
+assert(allText.includes('Enable API access'), 'first step rendered');
+assert(allText.includes('High confidence'), 'confidence rendered');
+assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
+
+// graceful with missing fields
+const minimalBlocks = buildAutoAnswerBlocks({
+  query: 'q',
+  result: { confidence: 'low' },
+});
+assert(Array.isArray(minimalBlocks) && minimalBlocks.length >= 2, 'works with minimal result object (no crash)');
+
+// — startup self-check (verifyChannelAccess): turns silent failure into a loud warning —
+function makeLogger() {
+  const warns = [];
+  const infos = [];
+  return { warn: (m) => warns.push(m), info: (m) => infos.push(m), warns, infos };
+}
+
+const memberLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => ({ ok: true, channel: { is_member: true } }) } },
+  'C_SRC', memberLog,
+);
+assert(memberLog.warns.length === 0 && memberLog.infos.some((m) => m.includes('access verified')), 'member channel verifies with no warning');
+
+const notMemberLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => ({ ok: true, channel: { is_member: false } }) } },
+  'C_SRC', notMemberLog,
+);
+assert(notMemberLog.warns.some((m) => m.includes('NOT a member')), 'non-member channel warns to invite the bot');
+
+const scopeLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('missing_scope'); e.data = { error: 'missing_scope', needed: 'channels:history' }; throw e; } } },
+  'C_SRC', scopeLog,
+);
+assert(scopeLog.warns.some((m) => m.includes('channels:history')), 'missing_scope names the needed scope');
+
+const notFoundLog = makeLogger();
+await verifyChannelAccess(
+  { conversations: { info: async () => { const e = new Error('channel_not_found'); e.data = { error: 'channel_not_found' }; throw e; } } },
+  'BADID', notFoundLog,
+);
+assert(notFoundLog.warns.some((m) => m.includes('not found')), 'channel_not_found warns about bad channel ID');
+
+delete process.env.AUTO_ANSWER_SOURCE_CHANNEL;
+delete process.env.AUTO_ANSWER_TARGET_CHANNEL;
 
 // ── mention handler event-boundary catch ─────────────────────────────────────
 console.log('\n🔹 mention handler event-boundary catch');

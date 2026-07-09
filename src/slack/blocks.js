@@ -643,6 +643,78 @@ export function buildChatResolutionBlocks(data) {
   return blocks;
 }
 
+/**
+ * Compact block-kit for the auto-answer drafts channel.
+ * Layout: link to original + author → question → diagnosis → draft email →
+ * numbered steps → footer (confidence + sources). Stays well under Slack's
+ * 50-block limit even with the maximum 8 steps.
+ */
+export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUserId, query, result }) {
+  const blocks = [];
+  const conf = CONFIDENCE_META[result.confidence] ?? CONFIDENCE_META.medium;
+
+  const headerParts = ['🔔 New post'];
+  if (sourceChannelId) headerParts.push(`in <#${sourceChannelId}>`);
+  if (originalUserId) headerParts.push(`by <@${originalUserId}>`);
+  if (originalUrl) headerParts.push(`· <${originalUrl}|View original>`);
+  if (originalUrl) headerParts[headerParts.length - 1] = `· ${safeSlackLink(originalUrl, 'View original')}`;
+  blocks.push({
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: headerParts.join(' ') }],
+  });
+
+  const qTrim = query.length > 300 ? `${query.slice(0, 300)}…` : query;
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
+  });
+
+  if (result.findings_summary?.diagnosis) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: clamp(`*Diagnosis:* ${escapeMrkdwn(result.findings_summary.diagnosis)}`) },
+    });
+  }
+
+  if (result.customer_message) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: clamp(`*📧 Draft email*\n${escapeMrkdwn(result.customer_message)}`) },
+    });
+  }
+
+  const steps = Array.isArray(result.agent_steps) ? result.agent_steps.slice(0, 8) : [];
+  if (steps.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🔧 Suggested steps*' },
+    });
+    for (const step of steps) {
+      const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+      const num = step.num ? `${step.num}. ` : '';
+      const title = step.title ? `*${num}${escapeMrkdwn(step.title)}*` : `*${num}${escapeMrkdwn(step.tag ?? 'step')}*`;
+      const detail = step.detail ? `\n${escapeMrkdwn(step.detail)}` : '';
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: clamp(`${circle} ${title}${detail}`) },
+      });
+    }
+  }
+
+  const sourceChips = (result.sources_used ?? []).map((s) => `\`${s}\``).join('  ·  ');
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `${conf.icon} ${conf.label} confidence${sourceChips ? `  ·  Sources: ${sourceChips}` : ''}`,
+    }],
+  });
+
+  return blocks;
+}
+
 function capitalizeFirst(s) {
   return s ? s[0].toUpperCase() + s.slice(1) : s;
 }

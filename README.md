@@ -87,6 +87,9 @@ npm start
 | `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
 | `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
+| `AUTO_ANSWER_ENABLED` | Optional | Set to `true` to enable the channel-watcher that auto-drafts answers for new posts in `AUTO_ANSWER_SOURCE_CHANNEL`. Default off. |
+| `AUTO_ANSWER_SOURCE_CHANNEL` | If auto-answer enabled | Channel ID the bot watches (e.g. `#ask-integrations`). Bot must be a member. |
+| `AUTO_ANSWER_TARGET_CHANNEL` | If auto-answer enabled | Channel ID where drafts are posted. Typically a private channel only you are in. |
 | `FEEDBACK_REVIEW_CHANNEL_ID` | Optional | Channel ID for feedback and nomination review cards (canonical name). Bot must be a member of this channel. |
 | `MODERATOR_USER_IDS` | Required for review actions | Comma-separated Slack user IDs allowed to approve/reject feedback and knowledge nominations. If unset, review actions fail closed. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |

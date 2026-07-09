@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
+import { registerAutoAnswerHandler } from './handlers/auto-answer.js';
 import { buildFeedbackModal, buildResponseBlocks, buildSourcesModal, buildThinkingBlocks, buildErrorBlocks } from './slack/blocks.js';
 import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
@@ -41,6 +42,7 @@ const app = new App({
 // ── Register event handlers ──────────────────────────────────────────────────
 registerMentionHandler(app);
 registerDmHandler(app);
+registerAutoAnswerHandler(app);
 
 // ── "Wrong Answer" button — opens feedback modal ─────────────────────────────
 app.action('wrong_answer_modal', async ({ ack, body, client, action, logger }) => {

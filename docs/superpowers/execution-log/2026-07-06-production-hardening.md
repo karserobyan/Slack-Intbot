@@ -345,3 +345,21 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 0 failures.
 
 **Decision / Follow-up:** Continue to auto-answer configuration validation and docs.
+
+## 2026-07-09 — Auto-Answer Groundwork Split From Task 7
+
+**Intent:** Preserve pre-existing auto-answer watcher work without folding it into the Task 7 documentation/validation commit.
+
+**Action Taken:** Separated the auto-answer handler, app registration, draft Block Kit builder, baseline environment rows, and baseline behavior tests into their own checkpoint before Task 7.
+
+**Files Touched:**
+- `src/handlers/auto-answer.js`
+- `src/index.js`
+- `src/slack/blocks.js`
+- `.env.example`
+- `README.md`
+- `test.js`
+
+**Verification:** `node test.js` passed with 0 failures.
+
+**Decision / Follow-up:** Keep Task 7 limited to Slack setup documentation and startup warning clarity.
