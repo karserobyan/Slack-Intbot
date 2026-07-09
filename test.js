@@ -63,6 +63,8 @@ import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention }
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
 import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
+import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
+import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 
 let passed = 0;
 let failed = 0;
@@ -2901,6 +2903,52 @@ const sparseContract = buildAnswerEvidenceContract({
 });
 assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
 assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
+
+// ── quality shadow storage/audit ─────────────────────────────────────────────
+console.log('\n🔹 quality shadow storage/audit');
+
+const qualityTempDir = await mkdtemp(join(tmpdir(), 'intbot-quality-'));
+const shadowFile = join(qualityTempDir, 'quality-shadow.jsonl');
+const auditFile = join(qualityTempDir, 'quality-audit.jsonl');
+_setQualityShadowFileForTest(shadowFile);
+_setQualityAuditFileForTest(auditFile);
+
+for (let i = 0; i < 5; i += 1) {
+  await appendQualityShadowRecord({
+    createdAt: new Date(Date.UTC(2026, 6, 9, 0, 0, i)).toISOString(),
+    answerId: `ans_${i}`,
+    queryPreview: `customer email user${i}@example.com token xoxb-secret-${i}`,
+    evidence: [{ title: `Source ${i}`, snippetPreview: 'raw source body '.repeat(50) }],
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-09T00:01:00.000Z'),
+  });
+}
+
+const shadowLines = (await readFile(shadowFile, 'utf-8')).trim().split('\n');
+assert(shadowLines.length === 3, 'quality shadow store enforces maxRecords retention');
+const shadowJson = shadowLines.join('\n');
+assert(!shadowJson.includes('user4@example.com'), 'quality shadow store redacts emails');
+assert(!shadowJson.includes('xoxb-secret'), 'quality shadow store redacts Slack-like tokens');
+assert(!shadowJson.includes('raw source body raw source body raw source body'), 'quality shadow store avoids large raw snippets');
+
+await appendQualityAuditEvent({
+  type: 'contract_created',
+  actor: { type: 'bot', userId: 'U123', name: 'Bot User' },
+  entity: { type: 'answer_contract', id: 'ans_1' },
+  metadata: {
+    query: 'Full customer query should become hash/preview only',
+    integrationType: 'Zapier',
+    reason: 'direct_source_match',
+  },
+}, { now: new Date('2026-07-09T00:00:00.000Z') });
+
+const auditText = await readFile(auditFile, 'utf-8');
+assert(auditText.includes('contract_created'), 'quality audit stores event type');
+assert(auditText.includes('queryHash'), 'quality audit stores query hash');
+assert(!auditText.includes('Full customer query should become hash/preview only'), 'quality audit does not store raw query');
+
+await rm(qualityTempDir, { recursive: true, force: true });
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
