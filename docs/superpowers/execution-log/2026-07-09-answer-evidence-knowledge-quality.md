@@ -65,3 +65,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing imports/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/config.js`, as expected. After implementation, ran `node test.js`; result: 630 passed, 0 failed.
 
 **Decision / Follow-up:** Keep PR 1 Task 1 strictly metadata/helper-only. Later tasks can consume these helpers for shadow-only evidence and quality metadata.
+
+## 2026-07-09 - PR 1 Task 2 Source Scoring
+
+**Intent:** Add source scoring primitives only, preserving current Slack rendering, answerer prompts, nomination behavior, mention handling, and `knowledge.md` behavior.
+
+**Action Taken:** Added dimensional evidence source scoring for source quality, directness, freshness, sensitivity, and reuse value. Source references are converted through `classifySourceRef`, sanitized to bounded title/snippet previews, and URL-hashed for metadata use. Added focused tests for direct Confluence evidence, tenant-specific Jira reuse value, sensitivity preservation, and current ref-group flattening.
+
+**Files Touched:**
+
+- `src/quality/source-scoring.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing import/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/source-scoring.js`, as expected. After implementation, ran `node test.js`; result: 643 passed, 0 failed.
+
+**Decision / Follow-up:** Keep Task 2 as scorer-only infrastructure. Later tasks can consume the dimensional scores in shadow metadata without changing user-visible Slack answers.

@@ -61,6 +61,7 @@ import { registerMentionHandler, stripTransient, withRequestContext } from './sr
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
 import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
+import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
 
 let passed = 0;
 let failed = 0;
@@ -2749,6 +2750,84 @@ assert(hashValue('same input') === hashValue('same input'), 'hashValue is stable
 assert(hashValue('same input') !== hashValue('different input'), 'hashValue changes with input');
 assert(makeQualityId('ans', new Date('2026-07-09T00:00:00.000Z')).startsWith('ans_20260709T000000000Z_'), 'makeQualityId includes prefix and timestamp');
 assert(normalizeForQuality(' Zapier API   Access! ') === 'zapier api access', 'normalizeForQuality lowercases and strips punctuation');
+
+// ── quality source scoring ───────────────────────────────────────────────────
+console.log('\n🔹 quality source scoring');
+
+const directConfluenceEvidence = refToEvidence({
+  type: 'confluence',
+  url: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1',
+  title: 'Zapier API access setup',
+  snippet: 'Enable Zapier API access for the tenant.',
+}, {
+  source: 'confluence',
+  query: 'Zapier API access disabled',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+
+assert(directConfluenceEvidence.source === 'confluence', 'refToEvidence keeps confluence source');
+assert(directConfluenceEvidence.title === 'Zapier API access setup', 'refToEvidence keeps sanitized source title');
+assert(directConfluenceEvidence.snippetPreview.includes('Enable Zapier API access'), 'refToEvidence stores snippet preview only');
+assert(directConfluenceEvidence.urlHash.startsWith('sha256:'), 'refToEvidence stores URL hash');
+
+const directScore = scoreEvidenceSource(directConfluenceEvidence, {
+  query: 'Zapier API access disabled',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+assert(directScore.sourceQuality === 'high', 'direct confluence source quality high');
+assert(directScore.directness === 'direct', 'exact integration and symptom is direct');
+assert(directScore.reuseValue === 'high', 'setup source has high reuse value');
+assert(directScore.sensitivity === 'safe', 'safe confluence source is safe');
+
+const tenantJiraEvidence = refToEvidence({
+  type: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/INT-123',
+  title: 'INT-123 Tenant 12345 Zapier outage',
+  snippet: 'Resolved for tenant 12345 only.',
+}, {
+  source: 'jira',
+  query: 'Zapier outage tenant 12345',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier outage',
+});
+const tenantScore = scoreEvidenceSource(tenantJiraEvidence, {
+  query: 'Zapier outage tenant 12345',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier outage',
+});
+assert(tenantScore.sourceQuality === 'high', 'tenant-specific resolved Jira can be high quality');
+assert(tenantScore.reuseValue === 'low', 'tenant-specific Jira has low reuse value');
+
+const sensitiveEvidence = refToEvidence({
+  type: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/SEC-1',
+  title: 'Security incident backend-only token rotation',
+}, {
+  source: 'jira',
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+const sensitiveScore = scoreEvidenceSource(sensitiveEvidence, {
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+assert(sensitiveScore.sensitivity === 'specialist_only', 'source scoring preserves source-policy sensitivity');
+
+const scoredSources = scoreEvidenceSources({
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access answer' }],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/x', title: 'Zapier API access' }],
+  kb_refs: [{ url: 'https://help.servicetitan.com/docs/zapier', title: 'Zapier help article' }],
+}, {
+  query: 'Zapier API access',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+assert(scoredSources.length === 3, 'scoreEvidenceSources flattens all current ref groups');
+assert(scoredSources.every(e => e.id.startsWith('ev_')), 'scoreEvidenceSources assigns evidence ids');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
