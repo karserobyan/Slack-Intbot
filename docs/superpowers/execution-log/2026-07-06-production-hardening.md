@@ -302,3 +302,18 @@ This log records the actual steps taken during the IntegrationsBot production-ha
 **Verification:** `node test.js` passed with 584 passed, 0 failed.
 
 **Decision / Follow-up:** Continue to Slack event-boundary failure handling.
+
+## 2026-07-09 — Task 5 KB Source Sensitivity Fix Applied
+
+**Intent:** Close the review finding that sensitive `kb_refs` were not filtered through the source policy.
+
+**Action Taken:** Routed KB refs through the same classify/filter path as Slack and Atlassian refs, including hidden-count math, source chips, sources-button visibility, and sources-modal payload generation. Added regression coverage for CSA hidden behavior and Specialist visibility.
+
+**Files Touched:**
+- `src/slack/blocks.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-06-production-hardening.md`
+
+**Verification:** `node test.js` passed with 587 passed, 0 failed in the fix loop.
+
+**Decision / Follow-up:** Re-review Task 5 with the final KB-source filtering diff.
