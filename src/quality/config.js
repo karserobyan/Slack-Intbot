@@ -4,13 +4,17 @@ function envFlag(name, defaultValue) {
   return String(raw).toLowerCase() !== 'false';
 }
 
+function envStrictTrue(name) {
+  return String(process.env[name] ?? '').trim().toLowerCase() === 'true';
+}
+
 function envPositiveInt(name, defaultValue) {
   const parsed = parseInt(process.env[name] ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
 }
 
 export function isQualityLayerEnabled() {
-  return envFlag('QUALITY_LAYER_ENABLED', false);
+  return envStrictTrue('QUALITY_LAYER_ENABLED');
 }
 
 export function isQualityShadowMode() {

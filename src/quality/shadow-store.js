@@ -11,19 +11,41 @@ export function _setQualityShadowFileForTest(path) {
   _writeQueue = Promise.resolve();
 }
 
+function safeLowRiskLabel(value, max = 80) {
+  const text = sanitizePreview(value, max);
+  if (!text) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._+&/-]{0,79}$/.test(text)) return '';
+  if (/@/.test(text) || /\bxox[abprs]-/i.test(text)) return '';
+  if (/\b(?:tenant|account|location)\s*#?\d+\b/i.test(text)) return '';
+  if (/\b\d{3}[-. ]?\d{3}[-. ]?\d{4}\b/.test(text)) return '';
+  return text;
+}
+
+function safeHash(value, fallbackValue = '') {
+  const text = String(value ?? '');
+  if (/^sha256:[a-f0-9]{64}$/i.test(text)) return text.toLowerCase();
+  return hashValue(fallbackValue || text);
+}
+
+function safeReasonCodes(reasons = []) {
+  return reasons
+    .slice(0, 8)
+    .map(r => sanitizePreview(r, 40))
+    .filter(r => /^[A-Za-z0-9_.:-]{1,40}$/.test(r));
+}
+
 function sanitizeEvidence(evidence = []) {
   return evidence.slice(0, 10).map((e) => ({
     id: sanitizePreview(e.id, 40),
-    source: sanitizePreview(e.source, 40),
-    urlHash: e.urlHash ?? hashValue(e.url ?? ''),
-    title: sanitizePreview(e.title, 120),
-    snippetPreview: sanitizePreview(e.snippetPreview, 32),
+    source: safeLowRiskLabel(e.source, 40),
+    hostname: safeLowRiskLabel(e.hostname, 120),
+    urlHash: safeHash(e.urlHash, e.url ?? ''),
     sourceQuality: e.sourceQuality,
     directness: e.directness,
     freshness: e.freshness,
     sensitivity: e.sensitivity,
     reuseValue: e.reuseValue,
-    reasons: (e.reasons ?? []).slice(0, 8).map(r => sanitizePreview(r, 40)),
+    reasons: safeReasonCodes(e.reasons),
   }));
 }
 
@@ -31,13 +53,12 @@ function sanitizeShadowRecord(record) {
   return {
     createdAt: record.createdAt ?? new Date().toISOString(),
     answerId: sanitizePreview(record.answerId, 80),
-    queryHash: record.queryHash ?? hashValue(record.queryPreview ?? ''),
-    queryPreview: sanitizePreview(record.queryPreview, 120),
+    queryHash: safeHash(record.queryHash, record.queryPreview ?? ''),
     role: sanitizePreview(record.role, 20),
     channelId: sanitizePreview(record.channelId, 80),
     threadTs: sanitizePreview(record.threadTs, 80),
-    issueTitle: sanitizePreview(record.issueTitle, 140),
-    integrationType: sanitizePreview(record.integrationType, 80),
+    issueHash: record.issueTitle ? hashValue(record.issueTitle) : null,
+    integrationType: safeLowRiskLabel(record.integrationType, 80),
     confidence: record.confidence,
     evidence: sanitizeEvidence(record.evidence),
     quality: {
@@ -45,7 +66,7 @@ function sanitizeShadowRecord(record) {
       reusableKnowledge: record.quality?.reusableKnowledge === true,
       nominationEligible: record.quality?.nominationEligible === true,
       approximateMapping: record.quality?.approximateMapping === true,
-      reasons: (record.quality?.reasons ?? []).slice(0, 8).map(r => sanitizePreview(r, 40)),
+      reasons: safeReasonCodes(record.quality?.reasons),
     },
   };
 }

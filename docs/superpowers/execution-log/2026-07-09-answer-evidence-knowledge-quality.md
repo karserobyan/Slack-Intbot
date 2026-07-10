@@ -224,3 +224,22 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran a targeted spec scan for raw-query, raw-URL, and actor-name example fields; no remaining raw schema examples were found.
 
 **Decision / Follow-up:** The traceable design doc remains `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`. Implementation must continue treating shadow/audit metadata as bounded and privacy-preserving.
+
+## 2026-07-10 - PR 1 Review Fix: Strict Opt-In And Minimized Persistence
+
+**Intent:** Address the PR #34 runtime blockers without starting PR 2 or changing Slack answer behavior.
+
+**Action Taken:** Recorded that the docs-only privacy schema tightening landed in commit `83ede09`, then tightened runtime behavior to match it. `QUALITY_LAYER_ENABLED` now enables the quality layer only when explicitly set to `true` case-insensitively. Shadow JSONL and audit JSONL persistence now omit raw query previews, issue/diagnosis text, source titles, source snippet previews, free-text audit reasons, and actor display names. Persisted records keep hashes, IDs, source type/hostname labels, dimensional source scores, reason codes, booleans/statuses, approximate mapping state, and sanitized low-risk integration type only. Incoming values in `queryHash` and `urlHash` slots are coerced to actual `sha256:` hashes if a raw value is supplied.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/shadow-store.js`
+- `src/quality/audit-log.js`
+- `src/quality/shadow-recorder.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing tests first. Initial red run: `node test.js` failed with 697 passed, 16 failed out of 713 tests for loose `QUALITY_LAYER_ENABLED` parsing and risky persisted preview fields. Added hash-slot hardening tests; red run failed with 701 passed, 12 failed out of 713 tests because raw strings supplied as `queryHash`/`urlHash` were trusted. After runtime fixes, ran `node test.js`; result: 713 passed, 0 failed.
+
+**Decision / Follow-up:** Patch remains PR 1 shadow-mode only. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, and no `knowledge.md` behavior changes. Branch push/sync status will be recorded after final verification and push.

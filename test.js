@@ -2728,6 +2728,11 @@ assert.deepEqual(getQualityShadowRetention(), {
   maxBytes: 5 * 1024 * 1024,
 }, 'quality shadow retention defaults are fixed');
 
+for (const disabledValue of ['', 'false', '0', 'off', 'definitely']) {
+  process.env.QUALITY_LAYER_ENABLED = disabledValue;
+  assert(isQualityLayerEnabled() === false, `QUALITY_LAYER_ENABLED=${JSON.stringify(disabledValue)} keeps quality layer disabled`);
+}
+
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
 process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
@@ -2735,6 +2740,8 @@ process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
 process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
 
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
+process.env.QUALITY_LAYER_ENABLED = 'TRUE';
+assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=TRUE enables quality layer');
 assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 3,
@@ -2933,6 +2940,69 @@ assert(!shadowJson.includes('user4@example.com'), 'quality shadow store redacts 
 assert(!shadowJson.includes('xoxb-secret'), 'quality shadow store redacts Slack-like tokens');
 assert(!shadowJson.includes('raw source body raw source body raw source body'), 'quality shadow store avoids large raw snippets');
 
+const sensitiveQualityText = {
+  query: 'Jane Customer jane.customer@example.com xoxb-1234567890-secret 555-123-4567 tenant 123 account 456 location 789 raw query text',
+  sourceUrl: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/123456/Jane-Customer-tenant-123',
+  sourceSnippet: 'Jane Customer source snippet with phone 555-123-4567 and tenant 123',
+  stepTitle: 'Call Jane Customer',
+  stepDetail: 'Tell Jane Customer about account 456 and location 789',
+  actorName: 'Jane Reviewer',
+};
+const sensitiveShadowFile = join(qualityTempDir, 'quality-shadow-sensitive.jsonl');
+_setQualityShadowFileForTest(sensitiveShadowFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-09T00:01:30.000Z',
+  answerId: 'ans_sensitive',
+  queryHash: sensitiveQualityText.query,
+  queryPreview: sensitiveQualityText.query,
+  issueTitle: 'Jane Customer tenant 123 diagnosis',
+  integrationType: 'Zapier',
+  evidence: [{
+    id: 'ev_sensitive',
+    source: 'confluence',
+    url: sensitiveQualityText.sourceUrl,
+    urlHash: sensitiveQualityText.sourceUrl,
+    title: 'Jane Customer tenant 123 setup',
+    snippetPreview: sensitiveQualityText.sourceSnippet,
+    sourceQuality: 'high',
+    directness: 'direct',
+    freshness: 'unknown',
+    sensitivity: 'internal',
+    reuseValue: 'medium',
+    reasons: ['direct_source_match'],
+  }],
+  sections: [{
+    title: sensitiveQualityText.stepTitle,
+    detail: sensitiveQualityText.stepDetail,
+  }],
+  quality: {
+    directAnswer: true,
+    reusableKnowledge: true,
+    nominationEligible: true,
+    approximateMapping: true,
+    reasons: ['has_reusable_claim'],
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-09T00:01:30.000Z'),
+});
+const sensitiveShadowText = await readFile(sensitiveShadowFile, 'utf-8');
+const sensitiveShadowRecord = JSON.parse(sensitiveShadowText.trim());
+assert(sensitiveShadowRecord.queryPreview === undefined, 'quality shadow store omits raw query previews');
+assert(sensitiveShadowRecord.issueTitle === undefined, 'quality shadow store omits raw diagnosis or issue titles');
+assert(sensitiveShadowRecord.evidence[0].title === undefined, 'quality shadow store omits raw source titles');
+assert(sensitiveShadowRecord.evidence[0].snippetPreview === undefined, 'quality shadow store omits raw source snippet previews');
+assert(!sensitiveShadowText.includes('jane.customer@example.com'), 'quality shadow store omits sample email');
+assert(!sensitiveShadowText.includes('xoxb-1234567890-secret'), 'quality shadow store omits sample Slack-like token');
+assert(!sensitiveShadowText.includes('555-123-4567'), 'quality shadow store omits sample phone number');
+assert(!sensitiveShadowText.includes('tenant 123'), 'quality shadow store omits sample tenant id text');
+assert(!sensitiveShadowText.includes('account 456'), 'quality shadow store omits sample account id text');
+assert(!sensitiveShadowText.includes('location 789'), 'quality shadow store omits sample location id text');
+assert(!sensitiveShadowText.includes('Jane Customer'), 'quality shadow store omits sample customer/person name from free text');
+assert(!sensitiveShadowText.includes('raw query text'), 'quality shadow store omits raw query text');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceUrl), 'quality shadow store omits raw source URLs');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceSnippet), 'quality shadow store omits raw source snippet text');
+
 const invalidShadowParent = join(qualityTempDir, 'not-a-directory');
 await writeFile(invalidShadowParent, 'plain file');
 _setQualityShadowFileForTest(join(invalidShadowParent, 'quality-shadow.jsonl'));
@@ -2975,12 +3045,37 @@ await appendQualityAuditEvent({
   },
 }, { now: new Date('2026-07-09T00:00:00.000Z') });
 
+await appendQualityAuditEvent({
+  type: 'contract_created',
+  actor: { type: 'reviewer', userId: 'U456', name: sensitiveQualityText.actorName },
+  entity: { type: 'answer_contract', id: 'ans_sensitive' },
+  metadata: {
+    queryHash: sensitiveQualityText.query,
+    query: sensitiveQualityText.query,
+    integrationType: 'Zapier',
+    reason: 'Jane Customer should not persist as a free-text reason',
+    reasons: ['has_reusable_claim'],
+  },
+}, { now: new Date('2026-07-09T00:00:01.000Z') });
+
 const auditText = await readFile(auditFile, 'utf-8');
+const auditLines = auditText.trim().split('\n').map(line => JSON.parse(line));
 assert(auditText.includes('contract_created'), 'quality audit stores event type');
 assert(auditText.includes('queryHash'), 'quality audit stores query hash');
 assert(!auditText.includes('Full customer query should become hash/preview only'), 'quality audit does not store raw query');
 assert(!auditText.includes('Bot User'), 'quality audit does not store actor names');
 assert(!auditText.includes('"name"'), 'quality audit omits actor name field');
+assert(auditLines.every(line => line.metadata.queryPreview === undefined), 'quality audit omits raw query previews');
+assert(auditLines.every(line => line.metadata.reason === undefined), 'quality audit omits free-text reason fields');
+assert(!auditText.includes('jane.customer@example.com'), 'quality audit omits sample email');
+assert(!auditText.includes('xoxb-1234567890-secret'), 'quality audit omits sample Slack-like token');
+assert(!auditText.includes('555-123-4567'), 'quality audit omits sample phone number');
+assert(!auditText.includes('tenant 123'), 'quality audit omits sample tenant id text');
+assert(!auditText.includes('account 456'), 'quality audit omits sample account id text');
+assert(!auditText.includes('location 789'), 'quality audit omits sample location id text');
+assert(!auditText.includes('Jane Customer'), 'quality audit omits sample customer/person name from free text');
+assert(!auditText.includes(sensitiveQualityText.actorName), 'quality audit omits actor display name');
+assert(!auditText.includes('raw query text'), 'quality audit omits raw query text');
 
 await rm(qualityTempDir, { recursive: true, force: true });
 

@@ -32,7 +32,6 @@ export async function recordQualityShadow({
       entity: { type: 'answer_contract', id: contract.answerId },
       metadata: {
         queryHash: contract.queryHash,
-        queryPreview: contract.queryPreview,
         integrationType: contract.integrationType,
         nominationEligible: contract.quality.nominationEligible,
         approximateMapping: contract.quality.approximateMapping,

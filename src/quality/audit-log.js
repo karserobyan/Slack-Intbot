@@ -10,8 +10,36 @@ export function _setQualityAuditFileForTest(path) {
   _auditQueue = Promise.resolve();
 }
 
+function safeLowRiskLabel(value, max = 80) {
+  const text = sanitizePreview(value, max);
+  if (!text) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9 ._+&/-]{0,79}$/.test(text)) return '';
+  if (/@/.test(text) || /\bxox[abprs]-/i.test(text)) return '';
+  if (/\b(?:tenant|account|location)\s*#?\d+\b/i.test(text)) return '';
+  if (/\b\d{3}[-. ]?\d{3}[-. ]?\d{4}\b/.test(text)) return '';
+  return text;
+}
+
+function safeHash(value, fallbackValue = '') {
+  const text = String(value ?? '');
+  if (/^sha256:[a-f0-9]{64}$/i.test(text)) return text.toLowerCase();
+  return hashValue(fallbackValue || text);
+}
+
+function safeReasonCodes(reasons = []) {
+  return reasons
+    .slice(0, 8)
+    .map(r => sanitizePreview(r, 40))
+    .filter(r => /^[A-Za-z0-9_.:-]{1,40}$/.test(r));
+}
+
+function queryHashFromMetadata(metadata = {}) {
+  if (metadata.queryHash) return safeHash(metadata.queryHash, metadata.query ?? metadata.queryPreview ?? '');
+  const query = metadata.query ?? metadata.queryPreview ?? '';
+  return query ? hashValue(query) : null;
+}
+
 function sanitizeAuditEvent(event, now) {
-  const query = event.metadata?.query ?? event.metadata?.queryPreview ?? '';
   return {
     id: event.id ?? makeQualityId('qa', now),
     timestamp: event.timestamp ?? now.toISOString(),
@@ -26,13 +54,11 @@ function sanitizeAuditEvent(event, now) {
       id: sanitizePreview(event.entity?.id ?? '', 120),
     },
     metadata: {
-      queryHash: query ? hashValue(query) : event.metadata?.queryHash,
-      queryPreview: query ? sanitizePreview(query, 32) : sanitizePreview(event.metadata?.queryPreview ?? '', 32),
-      integrationType: sanitizePreview(event.metadata?.integrationType ?? '', 80),
+      queryHash: queryHashFromMetadata(event.metadata),
+      integrationType: safeLowRiskLabel(event.metadata?.integrationType, 80),
       nominationEligible: event.metadata?.nominationEligible === true,
       approximateMapping: event.metadata?.approximateMapping === true,
-      reason: sanitizePreview(event.metadata?.reason ?? '', 80),
-      reasons: (event.metadata?.reasons ?? []).slice(0, 8).map(r => sanitizePreview(r, 40)),
+      reasons: safeReasonCodes(event.metadata?.reasons),
     },
   };
 }
