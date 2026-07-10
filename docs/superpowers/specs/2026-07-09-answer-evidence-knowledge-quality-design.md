@@ -476,7 +476,7 @@ Allowed `status` values:
 }
 ```
 
-Persistent audit metadata must avoid raw previews, free-text reasons, raw secrets, PII, customer payloads, source snippets, raw URLs, and actor display names. The in-memory Answer Evidence Contract can still carry short sanitized previews in Phase 1; JSONL persistence should store hashes, IDs, booleans/statuses, enum dimensions, reason codes, approximate mapping state, and hash-only integration correlation.
+Persistent audit metadata must avoid raw previews, free-text reasons, raw secrets, PII, customer payloads, source snippets, raw URLs, and actor display names. The in-memory Answer Evidence Contract can still carry short sanitized previews in Phase 1; JSONL persistence should store hashes, IDs, booleans/statuses, enum dimensions, allowlisted reason codes, approximate mapping state, hash-only integration correlation, and only controlled allowlisted hostnames.
 
 ## Source Scoring Rules
 
@@ -727,7 +727,7 @@ Likely file-backed stores under `data/`:
 
 - `data/quality-audit.jsonl`
   - Append-only audit events.
-  - Store actor IDs, entity IDs, hashes, status values, booleans, enum dimensions, approximate mapping state, and reason codes only. Do not store source titles, short previews, free-text reasons, full customer payloads, raw source bodies, raw URLs, or actor display names.
+  - Store actor IDs, entity IDs, hashes, status values, booleans, enum dimensions, approximate mapping state, controlled allowlisted hostnames, and allowlisted reason codes only. Do not store source titles, short previews, free-text reasons, full customer payloads, raw source bodies, raw URLs, arbitrary hostnames, or actor display names.
 
 All files should be gitignored through the existing `data/` ignore behavior.
 

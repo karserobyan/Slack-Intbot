@@ -12,6 +12,27 @@ const DIRECTNESS_VALUES = new Set(['direct', 'related', 'background', 'unknown']
 const FRESHNESS_VALUES = new Set(['fresh', 'stale', 'unknown']);
 const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'specialist_only', 'unknown']);
 const REUSE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
+const CONFIDENCE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
+const ALLOWED_HOSTNAMES = new Set([
+  'help.servicetitan.com',
+  'servicetitan.atlassian.net',
+  'servicetitan.slack.com',
+]);
+const REASON_CODES = new Set([
+  'actionable_resolution',
+  'approximate_mapping',
+  'direct_evidence',
+  'direct_match',
+  'direct_source_match',
+  'has_reusable_claim',
+  'integration_match',
+  'missing_direct_source',
+  'reusable_backend_claim',
+  'reusable_claim',
+  'shadow_mode',
+  'symptom_match',
+  'weak_evidence',
+]);
 
 export function _setQualityShadowFileForTest(path) {
   _shadowFile = path;
@@ -31,16 +52,15 @@ function safeEnum(value, allowed, fallback = 'unknown') {
 
 function safeHostname(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
-  if (!/^[a-z0-9.-]{1,120}$/.test(normalized)) return '';
-  if (!/[a-z0-9]\.[a-z]/.test(normalized)) return '';
-  return normalized;
+  return ALLOWED_HOSTNAMES.has(normalized) ? normalized : '';
 }
 
 function safeReasonCodes(reasons = []) {
   return reasons
     .slice(0, 8)
     .map(r => sanitizePreview(r, 40))
-    .filter(r => /^[A-Za-z0-9_.:-]{1,40}$/.test(r));
+    .map(r => r.toLowerCase())
+    .filter(r => REASON_CODES.has(r));
 }
 
 function sanitizeEvidence(evidence = []) {
@@ -68,7 +88,7 @@ function sanitizeShadowRecord(record) {
     threadTs: sanitizePreview(record.threadTs, 80),
     issueHash: record.issueTitle ? hashValue(record.issueTitle) : null,
     integrationTypeHash: record.integrationType ? hashValue(record.integrationType) : null,
-    confidence: record.confidence,
+    confidence: safeEnum(record.confidence, CONFIDENCE_VALUES),
     evidence: sanitizeEvidence(record.evidence),
     quality: {
       directAnswer: record.quality?.directAnswer === true,

@@ -10,6 +10,22 @@ export function _setQualityAuditFileForTest(path) {
   _auditQueue = Promise.resolve();
 }
 
+const REASON_CODES = new Set([
+  'actionable_resolution',
+  'approximate_mapping',
+  'direct_evidence',
+  'direct_match',
+  'direct_source_match',
+  'has_reusable_claim',
+  'integration_match',
+  'missing_direct_source',
+  'reusable_backend_claim',
+  'reusable_claim',
+  'shadow_mode',
+  'symptom_match',
+  'weak_evidence',
+]);
+
 function safeHash(value, fallbackValue = '') {
   const text = String(value ?? '');
   if (/^sha256:[a-f0-9]{64}$/i.test(text)) return text.toLowerCase();
@@ -20,7 +36,8 @@ function safeReasonCodes(reasons = []) {
   return reasons
     .slice(0, 8)
     .map(r => sanitizePreview(r, 40))
-    .filter(r => /^[A-Za-z0-9_.:-]{1,40}$/.test(r));
+    .map(r => r.toLowerCase())
+    .filter(r => REASON_CODES.has(r));
 }
 
 function queryHashFromMetadata(metadata = {}) {

@@ -2947,6 +2947,8 @@ const sensitiveQualityText = {
   stepTitle: 'Call Jane Customer',
   stepDetail: 'Tell Jane Customer about account 456 and location 789',
   actorName: 'Jane Reviewer',
+  hostileHostname: 'jane-customer.tenant-123.example.com',
+  hostileReasonCodes: ['tenant-123', 'account-456', 'location-789', '555-123-4567', 'JaneCustomer'],
 };
 const sensitiveShadowFile = join(qualityTempDir, 'quality-shadow-sensitive.jsonl');
 _setQualityShadowFileForTest(sensitiveShadowFile);
@@ -2957,10 +2959,11 @@ await appendQualityShadowRecord({
   queryPreview: sensitiveQualityText.query,
   issueTitle: 'Jane Customer tenant 123 diagnosis',
   integrationType: 'Jane Customer',
+  confidence: sensitiveQualityText.query,
   evidence: [{
     id: 'ev_sensitive',
     source: 'Jane Customer',
-    hostname: 'Jane Customer',
+    hostname: sensitiveQualityText.hostileHostname,
     url: sensitiveQualityText.sourceUrl,
     urlHash: sensitiveQualityText.sourceUrl,
     title: 'Jane Customer tenant 123 setup',
@@ -2970,7 +2973,7 @@ await appendQualityShadowRecord({
     freshness: sensitiveQualityText.query,
     sensitivity: sensitiveQualityText.query,
     reuseValue: sensitiveQualityText.query,
-    reasons: ['direct_source_match', sensitiveQualityText.query],
+    reasons: ['direct_source_match', sensitiveQualityText.query, ...sensitiveQualityText.hostileReasonCodes],
   }],
   sections: [{
     title: sensitiveQualityText.stepTitle,
@@ -2981,7 +2984,7 @@ await appendQualityShadowRecord({
     reusableKnowledge: true,
     nominationEligible: true,
     approximateMapping: true,
-    reasons: ['has_reusable_claim'],
+    reasons: ['has_reusable_claim', ...sensitiveQualityText.hostileReasonCodes],
   },
 }, {
   retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
@@ -3002,6 +3005,9 @@ assert(sensitiveShadowRecord.evidence[0].directness === 'unknown', 'quality shad
 assert(sensitiveShadowRecord.evidence[0].freshness === 'unknown', 'quality shadow store clamps freshness enum');
 assert(sensitiveShadowRecord.evidence[0].sensitivity === 'unknown', 'quality shadow store clamps sensitivity enum');
 assert(sensitiveShadowRecord.evidence[0].reuseValue === 'unknown', 'quality shadow store clamps reuse value enum');
+assert(sensitiveShadowRecord.confidence === 'unknown', 'quality shadow store clamps confidence enum');
+assert.deepEqual(sensitiveShadowRecord.evidence[0].reasons, ['direct_source_match'], 'quality shadow store allowlists evidence reason codes');
+assert.deepEqual(sensitiveShadowRecord.quality.reasons, ['has_reusable_claim'], 'quality shadow store allowlists quality reason codes');
 assert(!sensitiveShadowText.includes('Preview'), 'quality shadow store omits preview-named persisted fields');
 assert(!sensitiveShadowText.includes('title'), 'quality shadow store omits title-named persisted fields');
 assert(!sensitiveShadowText.includes('detail'), 'quality shadow store omits detail-named persisted fields');
@@ -3012,9 +3018,14 @@ assert(!sensitiveShadowText.includes('tenant 123'), 'quality shadow store omits 
 assert(!sensitiveShadowText.includes('account 456'), 'quality shadow store omits sample account id text');
 assert(!sensitiveShadowText.includes('location 789'), 'quality shadow store omits sample location id text');
 assert(!sensitiveShadowText.includes('Jane Customer'), 'quality shadow store omits sample customer/person name from free text');
+assert(!sensitiveShadowText.includes('JaneCustomer'), 'quality shadow store omits code-shaped sample customer/person name');
 assert(!sensitiveShadowText.includes('raw query text'), 'quality shadow store omits raw query text');
 assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceUrl), 'quality shadow store omits raw source URLs');
 assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceSnippet), 'quality shadow store omits raw source snippet text');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.hostileHostname), 'quality shadow store omits hostile hostname text');
+for (const hostileReasonCode of sensitiveQualityText.hostileReasonCodes) {
+  assert(!sensitiveShadowText.includes(hostileReasonCode), `quality shadow store omits hostile reason code ${hostileReasonCode}`);
+}
 
 const invalidShadowParent = join(qualityTempDir, 'not-a-directory');
 await writeFile(invalidShadowParent, 'plain file');
@@ -3067,7 +3078,7 @@ await appendQualityAuditEvent({
     query: sensitiveQualityText.query,
     integrationType: 'Jane Customer',
     reason: 'Jane Customer should not persist as a free-text reason',
-    reasons: ['has_reusable_claim'],
+    reasons: ['has_reusable_claim', ...sensitiveQualityText.hostileReasonCodes],
   },
 }, { now: new Date('2026-07-09T00:00:01.000Z') });
 
@@ -3082,6 +3093,7 @@ assert(auditLines.every(line => line.metadata.queryPreview === undefined), 'qual
 assert(auditLines.every(line => line.metadata.reason === undefined), 'quality audit omits free-text reason fields');
 assert(auditLines.every(line => line.metadata.integrationType === undefined), 'quality audit omits raw integration type labels');
 assert(auditLines.every(line => String(line.metadata.integrationTypeHash ?? '').startsWith('sha256:')), 'quality audit hashes integration type');
+assert(auditLines.every(line => (line.metadata.reasons ?? []).every(reason => !sensitiveQualityText.hostileReasonCodes.includes(reason))), 'quality audit allowlists reason codes');
 assert(!auditText.includes('jane.customer@example.com'), 'quality audit omits sample email');
 assert(!auditText.includes('xoxb-1234567890-secret'), 'quality audit omits sample Slack-like token');
 assert(!auditText.includes('555-123-4567'), 'quality audit omits sample phone number');
@@ -3089,8 +3101,12 @@ assert(!auditText.includes('tenant 123'), 'quality audit omits sample tenant id 
 assert(!auditText.includes('account 456'), 'quality audit omits sample account id text');
 assert(!auditText.includes('location 789'), 'quality audit omits sample location id text');
 assert(!auditText.includes('Jane Customer'), 'quality audit omits sample customer/person name from free text');
+assert(!auditText.includes('JaneCustomer'), 'quality audit omits code-shaped sample customer/person name');
 assert(!auditText.includes(sensitiveQualityText.actorName), 'quality audit omits actor display name');
 assert(!auditText.includes('raw query text'), 'quality audit omits raw query text');
+for (const hostileReasonCode of sensitiveQualityText.hostileReasonCodes) {
+  assert(!auditText.includes(hostileReasonCode), `quality audit omits hostile reason code ${hostileReasonCode}`);
+}
 
 await rm(qualityTempDir, { recursive: true, force: true });
 

@@ -275,3 +275,21 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing tests first; red run: `node test.js` failed with 707 passed, 20 failed out of 727 tests because raw integration/source/dimension values persisted. After runtime and spec fixes, ran `node test.js`; result: 727 passed, 0 failed.
 
 **Decision / Follow-up:** The quality layer remains shadow-mode only and fail-open. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, no `knowledge.md` behavior changes, and no PR 2 work started.
+
+## 2026-07-10 - PR 1 Re-review Fix: Allowlist Hostnames And Reason Codes
+
+**Intent:** Resolve the remaining JSONL privacy-boundary findings from the final read-only re-review.
+
+**Action Taken:** Added hostile tests for syntactically valid but unsafe hostnames, code-shaped hostile reason strings, and free-form confidence values. Updated shadow storage so hostnames persist only when they match the controlled allowlist, reason codes persist only when they match the known reason-code allowlist, and confidence is clamped to the controlled enum. Updated audit storage to use the same reason-code allowlist. Updated the design spec to describe persistent JSONL as hash/ID/enum-only with controlled hostnames and allowlisted reason codes.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `src/quality/audit-log.js`
+- `test.js`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing tests first; red run: `node test.js` failed with 717 passed, 27 failed out of 744 tests because hostile hostnames, hostile reason codes, and free-form confidence persisted. After runtime and spec fixes, ran `node test.js`; result: 744 passed, 0 failed.
+
+**Decision / Follow-up:** The quality layer remains shadow-mode only and fail-open. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, no `knowledge.md` behavior changes, and no PR 2 work started. Final branch push/sync will be recorded after the commit is pushed.
