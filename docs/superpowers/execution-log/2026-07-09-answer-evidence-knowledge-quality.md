@@ -162,3 +162,20 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing audit privacy assertions first and ran `node test.js`; result: 672 passed, 2 failed out of 674 tests for actor name persistence. After implementation, ran `node test.js`; result: 674 passed, 0 failed.
 
 **Decision / Follow-up:** Audit logging remains metadata-only and sanitized. No mention-handler integration, Slack rendering, answerer prompt, nomination, or `knowledge.md` behavior changed.
+
+## 2026-07-10 - PR 1 Task 5 Shadow Recorder And Mention Integration
+
+**Intent:** Record sanitized answer-quality shadow metadata after Slack delivery without changing visible mention behavior, answer prompts, nominations, approval flows, or `knowledge.md`.
+
+**Action Taken:** Added `recordQualityShadow` as a shadow-mode-only recorder that gates on `QUALITY_LAYER_ENABLED`, builds the existing answer-evidence contract, writes sanitized shadow metadata, appends a sanitized audit event, and fails open with a bounded warning. Hooked it into the two approved initial-answer mention paths immediately after history append so recording starts only after the Slack answer has already been sent or updated. Added tests for disabled behavior, recorded shadow behavior, direct fail-open behavior, and a new-pipeline mention integration case that proves Slack delivery still succeeds when recorder storage fails.
+
+**Files Touched:**
+
+- `src/quality/shadow-recorder.js`
+- `src/handlers/mention.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing import/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/shadow-recorder.js`, as expected. After implementation, ran `node test.js`; result: 681 passed, 0 failed.
+
+**Decision / Follow-up:** Task 5 stays strictly shadow-mode and fail-open. Slack payload shape/text, source chips, buttons, card layout, answerer prompts, nomination behavior, approval behavior, and `knowledge.md` behavior remain unchanged.

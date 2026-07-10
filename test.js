@@ -57,7 +57,7 @@ import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
-import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
+import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
 import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
@@ -65,6 +65,7 @@ import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/
 import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
+import { recordQualityShadow } from './src/quality/shadow-recorder.js';
 
 let passed = 0;
 let failed = 0;
@@ -2982,6 +2983,119 @@ assert(!auditText.includes('Bot User'), 'quality audit does not store actor name
 assert(!auditText.includes('"name"'), 'quality audit omits actor name field');
 
 await rm(qualityTempDir, { recursive: true, force: true });
+
+// ── quality shadow recorder ──────────────────────────────────────────────────
+console.log('\n🔹 quality shadow recorder');
+
+const recorderTempDir = await mkdtemp(join(tmpdir(), 'intbot-quality-recorder-'));
+_setQualityShadowFileForTest(join(recorderTempDir, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(recorderTempDir, 'audit.jsonl'));
+
+const oldQualityLayerEnabled = process.env.QUALITY_LAYER_ENABLED;
+const oldQualityShadowMode = process.env.QUALITY_LAYER_SHADOW_MODE;
+const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+const oldNewPipeline = process.env.NEW_PIPELINE;
+
+process.env.QUALITY_LAYER_ENABLED = 'false';
+process.env.QUALITY_SHADOW_MODE = 'true';
+const disabledRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+});
+assert(disabledRecord.status === 'disabled', 'recordQualityShadow skips when quality layer disabled');
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_SHADOW_MODE = 'true';
+const recorded = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+assert(recorded.status === 'recorded', 'recordQualityShadow records in shadow mode');
+assert(recorded.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract');
+
+const invalidRecorderParent = join(recorderTempDir, 'not-a-directory');
+await writeFile(invalidRecorderParent, 'plain file');
+_setQualityShadowFileForTest(join(invalidRecorderParent, 'shadow.jsonl'));
+const warnMessages = [];
+const failedOpen = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => warnMessages.push(message) },
+  now: new Date('2026-07-09T00:00:01.000Z'),
+});
+assert(failedOpen.status === 'failed_open', 'recordQualityShadow fails open when storage write fails');
+assert(warnMessages.some((message) => message.includes('[quality] shadow record failed:')), 'recordQualityShadow logs bounded warning on failure');
+
+const mentionShadowDir = await mkdtemp(join(tmpdir(), 'intbot-quality-mention-'));
+const mentionShadowParent = join(mentionShadowDir, 'not-a-directory');
+await writeFile(mentionShadowParent, 'plain file');
+_setQualityShadowFileForTest(join(mentionShadowParent, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(mentionShadowDir, 'audit.jsonl'));
+process.env.NEW_PIPELINE = 'true';
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const origFetchMention = globalThis.fetch;
+let mentionStepCounter = 0;
+const mentionResponses = [
+  anthropicMock('{"cleaned_question":"zapier api access disabled","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"api access disabled"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier api access disabled"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Zapier API Access","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[{"num":1,"title":"Enable API access","detail":"Enable Zapier API access for the tenant.","tag":"backend"}],"findings_summary":{"diagnosis":"Zapier API access is disabled.","actions":["Enable access"]},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C1/p1","channel":"#ask-integrations","title":"Zapier API access fix"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+];
+globalThis.fetch = async (url, opts) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) return mentionResponses[mentionStepCounter++];
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+
+const mentionChatUpdates = [];
+const mentionChatPosts = [];
+await handleQuery({
+  rawText: '<@UBOT> Zapier API access disabled',
+  channelId: 'C123',
+  threadTs: '1700000001.000',
+  userId: 'U123',
+  client: {
+    users: { info: async () => ({ user: { profile: { title: 'Customer Support Advocate' } } }) },
+    chat: {
+      postMessage: async (payload) => {
+        mentionChatPosts.push(payload);
+        return { ts: payload.thread_ts ?? '1700000001.111' };
+      },
+      update: async (payload) => {
+        mentionChatUpdates.push(payload);
+        return payload;
+      },
+    },
+  },
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert(mentionChatUpdates.some((payload) => payload.text === 'Troubleshooting: Zapier API Access (Zapier)'), 'mention new-pipeline path still updates Slack response when shadow recording fails');
+assert(mentionChatPosts.some((payload) => payload.text === 'Checking…'), 'mention new-pipeline path still posts the existing thinking message');
+
+globalThis.fetch = origFetchMention;
+if (oldAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+else process.env.ANTHROPIC_API_KEY = oldAnthropicApiKey;
+if (oldNewPipeline === undefined) delete process.env.NEW_PIPELINE;
+else process.env.NEW_PIPELINE = oldNewPipeline;
+if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABLED;
+else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
+if (oldQualityShadowMode === undefined) delete process.env.QUALITY_SHADOW_MODE;
+else process.env.QUALITY_SHADOW_MODE = oldQualityShadowMode;
+
+await rm(recorderTempDir, { recursive: true, force: true });
+await rm(mentionShadowDir, { recursive: true, force: true });
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
