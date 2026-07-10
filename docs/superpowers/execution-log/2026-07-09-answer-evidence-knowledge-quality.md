@@ -209,3 +209,18 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `node test.js`; result: 682 passed, 0 failed.
 
 **Decision / Follow-up:** PR 1 remains shadow-mode only. The branch is still ahead of `origin` and has not been pushed from this workspace.
+
+## 2026-07-10 - Design Spec Privacy Schema Tightening
+
+**Intent:** Keep the source-of-truth design doc aligned with the approved privacy posture for shadow metadata and audit events.
+
+**Action Taken:** Updated the Answer Evidence Contract and audit-event example schemas to use query hashes, sanitized query previews, URL hashes, hostnames, and actor user hashes instead of raw user queries, raw source URLs, or actor display names.
+
+**Files Touched:**
+
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran a targeted spec scan for raw-query, raw-URL, and actor-name example fields; no remaining raw schema examples were found.
+
+**Decision / Follow-up:** The traceable design doc remains `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`. Implementation must continue treating shadow/audit metadata as bounded and privacy-preserving.

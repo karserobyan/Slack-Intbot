@@ -269,7 +269,8 @@ These schemas are intentionally plain JavaScript objects to match the current co
   answerId: 'ans_...',
   createdAt: '2026-07-09T00:00:00.000Z',
   mode: 'shadow',
-  query: 'original user question',
+  queryHash: 'sha256:...',
+  queryPreview: 'short sanitized preview',
   role: 'csa',
   channelId: 'C...',
   threadTs: '123.456',
@@ -314,9 +315,10 @@ These schemas are intentionally plain JavaScript objects to match the current co
     {
       id: 'ev_1',
       source: 'confluence',
-      url: 'https://servicetitan.atlassian.net/wiki/...',
+      urlHash: 'sha256:...',
+      hostname: 'servicetitan.atlassian.net',
       title: 'Zapier setup',
-      snippetPreview: 'Enable Zapier API access...',
+      snippetPreview: 'short sanitized preview',
       sourceQuality: 'high',
       directness: 'direct',
       freshness: 'unknown',
@@ -458,7 +460,7 @@ Allowed `status` values:
   actor: {
     type: 'bot',
     userId: null,
-    name: null
+    userHash: null
   },
   entity: {
     type: 'answer_contract',
@@ -466,6 +468,7 @@ Allowed `status` values:
   },
   metadata: {
     queryHash: 'sha256:...',
+    queryPreview: 'short sanitized preview',
     integrationType: 'Zapier',
     nominationEligible: true,
     approximateMapping: true
