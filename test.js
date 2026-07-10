@@ -2997,7 +2997,7 @@ const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const oldNewPipeline = process.env.NEW_PIPELINE;
 
 process.env.QUALITY_LAYER_ENABLED = 'false';
-process.env.QUALITY_SHADOW_MODE = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
 const disabledRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -3009,7 +3009,19 @@ const disabledRecord = await recordQualityShadow({
 assert(disabledRecord.status === 'disabled', 'recordQualityShadow skips when quality layer disabled');
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
-process.env.QUALITY_SHADOW_MODE = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+const notShadowModeRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+});
+assert(notShadowModeRecord.status === 'not_shadow_mode', 'recordQualityShadow skips when QUALITY_LAYER_SHADOW_MODE=false');
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
 const recorded = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -3091,8 +3103,8 @@ if (oldNewPipeline === undefined) delete process.env.NEW_PIPELINE;
 else process.env.NEW_PIPELINE = oldNewPipeline;
 if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABLED;
 else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
-if (oldQualityShadowMode === undefined) delete process.env.QUALITY_SHADOW_MODE;
-else process.env.QUALITY_SHADOW_MODE = oldQualityShadowMode;
+if (oldQualityShadowMode === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
+else process.env.QUALITY_LAYER_SHADOW_MODE = oldQualityShadowMode;
 
 await rm(recorderTempDir, { recursive: true, force: true });
 await rm(mentionShadowDir, { recursive: true, force: true });

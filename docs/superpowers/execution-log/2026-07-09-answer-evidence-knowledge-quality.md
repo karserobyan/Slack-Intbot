@@ -179,3 +179,18 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Added failing import/tests first and ran `node test.js`; result: failed with `ERR_MODULE_NOT_FOUND` for `src/quality/shadow-recorder.js`, as expected. After implementation, ran `node test.js`; result: 681 passed, 0 failed.
 
 **Decision / Follow-up:** Task 5 stays strictly shadow-mode and fail-open. Slack payload shape/text, source chips, buttons, card layout, answerer prompts, nomination behavior, approval behavior, and `knowledge.md` behavior remain unchanged.
+
+## 2026-07-10 - PR 1 Task 5 Review Fix: Shadow Mode Env Flag Test Coverage
+
+**Intent:** Tighten the Task 5 recorder tests so they exercise the actual production shadow-mode gate instead of passing through the default shadow-mode value.
+
+**Action Taken:** Updated the quality shadow recorder test setup and cleanup to use `QUALITY_LAYER_SHADOW_MODE`, added an explicit `QUALITY_LAYER_SHADOW_MODE=false` assertion expecting `not_shadow_mode`, then re-enabled `QUALITY_LAYER_SHADOW_MODE=true` for the recorded and fail-open paths. No production code paths changed.
+
+**Files Touched:**
+
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** First ran `node test.js` after adding the explicit `not_shadow_mode` assertion while the later setup still used the wrong env var; result: 678 passed, 4 failed out of 682 tests in the recorder block, exposing that the record path never re-enabled the real shadow-mode gate. After fixing the setup/cleanup to use `QUALITY_LAYER_SHADOW_MODE`, ran `node test.js`; result: 682 passed, 0 failed.
+
+**Decision / Follow-up:** This is test-quality-only. Slack rendering, answerer prompts, nominations, `knowledge.md`, and mention-handler behavior remain unchanged.
