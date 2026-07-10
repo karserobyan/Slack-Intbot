@@ -257,3 +257,21 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Before the push, ran `node test.js`; result: 713 passed, 0 failed. Ran `git diff --check`; result: clean. Branch push succeeded: `1a64ebe..4fe1e96  codex/answer-evidence-quality -> codex/answer-evidence-quality`.
 
 **Decision / Follow-up:** Branch was pushed and synced at `4fe1e96` before this final log-only note. No PR 2 work started.
+
+## 2026-07-10 - PR 1 Re-review Fix: Hash Integration Type And Clamp Persisted Dimensions
+
+**Intent:** Resolve the final re-review blockers before merging PR #34.
+
+**Action Taken:** Re-review found that `integrationType`, `source`, `hostname`, and dimensional scoring fields could still persist arbitrary free text if passed directly into the JSONL serializers. Added hostile persistence tests that inject the sample customer/person name, email, Slack-like token, phone number, tenant/account/location text, raw query, and raw source URL into `integrationType`, source fields, hostname, and score-dimension slots. Updated shadow storage to persist `integrationTypeHash` instead of raw `integrationType`, clamp source type and score dimensions to controlled enums, and drop invalid hostnames. Updated audit storage to persist `integrationTypeHash` instead of raw `integrationType`. Updated the design spec audit/storage examples to match the persistent hash/ID/enum-only privacy boundary.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `src/quality/audit-log.js`
+- `test.js`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing tests first; red run: `node test.js` failed with 707 passed, 20 failed out of 727 tests because raw integration/source/dimension values persisted. After runtime and spec fixes, ran `node test.js`; result: 727 passed, 0 failed.
+
+**Decision / Follow-up:** The quality layer remains shadow-mode only and fail-open. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, no `knowledge.md` behavior changes, and no PR 2 work started.

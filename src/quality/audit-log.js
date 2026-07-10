@@ -10,16 +10,6 @@ export function _setQualityAuditFileForTest(path) {
   _auditQueue = Promise.resolve();
 }
 
-function safeLowRiskLabel(value, max = 80) {
-  const text = sanitizePreview(value, max);
-  if (!text) return '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9 ._+&/-]{0,79}$/.test(text)) return '';
-  if (/@/.test(text) || /\bxox[abprs]-/i.test(text)) return '';
-  if (/\b(?:tenant|account|location)\s*#?\d+\b/i.test(text)) return '';
-  if (/\b\d{3}[-. ]?\d{3}[-. ]?\d{4}\b/.test(text)) return '';
-  return text;
-}
-
 function safeHash(value, fallbackValue = '') {
   const text = String(value ?? '');
   if (/^sha256:[a-f0-9]{64}$/i.test(text)) return text.toLowerCase();
@@ -55,7 +45,7 @@ function sanitizeAuditEvent(event, now) {
     },
     metadata: {
       queryHash: queryHashFromMetadata(event.metadata),
-      integrationType: safeLowRiskLabel(event.metadata?.integrationType, 80),
+      integrationTypeHash: event.metadata?.integrationType ? hashValue(event.metadata.integrationType) : null,
       nominationEligible: event.metadata?.nominationEligible === true,
       approximateMapping: event.metadata?.approximateMapping === true,
       reasons: safeReasonCodes(event.metadata?.reasons),

@@ -468,15 +468,15 @@ Allowed `status` values:
   },
   metadata: {
     queryHash: 'sha256:...',
-    queryPreview: 'short sanitized preview',
-    integrationType: 'Zapier',
+    integrationTypeHash: 'sha256:...',
     nominationEligible: true,
-    approximateMapping: true
+    approximateMapping: true,
+    reasons: ['shadow_mode']
   }
 }
 ```
 
-Audit metadata must avoid storing raw secrets or large customer payloads.
+Persistent audit metadata must avoid raw previews, free-text reasons, raw secrets, PII, customer payloads, source snippets, raw URLs, and actor display names. The in-memory Answer Evidence Contract can still carry short sanitized previews in Phase 1; JSONL persistence should store hashes, IDs, booleans/statuses, enum dimensions, reason codes, approximate mapping state, and hash-only integration correlation.
 
 ## Source Scoring Rules
 
@@ -727,7 +727,7 @@ Likely file-backed stores under `data/`:
 
 - `data/quality-audit.jsonl`
   - Append-only audit events.
-  - Store actor IDs, entity IDs, source titles, short sanitized previews, hashes, status values, and reason codes. Do not store full customer payloads or raw source bodies.
+  - Store actor IDs, entity IDs, hashes, status values, booleans, enum dimensions, approximate mapping state, and reason codes only. Do not store source titles, short previews, free-text reasons, full customer payloads, raw source bodies, raw URLs, or actor display names.
 
 All files should be gitignored through the existing `data/` ignore behavior.
 

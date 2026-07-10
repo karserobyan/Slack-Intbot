@@ -6,25 +6,34 @@ import { hashValue, sanitizePreview } from './privacy.js';
 let _shadowFile = join(process.cwd(), 'data', 'quality-shadow.jsonl');
 let _writeQueue = Promise.resolve();
 
+const SOURCE_TYPES = new Set(['slack', 'confluence', 'jira', 'kb', 'unknown']);
+const SOURCE_QUALITY_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
+const DIRECTNESS_VALUES = new Set(['direct', 'related', 'background', 'unknown']);
+const FRESHNESS_VALUES = new Set(['fresh', 'stale', 'unknown']);
+const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'specialist_only', 'unknown']);
+const REUSE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
+
 export function _setQualityShadowFileForTest(path) {
   _shadowFile = path;
   _writeQueue = Promise.resolve();
-}
-
-function safeLowRiskLabel(value, max = 80) {
-  const text = sanitizePreview(value, max);
-  if (!text) return '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9 ._+&/-]{0,79}$/.test(text)) return '';
-  if (/@/.test(text) || /\bxox[abprs]-/i.test(text)) return '';
-  if (/\b(?:tenant|account|location)\s*#?\d+\b/i.test(text)) return '';
-  if (/\b\d{3}[-. ]?\d{3}[-. ]?\d{4}\b/.test(text)) return '';
-  return text;
 }
 
 function safeHash(value, fallbackValue = '') {
   const text = String(value ?? '');
   if (/^sha256:[a-f0-9]{64}$/i.test(text)) return text.toLowerCase();
   return hashValue(fallbackValue || text);
+}
+
+function safeEnum(value, allowed, fallback = 'unknown') {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return allowed.has(normalized) ? normalized : fallback;
+}
+
+function safeHostname(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!/^[a-z0-9.-]{1,120}$/.test(normalized)) return '';
+  if (!/[a-z0-9]\.[a-z]/.test(normalized)) return '';
+  return normalized;
 }
 
 function safeReasonCodes(reasons = []) {
@@ -37,14 +46,14 @@ function safeReasonCodes(reasons = []) {
 function sanitizeEvidence(evidence = []) {
   return evidence.slice(0, 10).map((e) => ({
     id: sanitizePreview(e.id, 40),
-    source: safeLowRiskLabel(e.source, 40),
-    hostname: safeLowRiskLabel(e.hostname, 120),
+    source: safeEnum(e.source, SOURCE_TYPES),
+    hostname: safeHostname(e.hostname),
     urlHash: safeHash(e.urlHash, e.url ?? ''),
-    sourceQuality: e.sourceQuality,
-    directness: e.directness,
-    freshness: e.freshness,
-    sensitivity: e.sensitivity,
-    reuseValue: e.reuseValue,
+    sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
+    directness: safeEnum(e.directness, DIRECTNESS_VALUES),
+    freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
+    sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
+    reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
     reasons: safeReasonCodes(e.reasons),
   }));
 }
@@ -58,7 +67,7 @@ function sanitizeShadowRecord(record) {
     channelId: sanitizePreview(record.channelId, 80),
     threadTs: sanitizePreview(record.threadTs, 80),
     issueHash: record.issueTitle ? hashValue(record.issueTitle) : null,
-    integrationType: safeLowRiskLabel(record.integrationType, 80),
+    integrationTypeHash: record.integrationType ? hashValue(record.integrationType) : null,
     confidence: record.confidence,
     evidence: sanitizeEvidence(record.evidence),
     quality: {

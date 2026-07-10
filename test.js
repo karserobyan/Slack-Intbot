@@ -2956,20 +2956,21 @@ await appendQualityShadowRecord({
   queryHash: sensitiveQualityText.query,
   queryPreview: sensitiveQualityText.query,
   issueTitle: 'Jane Customer tenant 123 diagnosis',
-  integrationType: 'Zapier',
+  integrationType: 'Jane Customer',
   evidence: [{
     id: 'ev_sensitive',
-    source: 'confluence',
+    source: 'Jane Customer',
+    hostname: 'Jane Customer',
     url: sensitiveQualityText.sourceUrl,
     urlHash: sensitiveQualityText.sourceUrl,
     title: 'Jane Customer tenant 123 setup',
     snippetPreview: sensitiveQualityText.sourceSnippet,
-    sourceQuality: 'high',
-    directness: 'direct',
-    freshness: 'unknown',
-    sensitivity: 'internal',
-    reuseValue: 'medium',
-    reasons: ['direct_source_match'],
+    sourceQuality: sensitiveQualityText.query,
+    directness: sensitiveQualityText.query,
+    freshness: sensitiveQualityText.query,
+    sensitivity: sensitiveQualityText.query,
+    reuseValue: sensitiveQualityText.query,
+    reasons: ['direct_source_match', sensitiveQualityText.query],
   }],
   sections: [{
     title: sensitiveQualityText.stepTitle,
@@ -2990,8 +2991,20 @@ const sensitiveShadowText = await readFile(sensitiveShadowFile, 'utf-8');
 const sensitiveShadowRecord = JSON.parse(sensitiveShadowText.trim());
 assert(sensitiveShadowRecord.queryPreview === undefined, 'quality shadow store omits raw query previews');
 assert(sensitiveShadowRecord.issueTitle === undefined, 'quality shadow store omits raw diagnosis or issue titles');
+assert(sensitiveShadowRecord.integrationType === undefined, 'quality shadow store omits raw integration type labels');
+assert(String(sensitiveShadowRecord.integrationTypeHash ?? '').startsWith('sha256:'), 'quality shadow store hashes integration type');
 assert(sensitiveShadowRecord.evidence[0].title === undefined, 'quality shadow store omits raw source titles');
 assert(sensitiveShadowRecord.evidence[0].snippetPreview === undefined, 'quality shadow store omits raw source snippet previews');
+assert(sensitiveShadowRecord.evidence[0].source === 'unknown', 'quality shadow store clamps unknown source type');
+assert(sensitiveShadowRecord.evidence[0].hostname === '', 'quality shadow store drops invalid hostnames');
+assert(sensitiveShadowRecord.evidence[0].sourceQuality === 'unknown', 'quality shadow store clamps source quality enum');
+assert(sensitiveShadowRecord.evidence[0].directness === 'unknown', 'quality shadow store clamps directness enum');
+assert(sensitiveShadowRecord.evidence[0].freshness === 'unknown', 'quality shadow store clamps freshness enum');
+assert(sensitiveShadowRecord.evidence[0].sensitivity === 'unknown', 'quality shadow store clamps sensitivity enum');
+assert(sensitiveShadowRecord.evidence[0].reuseValue === 'unknown', 'quality shadow store clamps reuse value enum');
+assert(!sensitiveShadowText.includes('Preview'), 'quality shadow store omits preview-named persisted fields');
+assert(!sensitiveShadowText.includes('title'), 'quality shadow store omits title-named persisted fields');
+assert(!sensitiveShadowText.includes('detail'), 'quality shadow store omits detail-named persisted fields');
 assert(!sensitiveShadowText.includes('jane.customer@example.com'), 'quality shadow store omits sample email');
 assert(!sensitiveShadowText.includes('xoxb-1234567890-secret'), 'quality shadow store omits sample Slack-like token');
 assert(!sensitiveShadowText.includes('555-123-4567'), 'quality shadow store omits sample phone number');
@@ -3052,7 +3065,7 @@ await appendQualityAuditEvent({
   metadata: {
     queryHash: sensitiveQualityText.query,
     query: sensitiveQualityText.query,
-    integrationType: 'Zapier',
+    integrationType: 'Jane Customer',
     reason: 'Jane Customer should not persist as a free-text reason',
     reasons: ['has_reusable_claim'],
   },
@@ -3067,6 +3080,8 @@ assert(!auditText.includes('Bot User'), 'quality audit does not store actor name
 assert(!auditText.includes('"name"'), 'quality audit omits actor name field');
 assert(auditLines.every(line => line.metadata.queryPreview === undefined), 'quality audit omits raw query previews');
 assert(auditLines.every(line => line.metadata.reason === undefined), 'quality audit omits free-text reason fields');
+assert(auditLines.every(line => line.metadata.integrationType === undefined), 'quality audit omits raw integration type labels');
+assert(auditLines.every(line => String(line.metadata.integrationTypeHash ?? '').startsWith('sha256:')), 'quality audit hashes integration type');
 assert(!auditText.includes('jane.customer@example.com'), 'quality audit omits sample email');
 assert(!auditText.includes('xoxb-1234567890-secret'), 'quality audit omits sample Slack-like token');
 assert(!auditText.includes('555-123-4567'), 'quality audit omits sample phone number');
