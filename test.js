@@ -40,6 +40,7 @@ import {
 } from './src/slack/review-actions.js';
 import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
+import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
 import {
   appendKbArticle,
@@ -56,8 +57,15 @@ import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
-import { registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
+import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
+import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
+import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
+import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
+import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
+import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
+import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
+import { recordQualityShadow } from './src/quality/shadow-recorder.js';
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +81,15 @@ function assert(condition, label) {
     failed++;
   }
 }
+
+assert.deepEqual = (actual, expected, label) => {
+  try {
+    deepEqual(actual, expected);
+    assert(true, label);
+  } catch {
+    assert(false, label);
+  }
+};
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');
@@ -2685,6 +2702,538 @@ await mentionCallback({
 assert(mentionPosts.length === 1, 'mention top-level catch posts fallback');
 assert(mentionPosts[0].thread_ts === '123.456', 'mention fallback posts in the request thread');
 assert(JSON.stringify(mentionLogs).includes('unhandled failure'), 'mention top-level catch logs failure');
+
+// ── quality config/privacy ───────────────────────────────────────────────────
+console.log('\n🔹 quality config/privacy');
+
+const originalQualityEnv = {
+  QUALITY_LAYER_ENABLED: process.env.QUALITY_LAYER_ENABLED,
+  QUALITY_LAYER_SHADOW_MODE: process.env.QUALITY_LAYER_SHADOW_MODE,
+  QUALITY_SHADOW_MAX_RECORDS: process.env.QUALITY_SHADOW_MAX_RECORDS,
+  QUALITY_SHADOW_MAX_AGE_DAYS: process.env.QUALITY_SHADOW_MAX_AGE_DAYS,
+  QUALITY_SHADOW_MAX_BYTES: process.env.QUALITY_SHADOW_MAX_BYTES,
+};
+
+delete process.env.QUALITY_LAYER_ENABLED;
+delete process.env.QUALITY_LAYER_SHADOW_MODE;
+delete process.env.QUALITY_SHADOW_MAX_RECORDS;
+delete process.env.QUALITY_SHADOW_MAX_AGE_DAYS;
+delete process.env.QUALITY_SHADOW_MAX_BYTES;
+
+assert(isQualityLayerEnabled() === false, 'quality layer defaults disabled');
+assert(isQualityShadowMode() === true, 'quality shadow mode defaults true');
+assert.deepEqual(getQualityShadowRetention(), {
+  maxRecords: 2000,
+  maxAgeDays: 14,
+  maxBytes: 5 * 1024 * 1024,
+}, 'quality shadow retention defaults are fixed');
+
+for (const disabledValue of ['', 'false', '0', 'off', 'definitely']) {
+  process.env.QUALITY_LAYER_ENABLED = disabledValue;
+  assert(isQualityLayerEnabled() === false, `QUALITY_LAYER_ENABLED=${JSON.stringify(disabledValue)} keeps quality layer disabled`);
+}
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
+process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
+process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
+
+assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
+process.env.QUALITY_LAYER_ENABLED = 'TRUE';
+assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=TRUE enables quality layer');
+assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
+assert.deepEqual(getQualityShadowRetention(), {
+  maxRecords: 3,
+  maxAgeDays: 2,
+  maxBytes: 1000,
+}, 'quality shadow retention reads env overrides');
+
+for (const [key, value] of Object.entries(originalQualityEnv)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+assert(sanitizePreview('  hello\nworld  ', 20) === 'hello world', 'sanitizePreview collapses whitespace');
+assert(sanitizePreview('secret '.repeat(50), 30).length <= 30, 'sanitizePreview clamps long text');
+assert(!sanitizePreview('xoxb-1234567890-secret').includes('xoxb-1234567890-secret'), 'sanitizePreview redacts Slack-like tokens');
+assert(hashValue('same input') === hashValue('same input'), 'hashValue is stable');
+assert(hashValue('same input') !== hashValue('different input'), 'hashValue changes with input');
+assert(makeQualityId('ans', new Date('2026-07-09T00:00:00.000Z')).startsWith('ans_20260709T000000000Z_'), 'makeQualityId includes prefix and timestamp');
+assert(normalizeForQuality(' Zapier API   Access! ') === 'zapier api access', 'normalizeForQuality lowercases and strips punctuation');
+
+// ── quality source scoring ───────────────────────────────────────────────────
+console.log('\n🔹 quality source scoring');
+
+const directConfluenceEvidence = refToEvidence({
+  type: 'confluence',
+  url: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1',
+  title: 'Zapier API access setup',
+  snippet: 'Enable Zapier API access for the tenant.',
+}, {
+  source: 'confluence',
+  query: 'Zapier API access disabled',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+
+assert(directConfluenceEvidence.source === 'confluence', 'refToEvidence keeps confluence source');
+assert(directConfluenceEvidence.title === 'Zapier API access setup', 'refToEvidence keeps sanitized source title');
+assert(directConfluenceEvidence.snippetPreview.includes('Enable Zapier API access'), 'refToEvidence stores snippet preview only');
+assert(directConfluenceEvidence.url === undefined, 'refToEvidence does not store raw source URL');
+assert(directConfluenceEvidence.urlHash.startsWith('sha256:'), 'refToEvidence stores URL hash');
+
+const directScore = scoreEvidenceSource(directConfluenceEvidence, {
+  query: 'Zapier API access disabled',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+assert(directScore.sourceQuality === 'high', 'direct confluence source quality high');
+assert(directScore.directness === 'direct', 'exact integration and symptom is direct');
+assert(directScore.reuseValue === 'high', 'setup source has high reuse value');
+assert(directScore.sensitivity === 'safe', 'safe confluence source is safe');
+
+const tenantJiraEvidence = refToEvidence({
+  type: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/INT-123',
+  title: 'INT-123 Tenant 12345 Zapier outage',
+  snippet: 'Resolved for tenant 12345 only.',
+}, {
+  source: 'jira',
+  query: 'Zapier outage tenant 12345',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier outage',
+});
+const tenantScore = scoreEvidenceSource(tenantJiraEvidence, {
+  query: 'Zapier outage tenant 12345',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier outage',
+});
+assert(tenantScore.sourceQuality === 'high', 'tenant-specific resolved Jira can be high quality');
+assert(tenantScore.reuseValue === 'low', 'tenant-specific Jira has low reuse value');
+
+const sensitiveEvidence = refToEvidence({
+  type: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/SEC-1',
+  title: 'Security incident backend-only token rotation',
+}, {
+  source: 'jira',
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+const sensitiveScore = scoreEvidenceSource(sensitiveEvidence, {
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+assert(sensitiveScore.sensitivity === 'specialist_only', 'source scoring preserves source-policy sensitivity');
+
+const unclassifiedSensitiveScore = scoreEvidenceSource({
+  id: 'ev_unclassified',
+  source: 'jira',
+  url: 'https://servicetitan.atlassian.net/browse/SEC-1?token=secret',
+  title: 'Security incident backend-only token rotation',
+  snippetPreview: '',
+}, {
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+});
+assert(unclassifiedSensitiveScore.sensitivity === 'specialist_only', 'source scoring applies source-policy to unclassified evidence-like inputs');
+assert(unclassifiedSensitiveScore.url === undefined, 'source scoring strips raw URL from prebuilt evidence-like inputs');
+
+const scoredSources = scoreEvidenceSources({
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access answer' }],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/x', title: 'Zapier API access' }],
+  kb_refs: [{ url: 'https://help.servicetitan.com/docs/zapier', title: 'Zapier help article' }],
+}, {
+  query: 'Zapier API access',
+  integrationType: 'Zapier',
+  issueTitle: 'Zapier API access',
+});
+assert(scoredSources.length === 3, 'scoreEvidenceSources flattens all current ref groups');
+assert(scoredSources.every(e => e.id.startsWith('ev_')), 'scoreEvidenceSources assigns evidence ids');
+
+// ── quality evidence contract ────────────────────────────────────────────────
+console.log('\n🔹 quality evidence contract');
+
+const contractAnswer = {
+  issue_title: 'Zapier API Access',
+  integration_type: 'Zapier',
+  confidence: 'high',
+  customer_message: 'Hi [Name], Zapier API access is disabled and we are enabling it.',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle this.' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'Known setup issue.' },
+  findings_summary: { diagnosis: 'Zapier API access is disabled.', actions: ['Enable access'] },
+  agent_steps: [
+    { num: 1, title: 'Enable API access', detail: 'Enable Zapier API access for the tenant.', tag: 'backend' },
+    { num: 2, title: 'Verify reconnect', detail: 'Ask the customer to reconnect Zapier.', tag: 'verify' },
+  ],
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access fix' }],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/x', title: 'Zapier API access setup' }],
+  kb_refs: [{ url: 'https://help.servicetitan.com/docs/zapier', title: 'Zapier API access help', snippet: 'Enable access.' }],
+  sources_used: ['slack', 'confluence', 'kb'],
+};
+
+const contract = buildAnswerEvidenceContract({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+
+assert(isValidAnswerEvidenceContract(contract), 'contract validates');
+assert(contract.version === 1, 'contract version is 1');
+assert(contract.mode === 'shadow', 'contract mode is shadow');
+assert(contract.quality.approximateMapping === true, 'phase 1 contract marks approximate mapping');
+assert(contract.queryHash.startsWith('sha256:'), 'contract stores query hash');
+assert(contract.queryPreview === 'Zapier API access disabled', 'contract stores short sanitized query preview');
+assert(contract.issueTitle === 'Zapier API Access', 'contract maps issue title');
+assert(contract.integrationType === 'Zapier', 'contract maps integration type');
+assert(contract.sections.steps.length === 2, 'contract maps each agent step');
+assert(contract.sections.steps[0].id.startsWith('claim_'), 'contract creates claim ids');
+assert(contract.evidence.length === 3, 'contract maps all refs to evidence');
+assert(contract.evidence.every(e => e.snippet === undefined), 'contract does not store raw snippet field');
+assert(contract.evidence.some(e => e.snippetPreview), 'contract stores sanitized snippetPreview when present');
+assert(contract.sections.diagnosis.evidenceIds.length > 0, 'diagnosis gets approximate evidence ids');
+assert(contract.sections.customerMessage.evidenceIds.every(id => contract.evidence.find(e => e.id === id)?.sensitivity === 'safe'), 'customer message maps only safe evidence ids');
+
+const sparseContract = buildAnswerEvidenceContract({
+  answer: { issue_title: 'Unknown issue', agent_steps: [] },
+  query: '',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
+assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
+
+// ── quality shadow storage/audit ─────────────────────────────────────────────
+console.log('\n🔹 quality shadow storage/audit');
+
+const qualityTempDir = await mkdtemp(join(tmpdir(), 'intbot-quality-'));
+const shadowFile = join(qualityTempDir, 'quality-shadow.jsonl');
+const auditFile = join(qualityTempDir, 'quality-audit.jsonl');
+_setQualityShadowFileForTest(shadowFile);
+_setQualityAuditFileForTest(auditFile);
+
+for (let i = 0; i < 5; i += 1) {
+  await appendQualityShadowRecord({
+    createdAt: new Date(Date.UTC(2026, 6, 9, 0, 0, i)).toISOString(),
+    answerId: `ans_${i}`,
+    queryPreview: `customer email user${i}@example.com token xoxb-secret-${i}`,
+    evidence: [{ title: `Source ${i}`, snippetPreview: 'raw source body '.repeat(50) }],
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-09T00:01:00.000Z'),
+  });
+}
+
+const shadowLines = (await readFile(shadowFile, 'utf-8')).trim().split('\n');
+assert(shadowLines.length === 3, 'quality shadow store enforces maxRecords retention');
+const shadowJson = shadowLines.join('\n');
+assert(!shadowJson.includes('user4@example.com'), 'quality shadow store redacts emails');
+assert(!shadowJson.includes('xoxb-secret'), 'quality shadow store redacts Slack-like tokens');
+assert(!shadowJson.includes('raw source body raw source body raw source body'), 'quality shadow store avoids large raw snippets');
+
+const sensitiveQualityText = {
+  query: 'Jane Customer jane.customer@example.com xoxb-1234567890-secret 555-123-4567 tenant 123 account 456 location 789 raw query text',
+  sourceUrl: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/123456/Jane-Customer-tenant-123',
+  sourceSnippet: 'Jane Customer source snippet with phone 555-123-4567 and tenant 123',
+  stepTitle: 'Call Jane Customer',
+  stepDetail: 'Tell Jane Customer about account 456 and location 789',
+  actorName: 'Jane Reviewer',
+  hostileHostname: 'jane-customer.tenant-123.example.com',
+  hostileReasonCodes: ['tenant-123', 'account-456', 'location-789', '555-123-4567', 'JaneCustomer'],
+};
+const sensitiveShadowFile = join(qualityTempDir, 'quality-shadow-sensitive.jsonl');
+_setQualityShadowFileForTest(sensitiveShadowFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-09T00:01:30.000Z',
+  answerId: 'ans_sensitive',
+  queryHash: sensitiveQualityText.query,
+  queryPreview: sensitiveQualityText.query,
+  issueTitle: 'Jane Customer tenant 123 diagnosis',
+  integrationType: 'Jane Customer',
+  confidence: sensitiveQualityText.query,
+  evidence: [{
+    id: 'ev_sensitive',
+    source: 'Jane Customer',
+    hostname: sensitiveQualityText.hostileHostname,
+    url: sensitiveQualityText.sourceUrl,
+    urlHash: sensitiveQualityText.sourceUrl,
+    title: 'Jane Customer tenant 123 setup',
+    snippetPreview: sensitiveQualityText.sourceSnippet,
+    sourceQuality: sensitiveQualityText.query,
+    directness: sensitiveQualityText.query,
+    freshness: sensitiveQualityText.query,
+    sensitivity: sensitiveQualityText.query,
+    reuseValue: sensitiveQualityText.query,
+    reasons: ['direct_source_match', sensitiveQualityText.query, ...sensitiveQualityText.hostileReasonCodes],
+  }],
+  sections: [{
+    title: sensitiveQualityText.stepTitle,
+    detail: sensitiveQualityText.stepDetail,
+  }],
+  quality: {
+    directAnswer: true,
+    reusableKnowledge: true,
+    nominationEligible: true,
+    approximateMapping: true,
+    reasons: ['has_reusable_claim', ...sensitiveQualityText.hostileReasonCodes],
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-09T00:01:30.000Z'),
+});
+const sensitiveShadowText = await readFile(sensitiveShadowFile, 'utf-8');
+const sensitiveShadowRecord = JSON.parse(sensitiveShadowText.trim());
+assert(sensitiveShadowRecord.queryPreview === undefined, 'quality shadow store omits raw query previews');
+assert(sensitiveShadowRecord.issueTitle === undefined, 'quality shadow store omits raw diagnosis or issue titles');
+assert(sensitiveShadowRecord.integrationType === undefined, 'quality shadow store omits raw integration type labels');
+assert(String(sensitiveShadowRecord.integrationTypeHash ?? '').startsWith('sha256:'), 'quality shadow store hashes integration type');
+assert(sensitiveShadowRecord.evidence[0].title === undefined, 'quality shadow store omits raw source titles');
+assert(sensitiveShadowRecord.evidence[0].snippetPreview === undefined, 'quality shadow store omits raw source snippet previews');
+assert(sensitiveShadowRecord.evidence[0].source === 'unknown', 'quality shadow store clamps unknown source type');
+assert(sensitiveShadowRecord.evidence[0].hostname === '', 'quality shadow store drops invalid hostnames');
+assert(sensitiveShadowRecord.evidence[0].sourceQuality === 'unknown', 'quality shadow store clamps source quality enum');
+assert(sensitiveShadowRecord.evidence[0].directness === 'unknown', 'quality shadow store clamps directness enum');
+assert(sensitiveShadowRecord.evidence[0].freshness === 'unknown', 'quality shadow store clamps freshness enum');
+assert(sensitiveShadowRecord.evidence[0].sensitivity === 'unknown', 'quality shadow store clamps sensitivity enum');
+assert(sensitiveShadowRecord.evidence[0].reuseValue === 'unknown', 'quality shadow store clamps reuse value enum');
+assert(sensitiveShadowRecord.confidence === 'unknown', 'quality shadow store clamps confidence enum');
+assert.deepEqual(sensitiveShadowRecord.evidence[0].reasons, ['direct_source_match'], 'quality shadow store allowlists evidence reason codes');
+assert.deepEqual(sensitiveShadowRecord.quality.reasons, ['has_reusable_claim'], 'quality shadow store allowlists quality reason codes');
+assert(!sensitiveShadowText.includes('Preview'), 'quality shadow store omits preview-named persisted fields');
+assert(!sensitiveShadowText.includes('title'), 'quality shadow store omits title-named persisted fields');
+assert(!sensitiveShadowText.includes('detail'), 'quality shadow store omits detail-named persisted fields');
+assert(!sensitiveShadowText.includes('jane.customer@example.com'), 'quality shadow store omits sample email');
+assert(!sensitiveShadowText.includes('xoxb-1234567890-secret'), 'quality shadow store omits sample Slack-like token');
+assert(!sensitiveShadowText.includes('555-123-4567'), 'quality shadow store omits sample phone number');
+assert(!sensitiveShadowText.includes('tenant 123'), 'quality shadow store omits sample tenant id text');
+assert(!sensitiveShadowText.includes('account 456'), 'quality shadow store omits sample account id text');
+assert(!sensitiveShadowText.includes('location 789'), 'quality shadow store omits sample location id text');
+assert(!sensitiveShadowText.includes('Jane Customer'), 'quality shadow store omits sample customer/person name from free text');
+assert(!sensitiveShadowText.includes('JaneCustomer'), 'quality shadow store omits code-shaped sample customer/person name');
+assert(!sensitiveShadowText.includes('raw query text'), 'quality shadow store omits raw query text');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceUrl), 'quality shadow store omits raw source URLs');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.sourceSnippet), 'quality shadow store omits raw source snippet text');
+assert(!sensitiveShadowText.includes(sensitiveQualityText.hostileHostname), 'quality shadow store omits hostile hostname text');
+for (const hostileReasonCode of sensitiveQualityText.hostileReasonCodes) {
+  assert(!sensitiveShadowText.includes(hostileReasonCode), `quality shadow store omits hostile reason code ${hostileReasonCode}`);
+}
+
+const invalidShadowParent = join(qualityTempDir, 'not-a-directory');
+await writeFile(invalidShadowParent, 'plain file');
+_setQualityShadowFileForTest(join(invalidShadowParent, 'quality-shadow.jsonl'));
+let shadowAppendRejected = false;
+try {
+  await appendQualityShadowRecord({
+    createdAt: '2026-07-09T00:02:00.000Z',
+    answerId: 'ans_failed',
+    queryPreview: 'this write should fail',
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-09T00:02:00.000Z'),
+  });
+} catch {
+  shadowAppendRejected = true;
+}
+assert(shadowAppendRejected, 'quality shadow store surfaces failed append');
+
+const recoveredShadowFile = join(qualityTempDir, 'quality-shadow-recovered.jsonl');
+_setQualityShadowFileForTest(recoveredShadowFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-09T00:03:00.000Z',
+  answerId: 'ans_recovered',
+  queryPreview: 'later write succeeds after failure',
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-09T00:03:00.000Z'),
+});
+const recoveredShadowText = await readFile(recoveredShadowFile, 'utf-8');
+assert(recoveredShadowText.includes('ans_recovered'), 'quality shadow store recovers after failed append');
+
+await appendQualityAuditEvent({
+  type: 'contract_created',
+  actor: { type: 'bot', userId: 'U123', name: 'Bot User' },
+  entity: { type: 'answer_contract', id: 'ans_1' },
+  metadata: {
+    query: 'Full customer query should become hash/preview only',
+    integrationType: 'Zapier',
+    reason: 'direct_source_match',
+  },
+}, { now: new Date('2026-07-09T00:00:00.000Z') });
+
+await appendQualityAuditEvent({
+  type: 'contract_created',
+  actor: { type: 'reviewer', userId: 'U456', name: sensitiveQualityText.actorName },
+  entity: { type: 'answer_contract', id: 'ans_sensitive' },
+  metadata: {
+    queryHash: sensitiveQualityText.query,
+    query: sensitiveQualityText.query,
+    integrationType: 'Jane Customer',
+    reason: 'Jane Customer should not persist as a free-text reason',
+    reasons: ['has_reusable_claim', ...sensitiveQualityText.hostileReasonCodes],
+  },
+}, { now: new Date('2026-07-09T00:00:01.000Z') });
+
+const auditText = await readFile(auditFile, 'utf-8');
+const auditLines = auditText.trim().split('\n').map(line => JSON.parse(line));
+assert(auditText.includes('contract_created'), 'quality audit stores event type');
+assert(auditText.includes('queryHash'), 'quality audit stores query hash');
+assert(!auditText.includes('Full customer query should become hash/preview only'), 'quality audit does not store raw query');
+assert(!auditText.includes('Bot User'), 'quality audit does not store actor names');
+assert(!auditText.includes('"name"'), 'quality audit omits actor name field');
+assert(auditLines.every(line => line.metadata.queryPreview === undefined), 'quality audit omits raw query previews');
+assert(auditLines.every(line => line.metadata.reason === undefined), 'quality audit omits free-text reason fields');
+assert(auditLines.every(line => line.metadata.integrationType === undefined), 'quality audit omits raw integration type labels');
+assert(auditLines.every(line => String(line.metadata.integrationTypeHash ?? '').startsWith('sha256:')), 'quality audit hashes integration type');
+assert(auditLines.every(line => (line.metadata.reasons ?? []).every(reason => !sensitiveQualityText.hostileReasonCodes.includes(reason))), 'quality audit allowlists reason codes');
+assert(!auditText.includes('jane.customer@example.com'), 'quality audit omits sample email');
+assert(!auditText.includes('xoxb-1234567890-secret'), 'quality audit omits sample Slack-like token');
+assert(!auditText.includes('555-123-4567'), 'quality audit omits sample phone number');
+assert(!auditText.includes('tenant 123'), 'quality audit omits sample tenant id text');
+assert(!auditText.includes('account 456'), 'quality audit omits sample account id text');
+assert(!auditText.includes('location 789'), 'quality audit omits sample location id text');
+assert(!auditText.includes('Jane Customer'), 'quality audit omits sample customer/person name from free text');
+assert(!auditText.includes('JaneCustomer'), 'quality audit omits code-shaped sample customer/person name');
+assert(!auditText.includes(sensitiveQualityText.actorName), 'quality audit omits actor display name');
+assert(!auditText.includes('raw query text'), 'quality audit omits raw query text');
+for (const hostileReasonCode of sensitiveQualityText.hostileReasonCodes) {
+  assert(!auditText.includes(hostileReasonCode), `quality audit omits hostile reason code ${hostileReasonCode}`);
+}
+
+await rm(qualityTempDir, { recursive: true, force: true });
+
+// ── quality shadow recorder ──────────────────────────────────────────────────
+console.log('\n🔹 quality shadow recorder');
+
+const recorderTempDir = await mkdtemp(join(tmpdir(), 'intbot-quality-recorder-'));
+_setQualityShadowFileForTest(join(recorderTempDir, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(recorderTempDir, 'audit.jsonl'));
+
+const oldQualityLayerEnabled = process.env.QUALITY_LAYER_ENABLED;
+const oldQualityShadowMode = process.env.QUALITY_LAYER_SHADOW_MODE;
+const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+const oldNewPipeline = process.env.NEW_PIPELINE;
+
+process.env.QUALITY_LAYER_ENABLED = 'false';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+const disabledRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+});
+assert(disabledRecord.status === 'disabled', 'recordQualityShadow skips when quality layer disabled');
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+const notShadowModeRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+});
+assert(notShadowModeRecord.status === 'not_shadow_mode', 'recordQualityShadow skips when QUALITY_LAYER_SHADOW_MODE=false');
+
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+const recorded = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+assert(recorded.status === 'recorded', 'recordQualityShadow records in shadow mode');
+assert(recorded.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract');
+
+const invalidRecorderParent = join(recorderTempDir, 'not-a-directory');
+await writeFile(invalidRecorderParent, 'plain file');
+_setQualityShadowFileForTest(join(invalidRecorderParent, 'shadow.jsonl'));
+const warnMessages = [];
+const failedOpen = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => warnMessages.push(message) },
+  now: new Date('2026-07-09T00:00:01.000Z'),
+});
+assert(failedOpen.status === 'failed_open', 'recordQualityShadow fails open when storage write fails');
+assert(warnMessages.some((message) => message.includes('[quality] shadow record failed:')), 'recordQualityShadow logs bounded warning on failure');
+
+const mentionShadowDir = await mkdtemp(join(tmpdir(), 'intbot-quality-mention-'));
+const mentionShadowParent = join(mentionShadowDir, 'not-a-directory');
+await writeFile(mentionShadowParent, 'plain file');
+_setQualityShadowFileForTest(join(mentionShadowParent, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(mentionShadowDir, 'audit.jsonl'));
+process.env.NEW_PIPELINE = 'true';
+process.env.ANTHROPIC_API_KEY = 'test';
+
+const origFetchMention = globalThis.fetch;
+let mentionStepCounter = 0;
+const mentionResponses = [
+  anthropicMock('{"cleaned_question":"zapier api access disabled","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"api access disabled"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier api access disabled"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Zapier API Access","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[{"num":1,"title":"Enable API access","detail":"Enable Zapier API access for the tenant.","tag":"backend"}],"findings_summary":{"diagnosis":"Zapier API access is disabled.","actions":["Enable access"]},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C1/p1","channel":"#ask-integrations","title":"Zapier API access fix"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+];
+globalThis.fetch = async (url, opts) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) return mentionResponses[mentionStepCounter++];
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+
+const mentionChatUpdates = [];
+const mentionChatPosts = [];
+await handleQuery({
+  rawText: '<@UBOT> Zapier API access disabled',
+  channelId: 'C123',
+  threadTs: '1700000001.000',
+  userId: 'U123',
+  client: {
+    users: { info: async () => ({ user: { profile: { title: 'Customer Support Advocate' } } }) },
+    chat: {
+      postMessage: async (payload) => {
+        mentionChatPosts.push(payload);
+        return { ts: payload.thread_ts ?? '1700000001.111' };
+      },
+      update: async (payload) => {
+        mentionChatUpdates.push(payload);
+        return payload;
+      },
+    },
+  },
+});
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert(mentionChatUpdates.some((payload) => payload.text === 'Troubleshooting: Zapier API Access (Zapier)'), 'mention new-pipeline path still updates Slack response when shadow recording fails');
+assert(mentionChatPosts.some((payload) => payload.text === 'Checking…'), 'mention new-pipeline path still posts the existing thinking message');
+
+globalThis.fetch = origFetchMention;
+if (oldAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+else process.env.ANTHROPIC_API_KEY = oldAnthropicApiKey;
+if (oldNewPipeline === undefined) delete process.env.NEW_PIPELINE;
+else process.env.NEW_PIPELINE = oldNewPipeline;
+if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABLED;
+else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
+if (oldQualityShadowMode === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
+else process.env.QUALITY_LAYER_SHADOW_MODE = oldQualityShadowMode;
+
+await rm(recorderTempDir, { recursive: true, force: true });
+await rm(mentionShadowDir, { recursive: true, force: true });
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

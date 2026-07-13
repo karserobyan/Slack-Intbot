@@ -21,6 +21,7 @@ import { searchKnowledgeBase } from '../claude/kb-search.js';
 import { searchConfluence, searchJira } from '../claude/atlassian-search.js';
 import { runPipeline } from '../claude/pipeline.js';
 import { isNewPipelineEnabled } from '../utils/feature-flags.js';
+import { recordQualityShadow } from '../quality/shadow-recorder.js';
 
 function stripBotMention(text) {
   return text.replace(/<@[A-Z0-9]+>/g, '').trim();
@@ -503,6 +504,15 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       { role: 'assistant', content: summarizeResultForHistory(pipelineResult) },
     ]);
 
+    recordQualityShadow({
+      answer: pipelineResult,
+      query,
+      role,
+      channelId,
+      threadTs,
+      logger: console,
+    }).catch((err) => console.warn('[quality] shadow record failed:', err.message));
+
     const KNOWLEDGE_MIN_MS_PIPE = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);
     const hasRefs = (pipelineResult.slack_refs?.length > 0) || (pipelineResult.atlassian_refs?.length > 0);
     const noEscalation = pipelineResult.escalate_decision?.should_escalate !== true;
@@ -682,6 +692,15 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     { role: 'user', content: query },
     { role: 'assistant', content: summarizeResultForHistory(result) },
   ]);
+
+  recordQualityShadow({
+    answer: result,
+    query,
+    role,
+    channelId,
+    threadTs,
+    logger: console,
+  }).catch((err) => console.warn('[quality] shadow record failed:', err.message));
 
   // 16. Nominate for knowledge base
   const KNOWLEDGE_MIN_MS = parseInt(process.env.KNOWLEDGE_MIN_MS ?? '30000', 10);

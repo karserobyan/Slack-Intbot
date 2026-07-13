@@ -230,6 +230,13 @@ When the bot is uncertain, it returns a simpler fallback:
 - Slack MCP and Atlassian REST credentials check
 - Re-posts any pending feedback entries that got stuck across a restart
 
+### Answer Evidence quality shadow layer
+- **What:** Optional shadow-mode metadata layer that maps current answers and refs into an internal evidence contract.
+- **Default:** Disabled unless `QUALITY_LAYER_ENABLED=true`.
+- **Safety:** Fail-open. If metadata recording fails, the Slack answer and existing nomination behavior continue unchanged.
+- **Storage:** Sanitized bounded JSONL under `data/quality-shadow.jsonl`; no full raw snippets, secrets, PII, or large customer payloads.
+- **Current limitation:** PR 1 evidence mappings are approximate; long-term answerer output may emit explicit evidence IDs.
+
 ---
 
 ## 10. CLI simulator & tests
