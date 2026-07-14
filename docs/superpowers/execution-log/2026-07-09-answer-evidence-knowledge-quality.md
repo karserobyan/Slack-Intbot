@@ -341,3 +341,18 @@ This log records the actual steps taken while designing and implementing the Ans
 **Instrumentation Gap:** The persisted PR 1 schema cannot calculate total answer-step count, steps with evidence mappings, steps with direct evidence, or unsupported-step count. A small privacy-safe follow-up should add count-only fields if we want those metrics: `stepCount`, `mappedStepCount`, `directMappedStepCount`, and `unsupportedStepCount`. Do not implement this until separately approved.
 
 **Decision / Follow-up:** Controlled validation supports moving to PR 2 planning, but only after review of these rollout results. No PR 2 plan was created and no PR 2 implementation started.
+
+## 2026-07-14 - PR 1.1 Step Coverage Plan Created
+
+**Intent:** Create an implementation plan for the approved count-only instrumentation follow-up without starting implementation or PR 2.
+
+**Action Taken:** Created `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`. The plan keeps the persistent serializer as the trust boundary, derives `quality.stepCoverage` from `sections.steps[].evidenceIds` and `evidence[].id`, ignores caller-supplied counts, preserves the shadow-only/fail-open behavior, and requires controlled rollout validation before any PR 2 planning.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** Stop for approval after committing the plan. Do not implement PR 1.1 and do not start PR 2.
