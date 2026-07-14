@@ -356,3 +356,18 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
 
 **Decision / Follow-up:** Stop for approval after committing the plan. Do not implement PR 1.1 and do not start PR 2.
+
+## 2026-07-14 - PR 1.1 Plan Refinement: Persisted Evidence Coverage Boundary
+
+**Intent:** Address plan review feedback before implementation so PR 1.1 derives step coverage from the same minimized evidence payload that will actually be persisted.
+
+**Action Taken:** Updated `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md` so `sanitizeShadowRecord` computes the sanitized/retained evidence array once, persists that exact array, and passes it into `deriveStepCoverage(record, persistedEvidence)`. The plan now requires coverage to account for evidence dropped by ID validation, evidence sanitization, the serializer evidence-count limit, clamped directness values, sanitized evidence IDs, malformed step entries, and bounded step population before counts are derived. Duplicate persisted evidence IDs use the first valid persisted record; later duplicates are ignored so conflicting directness cannot elevate direct coverage. The targeted test plan now includes dropped evidence, evidence-limit behavior, duplicate evidence IDs with conflicting directness, malformed step entries, existing dangling/duplicate/hostile/zero-step/privacy coverage, and `N/A` rollout percentages when total steps is zero.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** This is a plan-only refinement. No production code changed, no Slack UX changed, no prompts changed, no nominations or approval behavior changed, no `knowledge.md` behavior changed, no PR 1.1 implementation started, and PR 2 remains paused.
