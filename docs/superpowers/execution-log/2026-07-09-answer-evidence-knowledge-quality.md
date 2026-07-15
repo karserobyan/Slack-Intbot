@@ -457,3 +457,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Plan self-review result: scope clean, privacy boundary clean, and no production code changed.
 
 **Decision / Follow-up:** Stop for approval before any PR 2 implementation. The next approved implementation, if any, should execute the plan task-by-task with review gates and keep current live nomination behavior unchanged.
+
+## 2026-07-15 - PR 2 Plan Refinement: Cohesive Evidence And Pre-Duplicate Semantics
+
+**Intent:** Apply the approved plan-only refinement before any PR 2 implementation begins.
+
+**Action Taken:** Refined the PR 2 plan and source-of-truth design spec so claim policy uses pre-duplicate eligibility semantics, requires one cohesive qualifying evidence record instead of combining unrelated sources, evaluates normalized bounded evidence and step populations shared with shadow persistence, and explicitly defers duplicate detection with `duplicateCheck: 'deferred'`. Added plan requirements for `stale_evidence`, `non_durable_claim_type`, concrete-vs-generic placeholder classification, expanded tenant-specific detection, privacy-safe nomination-policy failure logging, injectable policy evaluator tests, canonicalized persisted summaries, evidence blocker precedence, and controlled validation wording that labels all eligible counts as pre-duplicate policy eligibility.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Before this log entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. After this log entry, reran `node test.js`; result: 757 passed, 0 failed. Reran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the intended plan/spec/log docs modified plus untracked `AGENTS.md`.
+
+**Decision / Follow-up:** This remains plan/spec/log only. No production code changed, no Task 1 implementation started, and PR 2 remains paused pending review.
