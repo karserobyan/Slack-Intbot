@@ -334,7 +334,13 @@ These schemas are intentionally plain JavaScript objects to match the current co
     reusableKnowledge: true,
     nominationEligible: true,
     approximateMapping: true,
-    reasons: ['direct_source_match', 'reusable_backend_claim']
+    reasons: ['direct_source_match', 'reusable_backend_claim'],
+    stepCoverage: {
+      stepCount: 1,
+      mappedStepCount: 1,
+      directMappedStepCount: 1,
+      unsupportedStepCount: 0
+    }
   }
 }
 ```
@@ -721,6 +727,30 @@ Likely file-backed stores under `data/`:
     - Keep the file under 5 MB.
     - On append, prune when any limit is exceeded by keeping the newest records that satisfy all three limits.
   - Store sanitized summaries only. Do not store full raw snippets, customer-sensitive text, secrets, PII, request headers, full model prompts, or large payloads.
+  - Persist `quality` as count-only and enum/boolean metadata:
+    - `directAnswer`
+    - `reusableKnowledge`
+    - `nominationEligible`
+    - `approximateMapping`
+    - `reasons`
+    - `stepCoverage`
+      - `stepCount`
+      - `mappedStepCount`
+      - `directMappedStepCount`
+      - `unsupportedStepCount`
+  - `quality.stepCoverage` counts are derived by `src/quality/shadow-store.js`, not trusted from caller-supplied `quality.stepCoverage` values.
+  - The shadow serializer computes the sanitized/retained `evidence[]` array once. That exact array is both persisted and used for coverage calculation.
+  - Only valid normalized step objects from `sections.steps[]` count toward `stepCount`, and the step population is bounded before coverage is calculated.
+  - A step is mapped only when at least one sanitized evidence ID resolves to a retained persisted evidence record.
+  - Evidence dropped by ID validation, evidence sanitization, or the ten-record persistence limit does not count toward mapped coverage.
+  - Dangling evidence IDs do not count, and duplicate IDs within a step do not inflate counts.
+  - Duplicate persisted evidence records use first-valid-record-wins; later records with the same ID do not alter mapped or direct coverage.
+  - `directMappedStepCount` requires retained evidence whose clamped `directness` value is exactly `direct`.
+  - Zero-step answers produce four zeroes.
+  - Step coverage invariants:
+    - `mappedStepCount + unsupportedStepCount === stepCount`
+    - `directMappedStepCount <= mappedStepCount`
+  - Step coverage persistence remains count-only and must not add step IDs or mappings, step titles/details/tags, source titles/snippets/URLs, query/customer text, diagnosis/customer-message/escalation prose, or other customer payload text.
 
 - `data/quality-candidates.json`
   - Unified pending review candidates.
@@ -766,7 +796,11 @@ Minimum shadow-mode metrics:
 
 - Contract creation success rate.
 - Percent of answers with at least one direct evidence mapping.
-- Percent of steps with evidence IDs.
+- Step coverage counts:
+  - total answer steps
+  - steps with retained evidence mappings
+  - steps with direct retained evidence
+  - unsupported steps
 - Percent of steps marked reusable.
 - Candidate generation rate per answer.
 - Eligible vs blocked claim ratio.
@@ -774,6 +808,8 @@ Minimum shadow-mode metrics:
 - Approximate duplicate detection rate.
 - False positive sample rate from manual review.
 - Any quality-layer failures that would have affected answering if not fail-open.
+
+These step coverage metrics measure the current approximate Phase 1 mapper. They do not prove every mapping is semantically correct. The longer-term direction remains explicit evidence IDs emitted by the answerer for each claim and step.
 
 Decision threshold before answer UX redesign:
 
