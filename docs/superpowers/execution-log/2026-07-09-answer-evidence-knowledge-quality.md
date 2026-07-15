@@ -371,3 +371,19 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
 
 **Decision / Follow-up:** This is a plan-only refinement. No production code changed, no Slack UX changed, no prompts changed, no nominations or approval behavior changed, no `knowledge.md` behavior changed, no PR 1.1 implementation started, and PR 2 remains paused.
+
+## 2026-07-15 - PR 1.1 Task 1 Step Coverage Implementation
+
+**Intent:** Implement the approved count-only shadow step coverage metrics without changing Slack UX, prompts, nominations, approval behavior, audit behavior, `knowledge.md`, or PR 2 scope.
+
+**Action Taken:** Added serializer-derived `quality.stepCoverage` to `data/quality-shadow.jsonl` records. `sanitizeShadowRecord` now computes the sanitized/retained evidence array exactly once, persists that same array as `evidence`, and derives coverage from that exact array. Coverage filters malformed step entries, bounds the normalized step population before counting, ignores caller-supplied `quality.stepCoverage`, deduplicates evidence IDs within a step, treats duplicate persisted evidence IDs as first-valid-record-wins, and only counts mappings to retained persisted evidence records. Evidence dropped by invalid sanitized ID, evidence sanitization, the persistence limit, or dangling/unresolved step IDs does not count as mapped.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing tests first. Initial red run: `node test.js` failed in the `quality shadow storage/audit` section because `quality.stepCoverage` was not yet persisted; first failing assertion was `quality shadow store derives step coverage from valid evidence mappings`, followed by an undefined `stepCoverage` invariant access. After implementation and a test-quality fix removing a brittle broad `999` string assertion, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Task review result: spec compliance PASS, code quality APPROVED, no findings.
+
+**Decision / Follow-up:** Task 1 is complete and remains shadow-only. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, no audit behavior changes, no `knowledge.md` behavior changes, no Task 2 documentation update, and no PR 2 work started. Stop for review before Task 2.
