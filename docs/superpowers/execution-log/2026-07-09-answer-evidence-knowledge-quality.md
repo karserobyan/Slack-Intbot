@@ -442,3 +442,18 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** After this log-only completion entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Confirmed `QUALITY_LAYER_ENABLED=false` returns disabled. Ran `git status --short --branch`; result: `main...origin/main` with this execution-log update and untracked `AGENTS.md`.
 
 **Decision / Follow-up:** PR 1.1 is fully complete. Do not begin PR 2 implementation. The next step may be a separate plan-only PR for shadow claim-level nomination policy that keeps the current nomination workflow live and generates new claim candidates only in shadow mode.
+
+## 2026-07-15 - PR 2 Shadow Claim-Level Nomination Policy Plan Created
+
+**Intent:** Create a traceable plan-only PR for shadow claim-level nomination policy after PR 1 and PR 1.1 were completed, without starting PR 2 implementation.
+
+**Action Taken:** Created `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md` on branch `codex/pr2-shadow-claim-nomination-policy-plan`. Before writing the plan, inspected the current quality contract/scoring/recorder/store/config modules, current mention-handler nomination trigger points, `src/slack/nominations.js`, and `src/slack/knowledge-writer.js`. The plan keeps `src/handlers/mention.js`, live nomination cards, approve/reject flow, prompts, Slack rendering, audit payload behavior, and `knowledge.md` behavior out of scope. It adds a future strict opt-in `QUALITY_NOMINATION_POLICY_ENABLED` flag, a new in-memory `src/quality/nomination-policy.js` module, aggregate/count-only `quality.nominationPolicy` shadow summaries, nested fail-open policy isolation inside the existing shadow recorder, and a controlled 10-case rollout validation. The plan explicitly defers duplicate detection because existing knowledge dedupe is issue-title based, not claim-level.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Plan self-review result: scope clean, privacy boundary clean, and no production code changed.
+
+**Decision / Follow-up:** Stop for approval before any PR 2 implementation. The next approved implementation, if any, should execute the plan task-by-task with review gates and keep current live nomination behavior unchanged.
