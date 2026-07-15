@@ -428,3 +428,17 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Ran `git diff --check`; result: clean. Ran `node test.js`; result: 757 passed, 0 failed. Ran `git status --short --branch`; result: branch `codex/pr1-1-step-coverage-plan` with only this execution-log update and untracked `AGENTS.md`.
 
 **Decision / Follow-up:** Validation result: PR 1.1 ready for final review. Do not start PR 2 until rollout results are reviewed and a PR 2 plan is separately approved.
+
+## 2026-07-15 - PR 1.1 Complete After PR #35 Merge
+
+**Intent:** Mark PR 1.1 complete after the approved PR #35 merge and post-merge verification.
+
+**Action Taken:** PR #35 was merged into `main` with merge commit `b1008a3d7252dea2439a7223471869443ae0a35c`, including reviewed head `d2ec81a6041deb6c40a2c8e2310c249ac338ff3d`. Post-merge verification confirmed `main` contains the PR 1.1 work, `QUALITY_LAYER_ENABLED=false` still disables the quality layer, and the merged scope remains privacy-safe count-only shadow instrumentation with no Slack UX, prompt, nomination, approval, audit, `knowledge.md`, or answer-path behavior changes.
+
+**Files Touched:**
+
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** After this log-only completion entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Confirmed `QUALITY_LAYER_ENABLED=false` returns disabled. Ran `git status --short --branch`; result: `main...origin/main` with this execution-log update and untracked `AGENTS.md`.
+
+**Decision / Follow-up:** PR 1.1 is fully complete. Do not begin PR 2 implementation. The next step may be a separate plan-only PR for shadow claim-level nomination policy that keeps the current nomination workflow live and generates new claim candidates only in shadow mode.
