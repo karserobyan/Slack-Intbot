@@ -33,6 +33,8 @@ const REASON_CODES = new Set([
   'symptom_match',
   'weak_evidence',
 ]);
+const MAX_PERSISTED_EVIDENCE_RECORDS = 10;
+const MAX_STEP_COVERAGE_COUNT = 1000;
 
 export function _setQualityShadowFileForTest(path) {
   _shadowFile = path;
@@ -63,22 +65,90 @@ function safeReasonCodes(reasons = []) {
     .filter(r => REASON_CODES.has(r));
 }
 
+function sanitizeEvidenceId(value) {
+  const id = sanitizePreview(value, 40);
+  return /^ev_[a-z0-9_-]+$/i.test(id) ? id : '';
+}
+
+function normalizeCoverageStep(step) {
+  if (!step || typeof step !== 'object' || Array.isArray(step)) return null;
+  const evidenceIds = Array.isArray(step.evidenceIds)
+    ? step.evidenceIds.map(sanitizeEvidenceId).filter(Boolean)
+    : [];
+  return { evidenceIds };
+}
+
+function coverageStepPopulation(record = {}) {
+  return (Array.isArray(record.sections?.steps) ? record.sections.steps : [])
+    .map(normalizeCoverageStep)
+    .filter(Boolean)
+    .slice(0, MAX_STEP_COVERAGE_COUNT);
+}
+
+function evidenceByIdFromPersistedEvidence(persistedEvidence = []) {
+  const evidenceById = new Map();
+  for (const item of persistedEvidence) {
+    const id = typeof item?.id === 'string' ? item.id : '';
+    if (!id || evidenceById.has(id)) continue;
+    evidenceById.set(id, item);
+  }
+  return evidenceById;
+}
+
+function deriveStepCoverage(record = {}, persistedEvidence = []) {
+  const steps = coverageStepPopulation(record);
+  const evidenceById = evidenceByIdFromPersistedEvidence(persistedEvidence);
+
+  let mappedStepCount = 0;
+  let directMappedStepCount = 0;
+
+  for (const step of steps) {
+    const resolved = [...new Set(step.evidenceIds)]
+      .map((id) => evidenceById.get(id))
+      .filter(Boolean);
+
+    if (resolved.length === 0) continue;
+    mappedStepCount += 1;
+    if (resolved.some((item) => item.directness === 'direct')) {
+      directMappedStepCount += 1;
+    }
+  }
+
+  const stepCount = steps.length;
+  const unsupportedStepCount = stepCount - mappedStepCount;
+
+  return {
+    stepCount,
+    mappedStepCount,
+    directMappedStepCount,
+    unsupportedStepCount,
+  };
+}
+
 function sanitizeEvidence(evidence = []) {
-  return evidence.slice(0, 10).map((e) => ({
-    id: sanitizePreview(e.id, 40),
-    source: safeEnum(e.source, SOURCE_TYPES),
-    hostname: safeHostname(e.hostname),
-    urlHash: safeHash(e.urlHash, e.url ?? ''),
-    sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
-    directness: safeEnum(e.directness, DIRECTNESS_VALUES),
-    freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
-    sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
-    reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
-    reasons: safeReasonCodes(e.reasons),
-  }));
+  return evidence
+    .map((e) => {
+      const id = sanitizeEvidenceId(e?.id);
+      if (!id) return null;
+      return {
+        id,
+        source: safeEnum(e.source, SOURCE_TYPES),
+        hostname: safeHostname(e.hostname),
+        urlHash: safeHash(e.urlHash, e.url ?? ''),
+        sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
+        directness: safeEnum(e.directness, DIRECTNESS_VALUES),
+        freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
+        sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
+        reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
+        reasons: safeReasonCodes(e.reasons),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, MAX_PERSISTED_EVIDENCE_RECORDS);
 }
 
 function sanitizeShadowRecord(record) {
+  const persistedEvidence = sanitizeEvidence(record.evidence);
   return {
     createdAt: record.createdAt ?? new Date().toISOString(),
     answerId: sanitizePreview(record.answerId, 80),
@@ -89,13 +159,14 @@ function sanitizeShadowRecord(record) {
     issueHash: record.issueTitle ? hashValue(record.issueTitle) : null,
     integrationTypeHash: record.integrationType ? hashValue(record.integrationType) : null,
     confidence: safeEnum(record.confidence, CONFIDENCE_VALUES),
-    evidence: sanitizeEvidence(record.evidence),
+    evidence: persistedEvidence,
     quality: {
       directAnswer: record.quality?.directAnswer === true,
       reusableKnowledge: record.quality?.reusableKnowledge === true,
       nominationEligible: record.quality?.nominationEligible === true,
       approximateMapping: record.quality?.approximateMapping === true,
       reasons: safeReasonCodes(record.quality?.reasons),
+      stepCoverage: deriveStepCoverage(record, persistedEvidence),
     },
   };
 }

@@ -3027,6 +3027,214 @@ for (const hostileReasonCode of sensitiveQualityText.hostileReasonCodes) {
   assert(!sensitiveShadowText.includes(hostileReasonCode), `quality shadow store omits hostile reason code ${hostileReasonCode}`);
 }
 
+const stepCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage.jsonl');
+_setQualityShadowFileForTest(stepCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:00.000Z',
+  answerId: 'ans_step_coverage',
+  confidence: 'high',
+  evidence: [
+    { id: 'ev_direct', source: 'confluence', directness: 'direct', sourceQuality: 'high' },
+    { id: 'ev_related', source: 'slack', directness: 'related', sourceQuality: 'medium' },
+    { id: 'ev_background', source: 'kb', directness: 'background', sourceQuality: 'low' },
+  ],
+  sections: {
+    steps: [
+      { id: 'claim_1', title: 'Do not persist title', detail: 'Do not persist detail', evidenceIds: ['ev_direct'] },
+      { id: 'claim_2', title: 'Do not persist title', detail: 'Do not persist detail', evidenceIds: ['ev_related', 'ev_related'] },
+      { id: 'claim_3', title: 'Do not persist title', detail: 'Do not persist detail', evidenceIds: ['ev_missing'] },
+      { id: 'claim_4', title: 'Do not persist title', detail: 'Do not persist detail', evidenceIds: [] },
+    ],
+  },
+  quality: {
+    directAnswer: true,
+    reusableKnowledge: true,
+    nominationEligible: true,
+    approximateMapping: true,
+    reasons: ['shadow_mode'],
+    stepCoverage: {
+      stepCount: 999,
+      mappedStepCount: 999,
+      directMappedStepCount: 999,
+      unsupportedStepCount: 999,
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:00.000Z'),
+});
+const stepCoverageText = await readFile(stepCoverageFile, 'utf-8');
+const stepCoverageRecord = JSON.parse(stepCoverageText.trim());
+assert.deepEqual(stepCoverageRecord.quality.stepCoverage, {
+  stepCount: 4,
+  mappedStepCount: 2,
+  directMappedStepCount: 1,
+  unsupportedStepCount: 2,
+}, 'quality shadow store derives step coverage from valid evidence mappings');
+assert(stepCoverageRecord.quality.stepCoverage.mappedStepCount + stepCoverageRecord.quality.stepCoverage.unsupportedStepCount === stepCoverageRecord.quality.stepCoverage.stepCount, 'step coverage invariant mapped + unsupported equals total');
+assert(stepCoverageRecord.quality.stepCoverage.directMappedStepCount <= stepCoverageRecord.quality.stepCoverage.mappedStepCount, 'step coverage invariant direct mapped is bounded by mapped');
+assert(!stepCoverageText.includes('Do not persist title'), 'step coverage persistence omits step titles');
+assert(!stepCoverageText.includes('Do not persist detail'), 'step coverage persistence omits step details');
+assert(!stepCoverageText.includes('ev_missing'), 'step coverage persistence does not persist dangling evidence ids from steps');
+
+const zeroStepCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-zero.jsonl');
+_setQualityShadowFileForTest(zeroStepCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:01.000Z',
+  answerId: 'ans_zero_steps',
+  evidence: [{ id: 'ev_direct', source: 'kb', directness: 'direct' }],
+  sections: { steps: [] },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:01.000Z'),
+});
+const zeroStepCoverageRecord = JSON.parse((await readFile(zeroStepCoverageFile, 'utf-8')).trim());
+assert.deepEqual(zeroStepCoverageRecord.quality.stepCoverage, {
+  stepCount: 0,
+  mappedStepCount: 0,
+  directMappedStepCount: 0,
+  unsupportedStepCount: 0,
+}, 'zero-step answers persist zero step coverage counts');
+
+const allMappedStepCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-all-mapped.jsonl');
+_setQualityShadowFileForTest(allMappedStepCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:02.000Z',
+  answerId: 'ans_all_mapped_steps',
+  evidence: [
+    { id: 'ev_direct', source: 'confluence', directness: 'direct' },
+    { id: 'ev_background', source: 'kb', directness: 'background' },
+  ],
+  sections: {
+    steps: [
+      { id: 'claim_1', evidenceIds: ['ev_direct'] },
+      { id: 'claim_2', evidenceIds: ['ev_background'] },
+    ],
+  },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:02.000Z'),
+});
+const allMappedStepCoverageRecord = JSON.parse((await readFile(allMappedStepCoverageFile, 'utf-8')).trim());
+assert.deepEqual(allMappedStepCoverageRecord.quality.stepCoverage, {
+  stepCount: 2,
+  mappedStepCount: 2,
+  directMappedStepCount: 1,
+  unsupportedStepCount: 0,
+}, 'all mapped steps count as mapped while only direct evidence counts as direct mapped');
+
+const droppedEvidenceCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-dropped-evidence.jsonl');
+_setQualityShadowFileForTest(droppedEvidenceCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:03.000Z',
+  answerId: 'ans_dropped_evidence',
+  evidence: [
+    { id: 'Alice Customer Account 123', source: 'kb', directness: 'direct' },
+    ...Array.from({ length: 11 }, (_, index) => ({
+      id: `ev_${index + 1}`,
+      source: 'kb',
+      directness: index === 0 ? 'related' : 'direct',
+    })),
+  ],
+  sections: {
+    steps: [
+      { id: 'claim_invalid_id', evidenceIds: ['Alice Customer Account 123'] },
+      { id: 'claim_past_limit', evidenceIds: ['ev_11'] },
+      { id: 'claim_retained', evidenceIds: ['ev_1'] },
+    ],
+  },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:03.000Z'),
+});
+const droppedEvidenceCoverageText = await readFile(droppedEvidenceCoverageFile, 'utf-8');
+const droppedEvidenceCoverageRecord = JSON.parse(droppedEvidenceCoverageText.trim());
+assert.deepEqual(droppedEvidenceCoverageRecord.quality.stepCoverage, {
+  stepCount: 3,
+  mappedStepCount: 1,
+  directMappedStepCount: 0,
+  unsupportedStepCount: 2,
+}, 'steps referencing evidence dropped by ID validation or evidence persistence limits count as unsupported');
+assert(!droppedEvidenceCoverageText.includes('Alice Customer Account 123'), 'step coverage persistence omits invalid free-text evidence ids');
+
+const duplicateEvidenceCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-duplicate-evidence.jsonl');
+_setQualityShadowFileForTest(duplicateEvidenceCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:04.000Z',
+  answerId: 'ans_duplicate_evidence',
+  evidence: [
+    { id: 'ev_dup', source: 'kb', directness: 'related' },
+    { id: 'ev_dup', source: 'kb', directness: 'direct' },
+  ],
+  sections: { steps: [{ id: 'claim_dup', evidenceIds: ['ev_dup'] }] },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:04.000Z'),
+});
+const duplicateEvidenceCoverageRecord = JSON.parse((await readFile(duplicateEvidenceCoverageFile, 'utf-8')).trim());
+assert.deepEqual(duplicateEvidenceCoverageRecord.quality.stepCoverage, {
+  stepCount: 1,
+  mappedStepCount: 1,
+  directMappedStepCount: 0,
+  unsupportedStepCount: 0,
+}, 'duplicate evidence ids use the first valid persisted record and do not elevate direct coverage');
+
+const malformedStepCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-malformed-steps.jsonl');
+_setQualityShadowFileForTest(malformedStepCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:05.000Z',
+  answerId: 'ans_malformed_steps',
+  evidence: [{ id: 'ev_direct', source: 'kb', directness: 'direct' }],
+  sections: {
+    steps: [
+      null,
+      'not a step',
+      [],
+      { id: 'claim_valid', evidenceIds: ['ev_direct'] },
+    ],
+  },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:05.000Z'),
+});
+const malformedStepCoverageRecord = JSON.parse((await readFile(malformedStepCoverageFile, 'utf-8')).trim());
+assert.deepEqual(malformedStepCoverageRecord.quality.stepCoverage, {
+  stepCount: 1,
+  mappedStepCount: 1,
+  directMappedStepCount: 1,
+  unsupportedStepCount: 0,
+}, 'malformed step entries do not inflate stepCount');
+
+const duplicateStepIdCoverageFile = join(qualityTempDir, 'quality-shadow-step-coverage-duplicate-step-id.jsonl');
+_setQualityShadowFileForTest(duplicateStepIdCoverageFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-14T00:00:06.000Z',
+  answerId: 'ans_duplicate_step_id',
+  evidence: [{ id: 'ev_direct', source: 'kb', directness: 'direct' }],
+  sections: {
+    steps: [
+      { id: 'claim_dup', evidenceIds: ['ev_direct', 'ev_direct'] },
+      { id: 'claim_dup', evidenceIds: ['ev_missing', 'ev_missing'] },
+    ],
+  },
+  quality: { approximateMapping: true, reasons: ['shadow_mode'] },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-14T00:00:06.000Z'),
+});
+const duplicateStepIdCoverageRecord = JSON.parse((await readFile(duplicateStepIdCoverageFile, 'utf-8')).trim());
+assert.deepEqual(duplicateStepIdCoverageRecord.quality.stepCoverage, {
+  stepCount: 2,
+  mappedStepCount: 1,
+  directMappedStepCount: 1,
+  unsupportedStepCount: 1,
+}, 'duplicate step ids and duplicate evidence ids inside one step do not inflate mappings beyond one result per normalized step');
+
 const invalidShadowParent = join(qualityTempDir, 'not-a-directory');
 await writeFile(invalidShadowParent, 'plain file');
 _setQualityShadowFileForTest(join(invalidShadowParent, 'quality-shadow.jsonl'));

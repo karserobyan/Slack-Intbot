@@ -341,3 +341,90 @@ This log records the actual steps taken while designing and implementing the Ans
 **Instrumentation Gap:** The persisted PR 1 schema cannot calculate total answer-step count, steps with evidence mappings, steps with direct evidence, or unsupported-step count. A small privacy-safe follow-up should add count-only fields if we want those metrics: `stepCount`, `mappedStepCount`, `directMappedStepCount`, and `unsupportedStepCount`. Do not implement this until separately approved.
 
 **Decision / Follow-up:** Controlled validation supports moving to PR 2 planning, but only after review of these rollout results. No PR 2 plan was created and no PR 2 implementation started.
+
+## 2026-07-14 - PR 1.1 Step Coverage Plan Created
+
+**Intent:** Create an implementation plan for the approved count-only instrumentation follow-up without starting implementation or PR 2.
+
+**Action Taken:** Created `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`. The plan keeps the persistent serializer as the trust boundary, derives `quality.stepCoverage` from `sections.steps[].evidenceIds` and `evidence[].id`, ignores caller-supplied counts, preserves the shadow-only/fail-open behavior, and requires controlled rollout validation before any PR 2 planning.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** Stop for approval after committing the plan. Do not implement PR 1.1 and do not start PR 2.
+
+## 2026-07-14 - PR 1.1 Plan Refinement: Persisted Evidence Coverage Boundary
+
+**Intent:** Address plan review feedback before implementation so PR 1.1 derives step coverage from the same minimized evidence payload that will actually be persisted.
+
+**Action Taken:** Updated `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md` so `sanitizeShadowRecord` computes the sanitized/retained evidence array once, persists that exact array, and passes it into `deriveStepCoverage(record, persistedEvidence)`. The plan now requires coverage to account for evidence dropped by ID validation, evidence sanitization, the serializer evidence-count limit, clamped directness values, sanitized evidence IDs, malformed step entries, and bounded step population before counts are derived. Duplicate persisted evidence IDs use the first valid persisted record; later duplicates are ignored so conflicting directness cannot elevate direct coverage. The targeted test plan now includes dropped evidence, evidence-limit behavior, duplicate evidence IDs with conflicting directness, malformed step entries, existing dangling/duplicate/hostile/zero-step/privacy coverage, and `N/A` rollout percentages when total steps is zero.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-14-privacy-safe-step-coverage-instrumentation.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 744 passed, 0 failed. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** This is a plan-only refinement. No production code changed, no Slack UX changed, no prompts changed, no nominations or approval behavior changed, no `knowledge.md` behavior changed, no PR 1.1 implementation started, and PR 2 remains paused.
+
+## 2026-07-15 - PR 1.1 Task 1 Step Coverage Implementation
+
+**Intent:** Implement the approved count-only shadow step coverage metrics without changing Slack UX, prompts, nominations, approval behavior, audit behavior, `knowledge.md`, or PR 2 scope.
+
+**Action Taken:** Added serializer-derived `quality.stepCoverage` to `data/quality-shadow.jsonl` records. `sanitizeShadowRecord` now computes the sanitized/retained evidence array exactly once, persists that same array as `evidence`, and derives coverage from that exact array. Coverage filters malformed step entries, bounds the normalized step population before counting, ignores caller-supplied `quality.stepCoverage`, deduplicates evidence IDs within a step, treats duplicate persisted evidence IDs as first-valid-record-wins, and only counts mappings to retained persisted evidence records. Evidence dropped by invalid sanitized ID, evidence sanitization, the persistence limit, or dangling/unresolved step IDs does not count as mapped.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing tests first. Initial red run: `node test.js` failed in the `quality shadow storage/audit` section because `quality.stepCoverage` was not yet persisted; first failing assertion was `quality shadow store derives step coverage from valid evidence mappings`, followed by an undefined `stepCoverage` invariant access. After implementation and a test-quality fix removing a brittle broad `999` string assertion, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Task review result: spec compliance PASS, code quality APPROVED, no findings.
+
+**Decision / Follow-up:** Task 1 is complete and remains shadow-only. No Slack card/text/button/source-chip changes, no answerer prompt changes, no nomination changes, no approval-flow changes, no audit behavior changes, no `knowledge.md` behavior changes, no Task 2 documentation update, and no PR 2 work started. Stop for review before Task 2.
+
+## 2026-07-15 - PR 1.1 Task 2 Schema Docs And Execution Log
+
+**Intent:** Align the design spec and execution log with the step coverage behavior implemented in commit `47bedec` without starting controlled validation, Task 3, or PR 2.
+
+**Action Taken:** Updated the design spec to document the persisted `quality.stepCoverage` shape and the serializer-derived coverage semantics from Task 1. The docs now state that `src/quality/shadow-store.js` derives count-only coverage from bounded valid normalized `sections.steps[]` objects and the exact sanitized/retained `evidence[]` array that is persisted. Caller-supplied coverage counts are ignored. Mapped coverage requires sanitized evidence IDs that resolve to retained persisted evidence records; dangling IDs, invalid IDs, records dropped by sanitization, records beyond the ten-record evidence persistence limit, malformed steps, duplicate evidence IDs within a step, and later duplicate persisted evidence records do not inflate coverage. `directMappedStepCount` requires retained evidence whose clamped directness is exactly `direct`. The spec also records the invariants `mappedStepCount + unsupportedStepCount === stepCount` and `directMappedStepCount <= mappedStepCount`, the zero-step four-zero behavior, and the privacy boundary that persistence remains count-only without step IDs/mappings, step text/tags, source titles/snippets/URLs, query/customer text, diagnosis/customer-message/escalation prose, or other customer payload text. Updated success measurement language so total answer steps, steps with retained evidence mappings, steps with direct retained evidence, and unsupported steps are now measurable fields, while preserving the limitation that the current Phase 1 mapper is approximate and does not prove semantic correctness.
+
+**Files Touched:**
+
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Task 1 implementation in commit `47bedec` verified `node test.js`; result: 757 passed, 0 failed. It also verified `git diff --check`; result: clean, and task review result: spec compliance PASS, code quality APPROVED, no findings. Task 2 reran verification after the documentation update: `git diff --check` clean, `node test.js` 757 passed, 0 failed, and `git status --short --branch` showed only the two intended docs modified plus untracked `AGENTS.md`.
+
+**Decision / Follow-up:** PR 1.1 fields are implemented and measurable in shadow JSONL, but observed percentages remain pending until Task 3 reruns the controlled synthetic harness. No Slack UX, prompt, nomination, approval, audit, `knowledge.md`, or PR 2 behavior changed.
+
+## 2026-07-15 - PR 1.1 Task 3 Controlled Rollout Validation Rerun
+
+**Intent:** Rerun the controlled synthetic Slack validation after adding count-only step coverage metrics, without changing production code or starting PR 2.
+
+**Action Taken:** Ran a local synthetic Slack validation harness against the real `handleQuery` new-pipeline mention path, real Block Kit rendering, current nomination conditions, and real quality shadow/audit writers. The harness used a mocked Slack client, mocked Anthropic responses, empty mocked search plans/responses, temporary shadow/audit JSONL files, and a temporary nomination store. No live Slack workspace, customer data, production services, prompt changes, Slack card changes, nomination-policy changes, approval-flow changes, audit behavior changes, or `knowledge.md` writes were used. Reused the same 10 synthetic categories from the prior validation: strong Confluence + KB match, Slack-only evidence, mixed Slack/Atlassian/KB evidence, specialist-sensitive Jira evidence in CSA view, weak/low-confidence evidence, no useful refs, escalation, non-escalation nomination-eligible answer, privacy canary, and KB-only evidence.
+
+**Files Touched:**
+
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Disabled Baseline:** With `QUALITY_LAYER_ENABLED=false` and `QUALITY_LAYER_SHADOW_MODE=true`, 10/10 synthetic questions delivered answers, 5 nominations triggered under current rules, 0 warnings, 0 errors, 0 shadow records, and 0 audit records. Local mock latency was average 27 ms / max 34 ms.
+
+**Enabled Shadow Mode:** With `QUALITY_LAYER_ENABLED=true` and `QUALITY_LAYER_SHADOW_MODE=true`, 10/10 synthetic questions delivered answers, 5 nominations triggered, 0 visible answer mismatches, 0 nomination mismatches, 0 warnings, and 0 errors. Cards, answer text, Block Kit payloads, buttons/action IDs, source chips, escalation behavior, and nomination conditions matched the disabled baseline after normalizing dynamic timestamps. Local mock latency was average 28 ms / max 30 ms. Enabled mode produced 10 shadow records and 10 audit records.
+
+**Step Coverage Metrics:** Every normal shadow record contained `quality.stepCoverage`. Per-record validation passed: `mappedStepCount + unsupportedStepCount === stepCount`, `directMappedStepCount <= mappedStepCount`, and all four values were non-negative integers for every record. Aggregate counts equaled the sum of per-record counts. Total step coverage was `stepCount=20`, `mappedStepCount=18`, `directMappedStepCount=15`, and `unsupportedStepCount=2`: mapped 90.0%, direct-mapped 75.0%, unsupported 10.0%. By confidence: high confidence had 15 steps, 15 mapped, 15 direct-mapped, 0 unsupported; low confidence had 3 steps, 1 mapped, 0 direct-mapped, 2 unsupported; medium confidence had 2 steps, 2 mapped, 0 direct-mapped, 0 unsupported. One zero-step answer produced four zero values, and zero-denominator percentages report `N/A`. A hostile caller-supplied `quality.stepCoverage` payload with `999` counts in the synthetic answer was ignored; the persisted privacy-canary record stored the derived counts `2/2/0/0`.
+
+**Privacy Inspection:** Persisted step coverage remained count-only. The shadow/audit JSONL files did not contain step IDs or step evidence mappings, step titles/details/tags, raw queries, source titles/snippets/URLs, diagnosis/customer-message/escalation prose, customer or person names, emails, phone numbers, tenant/account/location text, tokens, secrets, prompts, headers, payloads, or actor display names. The previously approved privacy boundary remained unchanged: shadow top-level fields were limited to `answerId`, `channelId`, `confidence`, `createdAt`, `evidence`, `integrationTypeHash`, `issueHash`, `quality`, `queryHash`, `role`, and `threadTs`; persisted evidence fields were limited to `directness`, `freshness`, `hostname`, `id`, `reasons`, `reuseValue`, `sensitivity`, `source`, `sourceQuality`, and `urlHash`; audit metadata fields remained `approximateMapping`, `integrationTypeHash`, `nominationEligible`, `queryHash`, and `reasons`.
+
+**Fail-open And Bypass:** An intentional shadow-store failure still delivered the Slack answer, emitted exactly one bounded `[quality] shadow record failed:` warning, produced 0 errors, and wrote no corrupt or partial shadow/audit record. After setting `QUALITY_LAYER_ENABLED=false`, a bypass question delivered normally and wrote 0 new shadow records and 0 new audit records.
+
+**Interpretation:** These counters measure coverage quantity only: how many normalized answer steps resolve to retained persisted evidence and direct retained evidence. They do not prove that approximate Phase 1 mappings are semantically correct. `approximateMapping` remains the correct product interpretation until a later answerer contract emits explicit evidence IDs per claim/step.
+
+**Verification:** Ran `git diff --check`; result: clean. Ran `node test.js`; result: 757 passed, 0 failed. Ran `git status --short --branch`; result: branch `codex/pr1-1-step-coverage-plan` with only this execution-log update and untracked `AGENTS.md`.
+
+**Decision / Follow-up:** Validation result: PR 1.1 ready for final review. Do not start PR 2 until rollout results are reviewed and a PR 2 plan is separately approved.
