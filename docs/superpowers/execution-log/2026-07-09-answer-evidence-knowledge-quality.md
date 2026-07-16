@@ -258,6 +258,22 @@ This log records the actual steps taken while designing and implementing the Ans
 
 **Decision / Follow-up:** Branch was pushed and synced at `4fe1e96` before this final log-only note. No PR 2 work started.
 
+## 2026-07-16 - PR 2 Task 2 Eligibility Evaluation And Summary Aggregation
+
+**Intent:** Add the in-memory-only claim-level nomination policy evaluator and aggregate summary logic for PR 2 without changing the live Slack nomination path or starting persistence work.
+
+**Action Taken:** Confirmed `git diff --name-only main...HEAD` does not include `.superpowers/sdd/task-1-report.md`. Added failing Task 2 tests first, then implemented `evaluateNominationEligibility`, `evaluateContractNominationPolicy`, and `summarizeNominationPolicy` in `src/quality/nomination-policy.js`. The evaluator now uses the same bounded normalized evidence population as shadow persistence, resolves evidence with first-valid-record-wins semantics, enforces the documented evidence-blocker precedence, carries forward the single-record cohesive-evidence rule with the controlled `no_cohesive_qualifying_evidence` blocker, returns evaluated candidate copies without mutating contracts or caller-supplied eligibility state, and aggregates deterministic count-only in-memory summaries. No live nomination behavior changed, and no nomination-policy summary is persisted in Task 2.
+
+**Files Touched:**
+
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after adding Task 2 imports/tests first: `node test.js` failed with `SyntaxError: The requested module './src/quality/nomination-policy.js' does not provide an export named 'evaluateContractNominationPolicy'`, which was expected because the new evaluator exports were not implemented yet. After implementation, `node test.js` passed with `876 passed, 0 failed`. Final Task 2 verification also ran `git diff --check` and `git status --short --branch`.
+
+**Decision / Follow-up:** Task 2 remains in-memory only. Carry forward that `no_cohesive_qualifying_evidence` must be added to the Task 3 persistence allowlist, Task 2 persists no nomination-policy summary, and no live nomination behavior changed.
+
 ## 2026-07-10 - PR 1 Re-review Fix: Hash Integration Type And Clamp Persisted Dimensions
 
 **Intent:** Resolve the final re-review blockers before merging PR #34.

@@ -75,6 +75,9 @@ import {
   POLICY_ELIGIBLE_REASONS,
   buildClaimCandidates,
   emptyEvidenceSummary,
+  evaluateNominationEligibility,
+  evaluateContractNominationPolicy,
+  summarizeNominationPolicy,
 } from './src/quality/nomination-policy.js';
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
@@ -3091,6 +3094,378 @@ assert(candidates[2].genericPlaceholder === false, 'candidate builder keeps conc
 assert.deepEqual(candidates[0].eligibility, { preDuplicateEligible: false, reasons: [], blockers: [] }, 'candidate builder leaves eligibility unevaluated for Task 1');
 assert.deepEqual(candidates[0].evidenceSummary, emptyEvidenceSummary(), 'candidate builder attaches empty evidence summary for Task 1');
 assert(JSON.stringify(candidateContract) === originalCandidateContract, 'candidate builder does not mutate the original contract');
+
+// ── quality nomination policy evaluation and aggregation ────────────────────
+console.log('\n🔹 quality nomination policy evaluation and aggregation');
+
+function policyEvidence(overrides = {}) {
+  const suffix = String(overrides.id ?? 'ev_policy').replace(/^ev_/, '');
+  return {
+    id: overrides.id ?? 'ev_policy',
+    source: overrides.source ?? 'kb',
+    hostname: overrides.hostname ?? 'help.servicetitan.com',
+    urlHash: overrides.urlHash ?? `sha256:${suffix.padEnd(64, 'a').slice(0, 64)}`,
+    sourceQuality: overrides.sourceQuality ?? 'high',
+    directness: overrides.directness ?? 'direct',
+    freshness: overrides.freshness ?? 'fresh',
+    sensitivity: overrides.sensitivity ?? 'safe',
+    reuseValue: overrides.reuseValue ?? 'high',
+    reasons: overrides.reasons ?? ['direct_source_match'],
+  };
+}
+
+function policyStep(overrides = {}) {
+  return {
+    id: overrides.id ?? 'claim_policy',
+    title: overrides.title ?? 'Enable API access',
+    detail: overrides.detail ?? 'Use Settings to re-enable the integration.',
+    tag: overrides.tag ?? 'action',
+    evidenceIds: [...(overrides.evidenceIds ?? ['ev_policy'])],
+    tenantSpecific: overrides.tenantSpecific === true,
+  };
+}
+
+function policyContract(overrides = {}) {
+  const steps = overrides.steps ?? [policyStep()];
+  const evidence = overrides.evidence ?? [policyEvidence()];
+  return {
+    answerId: overrides.answerId ?? 'ans_policy',
+    confidence: overrides.confidence ?? 'high',
+    integrationType: overrides.integrationType ?? 'Zapier',
+    evidence: evidence.map(item => ({ ...item, reasons: [...(item.reasons ?? [])] })),
+    quality: { approximateMapping: overrides.approximateMapping !== false },
+    sections: {
+      escalation: { shouldEscalate: overrides.shouldEscalate === true },
+      steps: steps.map(step => ({
+        ...step,
+        evidenceIds: [...(step.evidenceIds ?? [])],
+      })),
+    },
+  };
+}
+
+const eligiblePolicyResult = evaluateContractNominationPolicy(policyContract(), {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+assert(eligiblePolicyResult.status === 'evaluated', 'policy evaluation returns evaluated status');
+assert(eligiblePolicyResult.candidates.length === 1, 'policy evaluation builds one candidate for one valid step');
+assert(eligiblePolicyResult.candidates[0].eligibility.preDuplicateEligible === true, 'one cohesive supported claim is pre-duplicate eligible');
+assert.deepEqual(eligiblePolicyResult.candidates[0].eligibility.blockers, [], 'eligible cohesive claim has no blockers');
+assert.deepEqual(eligiblePolicyResult.candidates[0].eligibility.reasons, [
+  'specific_integration',
+  'durable_claim_type',
+  'concrete_claim',
+  'non_tenant_specific',
+  'cohesive_qualifying_evidence',
+], 'eligible cohesive claim gets the controlled eligible reasons only');
+assert.deepEqual(eligiblePolicyResult.candidates[0].evidenceSummary, {
+  resolvedCount: 1,
+  directCount: 1,
+  safeDirectCount: 1,
+  specialistOnlyCount: 0,
+  exclusivelySpecialistOnly: false,
+  highOrMediumQualityCount: 1,
+  highOrMediumReuseCount: 1,
+  qualifyingEvidenceCount: 1,
+  freshQualifyingEvidenceCount: 1,
+  unknownFreshnessQualifyingEvidenceCount: 0,
+  staleOtherwiseQualifyingEvidenceCount: 0,
+}, 'eligible cohesive claim gets the expected evidence summary shape and counts');
+assert.deepEqual(eligiblePolicyResult.summary, summarizeNominationPolicy(eligiblePolicyResult), 'policy result summary matches direct summarization');
+
+const mediumConfidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_medium',
+  confidence: 'medium',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(mediumConfidenceResult.candidates[0].eligibility.preDuplicateEligible === true, 'medium-confidence supported claim may be eligible');
+
+const lowConfidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_low',
+  confidence: 'low',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(lowConfidenceResult.candidates[0].eligibility.preDuplicateEligible === false, 'low-confidence claim is blocked');
+assert.deepEqual(lowConfidenceResult.candidates[0].eligibility.blockers, ['low_confidence_answer'], 'low-confidence supported claim gets only the low-confidence blocker');
+
+const unrelatedEvidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_unrelated',
+  evidence: [
+    policyEvidence({ id: 'ev_quality_only', sourceQuality: 'high', reuseValue: 'low' }),
+    policyEvidence({ id: 'ev_reuse_only', sourceQuality: 'low', reuseValue: 'high' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_quality_only', 'ev_reuse_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(unrelatedEvidenceResult.candidates[0].eligibility.preDuplicateEligible === false, 'unrelated sources cannot combine into eligibility');
+assert.deepEqual(unrelatedEvidenceResult.candidates[0].eligibility.blockers, ['no_cohesive_qualifying_evidence'], 'the unrelated-source case receives the cohesive-evidence blocker');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.highOrMediumQualityCount === 1, 'quality-only support count stays per record');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.highOrMediumReuseCount === 1, 'reuse-only support count stays per record');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.qualifyingEvidenceCount === 0, 'no single evidence record qualifies cohesively');
+
+const staleOnlyResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_stale',
+  evidence: [policyEvidence({ id: 'ev_stale_only', freshness: 'stale' })],
+  steps: [policyStep({ evidenceIds: ['ev_stale_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(staleOnlyResult.candidates[0].eligibility.blockers, ['stale_evidence'], 'stale-only otherwise qualifying evidence gets stale_evidence');
+assert(staleOnlyResult.candidates[0].evidenceSummary.staleOtherwiseQualifyingEvidenceCount === 1, 'stale-only qualifying evidence is counted separately');
+
+const unsupportedEvidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_unsupported',
+  evidence: [policyEvidence({ id: 'ev_kept' })],
+  steps: [policyStep({ evidenceIds: ['ev_missing', 'bad id', 'ev_missing'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(unsupportedEvidenceResult.candidates[0].eligibility.blockers, ['unsupported_claim'], 'unsupported evidence gets only the correct precedence blocker');
+assert(unsupportedEvidenceResult.candidates[0].evidenceSummary.resolvedCount === 0, 'dangling and invalid evidence ids do not resolve');
+
+const noDirectResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_related',
+  evidence: [policyEvidence({ id: 'ev_related_only', directness: 'related' })],
+  steps: [policyStep({ evidenceIds: ['ev_related_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(noDirectResult.candidates[0].eligibility.blockers, ['no_direct_evidence'], 'related/background-only evidence gets no_direct_evidence');
+
+const specialistOnlyResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_specialist',
+  evidence: [policyEvidence({ id: 'ev_specialist_only', sensitivity: 'specialist_only' })],
+  steps: [policyStep({ evidenceIds: ['ev_specialist_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(specialistOnlyResult.candidates[0].eligibility.blockers, ['no_safe_direct_evidence', 'specialist_only_evidence'], 'direct specialist-only evidence gets the safe/specialist blockers without quality or reuse noise');
+
+const weakQualityResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_weak_quality',
+  evidence: [policyEvidence({ id: 'ev_weak_quality', sourceQuality: 'low', reuseValue: 'high' })],
+  steps: [policyStep({ evidenceIds: ['ev_weak_quality'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(weakQualityResult.candidates[0].eligibility.blockers, ['weak_source_quality'], 'weak-quality-only direct-safe evidence gets the quality blocker');
+
+const lowReuseResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_low_reuse',
+  evidence: [policyEvidence({ id: 'ev_low_reuse', sourceQuality: 'high', reuseValue: 'low' })],
+  steps: [policyStep({ evidenceIds: ['ev_low_reuse'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(lowReuseResult.candidates[0].eligibility.blockers, ['low_reuse_value'], 'low-reuse-only direct-safe evidence gets the reuse blocker');
+
+const mixedSafeAndSpecialistResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_mixed_support',
+  evidence: [
+    policyEvidence({ id: 'ev_safe_kept' }),
+    policyEvidence({ id: 'ev_specialist_extra', sensitivity: 'specialist_only' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_safe_kept', 'ev_specialist_extra'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(mixedSafeAndSpecialistResult.candidates[0].eligibility.preDuplicateEligible === true, 'mixed safe cohesive evidence plus specialist evidence may remain eligible');
+assert(mixedSafeAndSpecialistResult.candidates[0].evidenceSummary.specialistOnlyCount === 1, 'specialist evidence is still counted in mixed support summaries');
+
+const tenantSpecificResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_tenant_specific',
+  steps: [policyStep({ title: 'Reset account 456 mapping', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(tenantSpecificResult.candidates[0].eligibility.blockers.includes('tenant_specific_claim'), 'tenant-specific claim is blocked');
+
+const escalationClaimResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_escalation_claim',
+  steps: [policyStep({ tag: 'escalate', title: 'Escalate to engineering', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(escalationClaimResult.candidates[0].eligibility.blockers.includes('escalation_claim'), 'escalation claim is blocked');
+
+const answerEscalationResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_answer_escalation',
+  shouldEscalate: true,
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(answerEscalationResult.candidates[0].eligibility.blockers.includes('answer_requires_escalation'), 'answer requiring escalation is blocked');
+
+const fallbackStepResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_fallback_step',
+  steps: [policyStep({ tag: 'misc', title: 'Check the OAuth mapping in Settings', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(fallbackStepResult.candidates[0].claimType === 'step', 'unknown tags fall back to step claims for policy evaluation');
+assert.deepEqual(fallbackStepResult.candidates[0].eligibility.blockers, ['non_durable_claim_type'], 'fallback step claim gets the non-durable blocker only when otherwise supported');
+
+const genericInstructionResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_generic',
+  steps: [policyStep({ title: 'Try again', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(genericInstructionResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'generic instruction is blocked as a placeholder');
+
+const concreteInstructionResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_concrete',
+  steps: [policyStep({ title: 'Check the OAuth mapping in Settings', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(!concreteInstructionResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'concrete instruction is not treated as a placeholder');
+
+const missingIntegrationResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_general_integration',
+  integrationType: 'General',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(missingIntegrationResult.candidates[0].eligibility.blockers.includes('missing_specific_integration'), 'general integration is blocked as missing specific integration');
+
+const emptyClaimResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_empty_claim',
+  steps: [policyStep({ title: '', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(emptyClaimResult.candidates[0].eligibility.blockers.includes('empty_claim'), 'empty claim is blocked');
+assert(!emptyClaimResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'empty claim uses empty_claim instead of generic_placeholder');
+
+const evidenceBoundResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_evidence_bound',
+  evidence: Array.from({ length: 12 }, (_, index) => policyEvidence({ id: `ev_bound_case_${index}` })),
+  steps: [
+    policyStep({ id: 'claim_bound_kept', evidenceIds: ['ev_bound_case_9'] }),
+    policyStep({ id: 'claim_bound_dropped', evidenceIds: ['ev_bound_case_10'] }),
+  ],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(evidenceBoundResult.candidates[0].eligibility.preDuplicateEligible === true, 'evidence at the ten-record bound still counts');
+assert.deepEqual(evidenceBoundResult.candidates[1].eligibility.blockers, ['unsupported_claim'], 'evidence beyond the ten-record bound does not count');
+
+const duplicateCandidateEvidence = evaluateNominationEligibility({
+  version: 1,
+  candidateId: 'qc_duplicate_ids',
+  answerId: 'ans_policy_dup_ids',
+  sourceStepId: 'claim_dup_ids',
+  claimOrdinal: 1,
+  claimType: 'action',
+  text: 'Enable API access',
+  integrationType: 'Zapier',
+  evidenceIds: ['ev_dup_ids', 'ev_dup_ids', 'ev_dup_ids'],
+  approximateMapping: true,
+  tenantSpecific: false,
+  genericPlaceholder: false,
+  answerRequiresEscalation: false,
+  eligibility: { preDuplicateEligible: true, reasons: ['bogus'], blockers: ['bogus'] },
+  evidenceSummary: { resolvedCount: 99 },
+}, policyContract({
+  answerId: 'ans_policy_dup_ids',
+  evidence: [policyEvidence({ id: 'ev_dup_ids' })],
+  steps: [],
+}));
+assert(duplicateCandidateEvidence.evidenceSummary.resolvedCount === 1, 'duplicate candidate evidence ids do not inflate counts');
+assert(duplicateCandidateEvidence.eligibility.preDuplicateEligible === true, 'caller-provided eligibility values are ignored and recomputed');
+assert.deepEqual(duplicateCandidateEvidence.eligibility.reasons, [
+  'specific_integration',
+  'durable_claim_type',
+  'concrete_claim',
+  'non_tenant_specific',
+  'cohesive_qualifying_evidence',
+], 'caller-provided reasons are ignored');
+assert.deepEqual(duplicateCandidateEvidence.eligibility.blockers, [], 'caller-provided blockers are ignored');
+
+const duplicateEvidenceRecordsResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_dup_records',
+  evidence: [
+    policyEvidence({ id: 'ev_dup_record', sourceQuality: 'low', reuseValue: 'high' }),
+    policyEvidence({ id: 'ev_dup_record', sourceQuality: 'high', reuseValue: 'high' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_dup_record'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(duplicateEvidenceRecordsResult.candidates[0].eligibility.blockers, ['weak_source_quality'], 'duplicate evidence records use first-valid-record-wins during policy evaluation');
+
+const mutationContract = policyContract({
+  answerId: 'ans_policy_mutation',
+  evidence: [policyEvidence({ id: 'ev_mutation' })],
+  steps: [policyStep({ id: 'claim_mutation', evidenceIds: ['ev_mutation'] })],
+});
+const mutationCandidate = {
+  version: 1,
+  candidateId: 'qc_mutation',
+  answerId: 'ans_policy_mutation',
+  sourceStepId: 'claim_mutation',
+  claimOrdinal: 1,
+  claimType: 'action',
+  text: 'Enable API access',
+  integrationType: 'Zapier',
+  evidenceIds: ['ev_mutation'],
+  approximateMapping: true,
+  tenantSpecific: false,
+  genericPlaceholder: false,
+  answerRequiresEscalation: false,
+  eligibility: { preDuplicateEligible: true, reasons: ['bogus'], blockers: ['bogus'] },
+  evidenceSummary: { resolvedCount: 77 },
+};
+const mutationContractBefore = JSON.stringify(mutationContract);
+const mutationCandidateBefore = JSON.stringify(mutationCandidate);
+const mutationCandidateResult = evaluateNominationEligibility(mutationCandidate, mutationContract);
+const mutationPolicyResult = evaluateContractNominationPolicy(mutationContract, {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+assert(JSON.stringify(mutationContract) === mutationContractBefore, 'contract is not mutated during policy evaluation');
+assert(JSON.stringify(mutationCandidate) === mutationCandidateBefore, 'candidate is not mutated during policy evaluation');
+assert(mutationCandidateResult !== mutationCandidate, 'policy evaluation returns a candidate copy instead of mutating the input candidate');
+assert(mutationPolicyResult.candidates[0] !== mutationCandidate, 'contract evaluation returns evaluated candidate copies');
+
+const aggregatePolicyContract = policyContract({
+  answerId: 'ans_policy_aggregate',
+  evidence: [
+    policyEvidence({ id: 'ev_agg_eligible' }),
+    policyEvidence({ id: 'ev_agg_stale', freshness: 'stale' }),
+    policyEvidence({ id: 'ev_agg_related', directness: 'related' }),
+    policyEvidence({ id: 'ev_agg_specialist', sensitivity: 'specialist_only' }),
+    policyEvidence({ id: 'ev_agg_quality_only', sourceQuality: 'high', reuseValue: 'low' }),
+    policyEvidence({ id: 'ev_agg_reuse_only', sourceQuality: 'low', reuseValue: 'high' }),
+  ],
+  steps: [
+    policyStep({ id: 'claim_agg_eligible', evidenceIds: ['ev_agg_eligible'] }),
+    policyStep({ id: 'claim_agg_stale', title: 'Verify reconnect', detail: '', tag: 'verify', evidenceIds: ['ev_agg_stale'] }),
+    policyStep({ id: 'claim_agg_related', title: 'Review the webhook subscription status', detail: '', tag: 'verify', evidenceIds: ['ev_agg_related'] }),
+    policyStep({ id: 'claim_agg_specialist', title: 'Inspect specialist-only trace', detail: '', tag: 'backend', evidenceIds: ['ev_agg_specialist'] }),
+    policyStep({ id: 'claim_agg_unrelated', title: 'Check the OAuth mapping in Settings', detail: '', tag: 'backend', evidenceIds: ['ev_agg_quality_only', 'ev_agg_reuse_only'] }),
+  ],
+});
+const aggregatePolicyResult = evaluateContractNominationPolicy(aggregatePolicyContract, {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+const aggregateSummary = aggregatePolicyResult.summary;
+assert(aggregateSummary.candidateCount === 5, 'summary candidate count matches the candidate population');
+assert(aggregateSummary.preDuplicateEligibleCount === 1, 'summary counts eligible candidates');
+assert(aggregateSummary.blockedCount === 4, 'summary counts blocked candidates');
+assert(aggregateSummary.preDuplicateEligibleCount + aggregateSummary.blockedCount === aggregateSummary.candidateCount, 'summary keeps eligible/blocked equality invariant');
+assert(Object.values(aggregateSummary.byClaimType).reduce((sum, count) => sum + count, 0) === aggregateSummary.candidateCount, 'summary by-claim-type counts add up to candidate count');
+assert(Object.values(aggregateSummary.supportCounts).every(count => Number.isInteger(count) && count >= 0 && count <= aggregateSummary.candidateCount), 'summary support counts stay bounded non-negative integers');
+assert.deepEqual(aggregateSummary.blockerCounts, {
+  stale_evidence: 1,
+  no_direct_evidence: 1,
+  no_safe_direct_evidence: 1,
+  specialist_only_evidence: 1,
+  no_cohesive_qualifying_evidence: 1,
+}, 'blocker counts come only from blocked candidates');
+assert.deepEqual(aggregateSummary.eligibleReasonCounts, {
+  specific_integration: 1,
+  durable_claim_type: 1,
+  concrete_claim: 1,
+  non_tenant_specific: 1,
+  cohesive_qualifying_evidence: 1,
+}, 'eligible reasons come only from eligible candidates');
+assert.deepEqual(aggregateSummary.supportCounts, {
+  resolvedCount: 5,
+  directCount: 4,
+  safeDirectCount: 3,
+  specialistOnlyCount: 1,
+  exclusivelySpecialistOnly: 1,
+  highOrMediumQualityCount: 3,
+  highOrMediumReuseCount: 3,
+  qualifyingEvidenceCount: 2,
+  freshQualifyingEvidenceCount: 1,
+  staleOtherwiseQualifyingEvidenceCount: 1,
+}, 'summary support counts count candidates satisfying each support condition');
+assert(aggregatePolicyResult.candidates.every(candidate => candidate.eligibility.preDuplicateEligible || candidate.eligibility.blockers.length >= 1), 'no blocked candidate is blockerless');
+assert(aggregatePolicyResult.candidates.filter(candidate => candidate.eligibility.preDuplicateEligible).length === aggregateSummary.preDuplicateEligibleCount, 'summary eligible count matches evaluated candidates');
+
+const zeroCandidateResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_zero',
+  evidence: [],
+  steps: [],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(zeroCandidateResult.summary, {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}, 'zero-candidate contract produces a canonical evaluated summary');
 
 // ── quality shadow storage/audit ─────────────────────────────────────────────
 console.log('\n🔹 quality shadow storage/audit');
