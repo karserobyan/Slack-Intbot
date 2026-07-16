@@ -2,22 +2,16 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getQualityShadowRetention } from './config.js';
 import { hashValue, sanitizePreview } from './privacy.js';
+import {
+  evidenceByIdFirstWins,
+  normalizeQualityEvidence,
+  normalizeQualitySteps,
+} from './shadow-normalization.js';
 
 let _shadowFile = join(process.cwd(), 'data', 'quality-shadow.jsonl');
 let _writeQueue = Promise.resolve();
 
-const SOURCE_TYPES = new Set(['slack', 'confluence', 'jira', 'kb', 'unknown']);
-const SOURCE_QUALITY_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
-const DIRECTNESS_VALUES = new Set(['direct', 'related', 'background', 'unknown']);
-const FRESHNESS_VALUES = new Set(['fresh', 'stale', 'unknown']);
-const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'specialist_only', 'unknown']);
-const REUSE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
 const CONFIDENCE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
-const ALLOWED_HOSTNAMES = new Set([
-  'help.servicetitan.com',
-  'servicetitan.atlassian.net',
-  'servicetitan.slack.com',
-]);
 const REASON_CODES = new Set([
   'actionable_resolution',
   'approximate_mapping',
@@ -33,8 +27,6 @@ const REASON_CODES = new Set([
   'symptom_match',
   'weak_evidence',
 ]);
-const MAX_PERSISTED_EVIDENCE_RECORDS = 10;
-const MAX_STEP_COVERAGE_COUNT = 1000;
 
 export function _setQualityShadowFileForTest(path) {
   _shadowFile = path;
@@ -52,11 +44,6 @@ function safeEnum(value, allowed, fallback = 'unknown') {
   return allowed.has(normalized) ? normalized : fallback;
 }
 
-function safeHostname(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  return ALLOWED_HOSTNAMES.has(normalized) ? normalized : '';
-}
-
 function safeReasonCodes(reasons = []) {
   return reasons
     .slice(0, 8)
@@ -65,39 +52,13 @@ function safeReasonCodes(reasons = []) {
     .filter(r => REASON_CODES.has(r));
 }
 
-function sanitizeEvidenceId(value) {
-  const id = sanitizePreview(value, 40);
-  return /^ev_[a-z0-9_-]+$/i.test(id) ? id : '';
-}
-
-function normalizeCoverageStep(step) {
-  if (!step || typeof step !== 'object' || Array.isArray(step)) return null;
-  const evidenceIds = Array.isArray(step.evidenceIds)
-    ? step.evidenceIds.map(sanitizeEvidenceId).filter(Boolean)
-    : [];
-  return { evidenceIds };
-}
-
 function coverageStepPopulation(record = {}) {
-  return (Array.isArray(record.sections?.steps) ? record.sections.steps : [])
-    .map(normalizeCoverageStep)
-    .filter(Boolean)
-    .slice(0, MAX_STEP_COVERAGE_COUNT);
-}
-
-function evidenceByIdFromPersistedEvidence(persistedEvidence = []) {
-  const evidenceById = new Map();
-  for (const item of persistedEvidence) {
-    const id = typeof item?.id === 'string' ? item.id : '';
-    if (!id || evidenceById.has(id)) continue;
-    evidenceById.set(id, item);
-  }
-  return evidenceById;
+  return normalizeQualitySteps(record.sections?.steps);
 }
 
 function deriveStepCoverage(record = {}, persistedEvidence = []) {
   const steps = coverageStepPopulation(record);
-  const evidenceById = evidenceByIdFromPersistedEvidence(persistedEvidence);
+  const evidenceById = evidenceByIdFirstWins(persistedEvidence);
 
   let mappedStepCount = 0;
   let directMappedStepCount = 0;
@@ -125,30 +86,8 @@ function deriveStepCoverage(record = {}, persistedEvidence = []) {
   };
 }
 
-function sanitizeEvidence(evidence = []) {
-  return evidence
-    .map((e) => {
-      const id = sanitizeEvidenceId(e?.id);
-      if (!id) return null;
-      return {
-        id,
-        source: safeEnum(e.source, SOURCE_TYPES),
-        hostname: safeHostname(e.hostname),
-        urlHash: safeHash(e.urlHash, e.url ?? ''),
-        sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
-        directness: safeEnum(e.directness, DIRECTNESS_VALUES),
-        freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
-        sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
-        reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
-        reasons: safeReasonCodes(e.reasons),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, MAX_PERSISTED_EVIDENCE_RECORDS);
-}
-
 function sanitizeShadowRecord(record) {
-  const persistedEvidence = sanitizeEvidence(record.evidence);
+  const persistedEvidence = normalizeQualityEvidence(record.evidence);
   return {
     createdAt: record.createdAt ?? new Date().toISOString(),
     answerId: sanitizePreview(record.answerId, 80),

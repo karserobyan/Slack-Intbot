@@ -59,10 +59,23 @@ import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
-import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
+import { isQualityLayerEnabled, isQualityNominationPolicyEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
 import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
+import {
+  evidenceByIdFirstWins,
+  normalizeQualityEvidence,
+  normalizeQualitySteps,
+  sanitizeCountMap,
+} from './src/quality/shadow-normalization.js';
+import {
+  CLAIM_TYPES,
+  POLICY_BLOCKERS,
+  POLICY_ELIGIBLE_REASONS,
+  buildClaimCandidates,
+  emptyEvidenceSummary,
+} from './src/quality/nomination-policy.js';
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
@@ -2708,6 +2721,7 @@ console.log('\n🔹 quality config/privacy');
 
 const originalQualityEnv = {
   QUALITY_LAYER_ENABLED: process.env.QUALITY_LAYER_ENABLED,
+  QUALITY_NOMINATION_POLICY_ENABLED: process.env.QUALITY_NOMINATION_POLICY_ENABLED,
   QUALITY_LAYER_SHADOW_MODE: process.env.QUALITY_LAYER_SHADOW_MODE,
   QUALITY_SHADOW_MAX_RECORDS: process.env.QUALITY_SHADOW_MAX_RECORDS,
   QUALITY_SHADOW_MAX_AGE_DAYS: process.env.QUALITY_SHADOW_MAX_AGE_DAYS,
@@ -2715,12 +2729,14 @@ const originalQualityEnv = {
 };
 
 delete process.env.QUALITY_LAYER_ENABLED;
+delete process.env.QUALITY_NOMINATION_POLICY_ENABLED;
 delete process.env.QUALITY_LAYER_SHADOW_MODE;
 delete process.env.QUALITY_SHADOW_MAX_RECORDS;
 delete process.env.QUALITY_SHADOW_MAX_AGE_DAYS;
 delete process.env.QUALITY_SHADOW_MAX_BYTES;
 
 assert(isQualityLayerEnabled() === false, 'quality layer defaults disabled');
+assert(isQualityNominationPolicyEnabled() === false, 'quality nomination policy defaults disabled');
 assert(isQualityShadowMode() === true, 'quality shadow mode defaults true');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 2000,
@@ -2731,17 +2747,23 @@ assert.deepEqual(getQualityShadowRetention(), {
 for (const disabledValue of ['', 'false', '0', 'off', 'definitely']) {
   process.env.QUALITY_LAYER_ENABLED = disabledValue;
   assert(isQualityLayerEnabled() === false, `QUALITY_LAYER_ENABLED=${JSON.stringify(disabledValue)} keeps quality layer disabled`);
+  process.env.QUALITY_NOMINATION_POLICY_ENABLED = disabledValue;
+  assert(isQualityNominationPolicyEnabled() === false, `QUALITY_NOMINATION_POLICY_ENABLED=${JSON.stringify(disabledValue)} keeps nomination policy disabled`);
 }
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
 process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
 process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
 process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
 
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
+assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=true enables nomination policy');
 process.env.QUALITY_LAYER_ENABLED = 'TRUE';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'TRUE';
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=TRUE enables quality layer');
+assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=TRUE enables nomination policy');
 assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 3,
@@ -2912,6 +2934,164 @@ const sparseContract = buildAnswerEvidenceContract({
 assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
 assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
 
+// ── quality shared normalization and nomination policy skeleton ──────────────
+console.log('\n🔹 quality shared normalization and nomination policy skeleton');
+
+const normalizedEvidence = normalizeQualityEvidence([
+  { id: 'Bad Customer 123', source: 'kb', directness: 'direct' },
+  {
+    id: 'ev_first',
+    source: 'kb',
+    hostname: 'help.servicetitan.com',
+    urlHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    sourceQuality: 'HIGH',
+    directness: 'DIRECT',
+    freshness: 'FRESH',
+    sensitivity: 'SAFE',
+    reuseValue: 'HIGH',
+    reasons: ['direct_source_match', 'tenant 123'],
+  },
+  {
+    id: 'ev_dup',
+    source: 'jira',
+    hostname: 'servicetitan.atlassian.net',
+    sourceQuality: 'medium',
+    directness: 'related',
+    freshness: 'unknown',
+    sensitivity: 'internal',
+    reuseValue: 'medium',
+  },
+  {
+    id: 'ev_dup',
+    source: 'confluence',
+    sourceQuality: 'high',
+    directness: 'direct',
+    freshness: 'fresh',
+    sensitivity: 'safe',
+    reuseValue: 'high',
+  },
+  ...Array.from({ length: 12 }, (_, index) => ({
+    id: `ev_bound_${index}`,
+    source: index === 0 ? 'bad source' : 'kb',
+    hostname: 'not-servicetitan.example.com',
+    sourceQuality: 'excellent',
+    directness: 'exact',
+    freshness: 'ancient',
+    sensitivity: 'public',
+    reuseValue: 'forever',
+  })),
+]);
+assert(normalizedEvidence.length === 10, 'shared evidence normalization applies the ten-record bound after dropping invalid IDs');
+assert(normalizedEvidence.every(e => e.id.startsWith('ev_')), 'shared evidence normalization retains only valid evidence IDs');
+assert(normalizedEvidence[0].source === 'kb', 'shared evidence normalization keeps valid source enum');
+assert(normalizedEvidence[0].sourceQuality === 'high', 'shared evidence normalization lowercases valid source quality enum');
+assert(normalizedEvidence[0].directness === 'direct', 'shared evidence normalization lowercases valid directness enum');
+assert(normalizedEvidence[0].freshness === 'fresh', 'shared evidence normalization lowercases valid freshness enum');
+assert(normalizedEvidence[0].sensitivity === 'safe', 'shared evidence normalization lowercases valid sensitivity enum');
+assert(normalizedEvidence[0].reuseValue === 'high', 'shared evidence normalization lowercases valid reuse enum');
+assert(normalizedEvidence.find(e => e.id === 'ev_bound_0').source === 'unknown', 'shared evidence normalization clamps invalid source enum');
+assert(normalizedEvidence.at(-1).sourceQuality === 'unknown', 'shared evidence normalization clamps invalid quality enum');
+assert(normalizedEvidence.at(-1).directness === 'unknown', 'shared evidence normalization clamps invalid directness enum');
+assert(normalizedEvidence.at(-1).freshness === 'unknown', 'shared evidence normalization clamps invalid freshness enum');
+assert(normalizedEvidence.at(-1).sensitivity === 'unknown', 'shared evidence normalization clamps invalid sensitivity enum');
+assert(normalizedEvidence.at(-1).reuseValue === 'unknown', 'shared evidence normalization clamps invalid reuse enum');
+assert.deepEqual(normalizedEvidence[0].reasons, ['direct_source_match'], 'shared evidence normalization allowlists reason codes');
+const normalizedEvidenceById = evidenceByIdFirstWins(normalizedEvidence);
+assert(normalizedEvidenceById.get('ev_dup').source === 'jira', 'shared evidence duplicate resolution uses first valid record');
+assert(normalizedEvidenceById.get('ev_bound_8') === undefined, 'shared evidence bound is applied before evidence lookup');
+
+const overLimitSteps = Array.from({ length: 1005 }, (_, index) => ({
+  id: `claim_${index}`,
+  title: index === 0 ? 'Check OAuth mapping in Settings' : `Step ${index}`,
+  detail: index === 999 ? 'Past kept step' : '',
+  tag: index === 0 ? 'backend' : 'action',
+  evidenceIds: ['ev_first', 'Bad Customer 123', 'ev_dup', 'ev_dup'],
+}));
+const normalizedSteps = normalizeQualitySteps([
+  null,
+  'not a step',
+  [],
+  { id: 'claim_valid', title: 'Enable API access', detail: 'Use Marketplace settings', tag: 'ACTION', evidenceIds: ['ev_first', 'Bad Customer 123'] },
+  ...overLimitSteps,
+]);
+assert(normalizedSteps.length === 1000, 'shared step normalization skips malformed entries and applies the step bound');
+assert.deepEqual(normalizedSteps[0].evidenceIds, ['ev_first'], 'shared step normalization sanitizes evidence IDs');
+assert(normalizedSteps[0].tag === 'action', 'shared step normalization lowercases valid claim type tags');
+assert(normalizedSteps[1].tag === 'backend', 'shared step normalization preserves controlled backend tag');
+assert(normalizedSteps.at(-1).title === 'Step 998', 'shared step normalization applies bound before candidate construction');
+assert.deepEqual(sanitizeCountMap({ action: 2, backend: 1, bad: 9, verify: -1 }, CLAIM_TYPES), {
+  action: 2,
+  backend: 1,
+}, 'shared count map sanitization keeps only controlled non-negative counts');
+
+assert(CLAIM_TYPES.has('action') && CLAIM_TYPES.has('backend') && CLAIM_TYPES.has('verify') && CLAIM_TYPES.has('step') && CLAIM_TYPES.has('escalate'), 'nomination policy exports controlled claim types');
+assert(POLICY_ELIGIBLE_REASONS.has('durable_claim_type'), 'nomination policy exports controlled eligible reasons');
+assert(POLICY_BLOCKERS.has('generic_placeholder'), 'nomination policy exports controlled blockers');
+assert.deepEqual(emptyEvidenceSummary(), {
+  resolvedCount: 0,
+  directCount: 0,
+  safeDirectCount: 0,
+  specialistOnlyCount: 0,
+  exclusivelySpecialistOnly: false,
+  highOrMediumQualityCount: 0,
+  highOrMediumReuseCount: 0,
+  qualifyingEvidenceCount: 0,
+  freshQualifyingEvidenceCount: 0,
+  unknownFreshnessQualifyingEvidenceCount: 0,
+  staleOtherwiseQualifyingEvidenceCount: 0,
+}, 'nomination policy empty evidence summary has stable zero shape');
+
+const candidateContract = {
+  answerId: 'ans_candidates',
+  integrationType: 'Zapier',
+  quality: { approximateMapping: true },
+  sections: {
+    escalation: { shouldEscalate: true },
+    steps: [
+      null,
+      { id: 'claim_action', title: 'Enable API access', detail: 'Enable Zapier API access in Settings.', tag: 'action', evidenceIds: ['ev_first', 'bad id', 'ev_dup', 'ev_dup'] },
+      { id: 'claim_backend', title: 'Check OAuth mapping in Settings', detail: '', tag: 'backend', evidenceIds: ['ev_first'] },
+      { id: 'claim_verify', title: 'Review the webhook subscription status', detail: '', tag: 'verify', evidenceIds: [] },
+      { id: 'claim_escalate', title: 'Escalate this tenant to engineering', detail: '', tag: 'escalate', tenantSpecific: true, evidenceIds: ['ev_first'] },
+      { id: 'claim_unknown', title: 'Investigate further', detail: '', tag: 'misc', evidenceIds: ['ev_first'] },
+      { id: 'claim_retry', title: 'Try again', detail: '', tag: 'action', evidenceIds: [] },
+      { id: 'claim_customer', title: 'Ask the customer to reconnect', detail: '', tag: 'verify', evidenceIds: [] },
+      { id: 'claim_account', title: 'Reset account 456 mapping', detail: '', tag: 'backend', evidenceIds: [] },
+    ],
+  },
+};
+const originalCandidateContract = JSON.stringify(candidateContract);
+const candidates = buildClaimCandidates(candidateContract, { now: new Date('2026-07-15T12:00:00.000Z') });
+const boundedCandidates = buildClaimCandidates({
+  answerId: 'ans_bounded_candidates',
+  sections: { steps: [null, 'not a step', [], ...overLimitSteps] },
+}, { now: new Date('2026-07-15T12:00:00.000Z') });
+assert(candidates.length === 8, 'candidate builder creates one candidate per valid normalized bounded step');
+assert(boundedCandidates.length === 1000, 'candidate builder count matches valid bounded step population');
+assert(candidates.every(c => c.version === 1), 'candidate builder uses version 1 candidates');
+assert(candidates.every(c => c.candidateId.startsWith('qc_20260715T120000000Z_')), 'candidate builder creates quality candidate ids');
+assert(candidates[0].answerId === 'ans_candidates', 'candidate builder copies answer id');
+assert(candidates[0].sourceStepId === 'claim_action', 'candidate builder keeps valid source step id');
+assert(candidates[0].claimOrdinal === 1, 'candidate builder assigns normalized claim ordinal');
+assert(candidates[0].claimType === 'action', 'candidate builder maps action claim type');
+assert(candidates[1].claimType === 'backend', 'candidate builder maps backend claim type');
+assert(candidates[2].claimType === 'verify', 'candidate builder maps verify claim type');
+assert(candidates[3].claimType === 'escalate', 'candidate builder maps escalate claim type');
+assert(candidates[4].claimType === 'step', 'candidate builder falls back to step claim type');
+assert.deepEqual(candidates[0].evidenceIds, ['ev_first', 'ev_dup'], 'candidate builder dedupes and sanitizes evidence ids');
+assert(candidates.every(c => c.approximateMapping === true), 'candidate builder marks approximate mapping from contract quality');
+assert(candidates.every(c => c.answerRequiresEscalation === true), 'candidate builder marks answer escalation context');
+assert(candidates[3].tenantSpecific === true, 'candidate builder marks explicit tenant-specific step flag');
+assert(candidates[7].tenantSpecific === true, 'candidate builder marks numbered account references as tenant-specific');
+assert(candidates[6].tenantSpecific === false, 'candidate builder does not mark generic customer reconnect instruction tenant-specific');
+assert(candidates[4].genericPlaceholder === true, 'candidate builder marks investigate further as generic placeholder');
+assert(candidates[5].genericPlaceholder === true, 'candidate builder marks try again as generic placeholder');
+assert(candidates[1].genericPlaceholder === false, 'candidate builder keeps concrete OAuth mapping action non-generic');
+assert(candidates[2].genericPlaceholder === false, 'candidate builder keeps concrete webhook review action non-generic');
+assert.deepEqual(candidates[0].eligibility, { preDuplicateEligible: false, reasons: [], blockers: [] }, 'candidate builder leaves eligibility unevaluated for Task 1');
+assert.deepEqual(candidates[0].evidenceSummary, emptyEvidenceSummary(), 'candidate builder attaches empty evidence summary for Task 1');
+assert(JSON.stringify(candidateContract) === originalCandidateContract, 'candidate builder does not mutate the original contract');
+
 // ── quality shadow storage/audit ─────────────────────────────────────────────
 console.log('\n🔹 quality shadow storage/audit');
 
@@ -3071,6 +3251,7 @@ assert.deepEqual(stepCoverageRecord.quality.stepCoverage, {
   directMappedStepCount: 1,
   unsupportedStepCount: 2,
 }, 'quality shadow store derives step coverage from valid evidence mappings');
+assert(stepCoverageRecord.quality.nominationPolicy === undefined, 'Task 1 does not persist nomination policy summary to shadow JSONL');
 assert(stepCoverageRecord.quality.stepCoverage.mappedStepCount + stepCoverageRecord.quality.stepCoverage.unsupportedStepCount === stepCoverageRecord.quality.stepCoverage.stepCount, 'step coverage invariant mapped + unsupported equals total');
 assert(stepCoverageRecord.quality.stepCoverage.directMappedStepCount <= stepCoverageRecord.quality.stepCoverage.mappedStepCount, 'step coverage invariant direct mapped is bounded by mapped');
 assert(!stepCoverageText.includes('Do not persist title'), 'step coverage persistence omits step titles');

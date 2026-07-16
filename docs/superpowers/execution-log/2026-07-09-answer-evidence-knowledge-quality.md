@@ -473,3 +473,25 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** Before this log entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. After this log entry, reran `node test.js`; result: 757 passed, 0 failed. Reran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the intended plan/spec/log docs modified plus untracked `AGENTS.md`.
 
 **Decision / Follow-up:** This remains plan/spec/log only. No production code changed, no Task 1 implementation started, and PR 2 remains paused pending review.
+
+## 2026-07-16 - PR 2 Task 1 Feature Flag, Shared Normalization, And Policy Skeleton
+
+**Intent:** Implement only PR 2 Task 1 from `.superpowers/sdd/task-1-brief.md`: strict nomination-policy opt-in flag, shared shadow normalization helpers, shadow-store refactor with persisted JSONL parity, and an in-memory nomination-policy skeleton with candidate construction only.
+
+**Action Taken:** Added `isQualityNominationPolicyEnabled()` as a strict `QUALITY_NOMINATION_POLICY_ENABLED=true` opt-in. Extracted overlapping evidence and step normalization into `src/quality/shadow-normalization.js`, including retained evidence ID validation, controlled enum clamping, hostname/reason allowlists, ten-record evidence bounding, first-valid-record-wins evidence lookup, malformed-step skipping, sanitized step evidence IDs, thousand-step bounding, non-negative integer checks, and controlled count-map sanitization. Updated `src/quality/shadow-store.js` to use the shared evidence and step helpers while preserving the existing count-only `quality.stepCoverage` persisted shape and deriving coverage from the same retained evidence population as before.
+
+Created `src/quality/nomination-policy.js` with controlled claim types, controlled eligible reasons, controlled blockers, `emptyEvidenceSummary()`, and `buildClaimCandidates()`. Candidate construction is in-memory only: one candidate per normalized bounded step, sanitized and deduplicated evidence IDs, approximate-mapping propagation, answer escalation context, claim type mapping, tenant-specific detection, generic-placeholder detection, empty unevaluated eligibility, and an empty evidence summary. Task 1 does not evaluate eligibility, aggregate policy summaries, integrate the recorder, or persist `quality.nominationPolicy`.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/shadow-normalization.js`
+- `src/quality/shadow-store.js`
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+- `.superpowers/sdd/task-1-report.md`
+
+**Verification:** Initial TDD red run: `node test.js` exited 1 with `Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/Users/kserobyan@servicetitan.com/Slack-Intbot/src/quality/shadow-normalization.js' imported from /Users/kserobyan@servicetitan.com/Slack-Intbot/test.js`. Final implementation verification before this log update: `node test.js` exited 0 with `Results: 818 passed, 0 failed out of 818 tests`. `git diff --check` will be rerun after this log entry and recorded in `.superpowers/sdd/task-1-report.md`.
+
+**Decision / Follow-up:** Task 1 remains shadow-only and does not change Slack cards/text/source chips/buttons/action IDs, nominations, review/approval handlers, answerer prompts, audit payload behavior, `knowledge.md`, the knowledge writer, or database/review store behavior. Carry forward to Task 2: policy eligibility evaluation, policy summary aggregation, shadow-summary persistence, recorder integration, and any `quality.nominationPolicy` JSONL persistence remain explicitly deferred.
