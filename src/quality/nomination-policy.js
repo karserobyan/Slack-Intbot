@@ -208,6 +208,7 @@ export function buildClaimCandidates(contract, { now = new Date() } = {}) {
 }
 
 export function evaluateNominationEligibility(candidate, contract, context = null) {
+  const { nominationEligible: _ignoredNominationEligible, ...candidateWithoutNominationEligible } = candidate ?? {};
   const text = sanitizePreview(candidate?.text ?? '', 500);
   const claimType = CLAIM_TYPES.has(candidate?.claimType) ? candidate.claimType : 'step';
   const tenantSpecific = candidate?.tenantSpecific === true || TENANT_SPECIFIC_TEXT.test(text);
@@ -246,7 +247,7 @@ export function evaluateNominationEligibility(candidate, contract, context = nul
     : [];
 
   return {
-    ...candidate,
+    ...candidateWithoutNominationEligible,
     claimType,
     text,
     integrationType,

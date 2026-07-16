@@ -3327,6 +3327,7 @@ const duplicateCandidateEvidence = evaluateNominationEligibility({
   integrationType: 'Zapier',
   evidenceIds: ['ev_dup_ids', 'ev_dup_ids', 'ev_dup_ids'],
   approximateMapping: true,
+  nominationEligible: false,
   tenantSpecific: false,
   genericPlaceholder: false,
   answerRequiresEscalation: false,
@@ -3339,6 +3340,7 @@ const duplicateCandidateEvidence = evaluateNominationEligibility({
 }));
 assert(duplicateCandidateEvidence.evidenceSummary.resolvedCount === 1, 'duplicate candidate evidence ids do not inflate counts');
 assert(duplicateCandidateEvidence.eligibility.preDuplicateEligible === true, 'caller-provided eligibility values are ignored and recomputed');
+assert(duplicateCandidateEvidence.nominationEligible === undefined, 'caller-provided top-level nominationEligible does not survive evaluated candidates');
 assert.deepEqual(duplicateCandidateEvidence.eligibility.reasons, [
   'specific_integration',
   'durable_claim_type',

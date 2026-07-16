@@ -274,6 +274,22 @@ This log records the actual steps taken while designing and implementing the Ans
 
 **Decision / Follow-up:** Task 2 remains in-memory only. Carry forward that `no_cohesive_qualifying_evidence` must be added to the Task 3 persistence allowlist, Task 2 persists no nomination-policy summary, and no live nomination behavior changed.
 
+## 2026-07-16 - PR 2 Task 2 Review Fix: Strip Stale Top-Level nominationEligible
+
+**Intent:** Address the Important Task 2 review finding that evaluated candidate copies were still carrying a caller-supplied top-level `nominationEligible` field even though `eligibility` was recomputed.
+
+**Action Taken:** Added a failing regression test proving a caller-supplied top-level `nominationEligible: false` could conflict with a recomputed eligible candidate if it survived the return copy. Updated `evaluateNominationEligibility()` to omit `nominationEligible` from the copied candidate payload before rebuilding the evaluated result. Caller-supplied `eligibility`, `reasons`, and `blockers` continue to be ignored and recomputed.
+
+**Files Touched:**
+
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run: `node test.js` failed with `876 passed, 1 failed out of 877 tests` at `caller-provided top-level nominationEligible does not survive evaluated candidates`, which was expected because the stale top-level field still leaked through `{ ...candidate, ... }`. After the fix, `node test.js` passed with `877 passed, 0 failed`. Final verification also ran `git diff --check`.
+
+**Decision / Follow-up:** Fix stays within Task 2 scope and remains in-memory only. No live nomination behavior changed.
+
 ## 2026-07-10 - PR 1 Re-review Fix: Hash Integration Type And Clamp Persisted Dimensions
 
 **Intent:** Resolve the final re-review blockers before merging PR #34.
