@@ -3824,6 +3824,253 @@ await appendQualityShadowRecord({
 const recoveredShadowText = await readFile(recoveredShadowFile, 'utf-8');
 assert(recoveredShadowText.includes('ans_recovered'), 'quality shadow store recovers after failed append');
 
+const TASK3_POLICY_ELIGIBLE_REASONS = [
+  'specific_integration',
+  'durable_claim_type',
+  'direct_evidence',
+  'safe_evidence',
+  'supported_source_quality',
+  'reusable_evidence',
+  'non_tenant_specific',
+];
+const TASK3_POLICY_SUPPORT_KEYS = [
+  'resolvedCount',
+  'directCount',
+  'safeDirectCount',
+  'specialistOnlyCount',
+  'exclusivelySpecialistOnly',
+  'highOrMediumQualityCount',
+  'highOrMediumReuseCount',
+  'qualifyingEvidenceCount',
+  'freshQualifyingEvidenceCount',
+  'unknownFreshnessQualifyingEvidenceCount',
+  'staleOtherwiseQualifyingEvidenceCount',
+];
+const CANONICAL_POLICY_FAILURE_SUMMARY = {
+  version: 1,
+  status: 'policy_failed',
+  evaluated: false,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+};
+const validPersistedNominationPolicy = {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 17,
+  preDuplicateEligibleCount: 7,
+  blockedCount: 10,
+  blockerCounts: Object.fromEntries([...POLICY_BLOCKERS].map(code => [code, 1])),
+  eligibleReasonCounts: Object.fromEntries(TASK3_POLICY_ELIGIBLE_REASONS.map(code => [code, 1])),
+  byClaimType: {
+    action: 4,
+    backend: 4,
+    verify: 3,
+    escalate: 3,
+    step: 3,
+  },
+  supportCounts: {
+    resolvedCount: 9,
+    directCount: 8,
+    safeDirectCount: 7,
+    specialistOnlyCount: 2,
+    exclusivelySpecialistOnly: 1,
+    highOrMediumQualityCount: 6,
+    highOrMediumReuseCount: 5,
+    qualifyingEvidenceCount: 4,
+    freshQualifyingEvidenceCount: 3,
+    unknownFreshnessQualifyingEvidenceCount: 2,
+    staleOtherwiseQualifyingEvidenceCount: 1,
+  },
+};
+
+const validNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-valid.jsonl');
+_setQualityShadowFileForTest(validNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:00.000Z',
+  answerId: 'ans_policy_valid',
+  queryPreview: 'do not persist raw nomination policy prose',
+  evidence: [{ id: 'ev_direct', source: 'kb', directness: 'direct' }],
+  quality: {
+    directAnswer: true,
+    reusableKnowledge: true,
+    nominationEligible: true,
+    approximateMapping: true,
+    reasons: ['shadow_mode'],
+    nominationPolicy: {
+      version: 999,
+      status: 'evaluated',
+      evaluated: true,
+      duplicateCheck: 'deferred',
+      candidateCount: 17,
+      preDuplicateEligibleCount: 7,
+      blockedCount: 10,
+      blockerCounts: {
+        ...validPersistedNominationPolicy.blockerCounts,
+        policy_failed: 99,
+        arbitrary_blocker: 1,
+      },
+      eligibleReasonCounts: {
+        ...validPersistedNominationPolicy.eligibleReasonCounts,
+        arbitrary_reason: 1,
+      },
+      byClaimType: {
+        ...validPersistedNominationPolicy.byClaimType,
+        unsupported: 9,
+      },
+      supportCounts: {
+        ...validPersistedNominationPolicy.supportCounts,
+        withResolvedEvidence: 17,
+      },
+      candidates: [{
+        candidateId: 'qc_private_1',
+        sourceStepId: 'claim_private_1',
+        claimOrdinal: 99,
+        text: 'Jane Customer tenant 123 should never persist',
+        integrationType: 'Jane Customer Integration',
+        evidenceIds: ['ev_direct'],
+      }],
+      candidateIds: ['qc_private_1'],
+      sourceStepIds: ['claim_private_1'],
+      evidenceMappings: [{ stepId: 'claim_private_1', evidenceId: 'ev_direct' }],
+      claimText: 'Jane Customer claim prose',
+      integrationName: 'Jane Customer Integration',
+      sourceTitle: 'Sensitive source title',
+      sourceSnippet: 'Sensitive source snippet',
+      sourceUrl: 'https://evil.test/private',
+      privacyCanary: 'Jane Customer jane.customer@example.com xoxb-secret tenant 123',
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:00.000Z'),
+});
+const validNominationPolicyText = await readFile(validNominationPolicyFile, 'utf-8');
+const validNominationPolicyRecord = JSON.parse(validNominationPolicyText.trim());
+assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'valid evaluated nomination policy persists in canonical form with approved keys only');
+assert(validNominationPolicyRecord.quality.nominationPolicy.duplicateCheck === 'deferred', 'nomination policy persists duplicateCheck deferred');
+assert(validNominationPolicyRecord.quality.nominationPolicy.blockerCounts.no_cohesive_qualifying_evidence === 1, 'nomination policy allowlists no_cohesive_qualifying_evidence');
+assert(!validNominationPolicyText.includes('qc_private_1'), 'nomination policy persistence omits candidate ids');
+assert(!validNominationPolicyText.includes('claim_private_1'), 'nomination policy persistence omits source step ids');
+assert(!validNominationPolicyText.includes('Jane Customer'), 'nomination policy persistence omits raw claim and integration prose');
+assert(!validNominationPolicyText.includes('jane.customer@example.com'), 'nomination policy persistence omits privacy canary email text');
+assert(!validNominationPolicyText.includes('xoxb-secret'), 'nomination policy persistence omits privacy canary token text');
+assert(!validNominationPolicyText.includes('policy_failed\":99'), 'nomination policy persistence omits disallowed blocker keys');
+assert(!validNominationPolicyText.includes('withResolvedEvidence'), 'nomination policy persistence omits non-canonical support aliases');
+
+const zeroCandidateNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-zero-candidate.jsonl');
+_setQualityShadowFileForTest(zeroCandidateNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:01.000Z',
+  answerId: 'ans_policy_zero_candidate',
+  quality: {
+    nominationPolicy: {
+      version: 1,
+      status: 'evaluated',
+      evaluated: true,
+      duplicateCheck: 'deferred',
+      candidateCount: 0,
+      preDuplicateEligibleCount: 0,
+      blockedCount: 0,
+      blockerCounts: {},
+      eligibleReasonCounts: {},
+      byClaimType: {},
+      supportCounts: {},
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:01.000Z'),
+});
+const zeroCandidateNominationPolicyRecord = JSON.parse((await readFile(zeroCandidateNominationPolicyFile, 'utf-8')).trim());
+assert.deepEqual(zeroCandidateNominationPolicyRecord.quality.nominationPolicy, {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}, 'valid zero-candidate nomination policy remains evaluated');
+
+const absentNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-absent.jsonl');
+_setQualityShadowFileForTest(absentNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:02.000Z',
+  answerId: 'ans_policy_absent',
+  quality: {
+    directAnswer: true,
+    reasons: ['shadow_mode'],
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:02.000Z'),
+});
+const absentNominationPolicyRecord = JSON.parse((await readFile(absentNominationPolicyFile, 'utf-8')).trim());
+assert(absentNominationPolicyRecord.quality.nominationPolicy === undefined, 'absent nomination policy summary remains omitted');
+
+for (const [label, nominationPolicy] of [
+  ['negative counts', { ...validPersistedNominationPolicy, candidateCount: -1 }],
+  ['fractional counts', { ...validPersistedNominationPolicy, blockedCount: 1.5 }],
+  ['string counts', { ...validPersistedNominationPolicy, preDuplicateEligibleCount: '7' }],
+  ['NaN counts', { ...validPersistedNominationPolicy, candidateCount: Number.NaN }],
+  ['infinite counts', { ...validPersistedNominationPolicy, blockedCount: Number.POSITIVE_INFINITY }],
+  ['eligible plus blocked mismatch', { ...validPersistedNominationPolicy, blockedCount: 9 }],
+  ['claim type sum mismatch', {
+    ...validPersistedNominationPolicy,
+    byClaimType: { ...validPersistedNominationPolicy.byClaimType, step: 2 },
+  }],
+  ['support count above candidate count', {
+    ...validPersistedNominationPolicy,
+    supportCounts: { ...validPersistedNominationPolicy.supportCounts, resolvedCount: 18 },
+  }],
+  ['blocker count above blocked count', {
+    ...validPersistedNominationPolicy,
+    blockerCounts: { ...validPersistedNominationPolicy.blockerCounts, empty_claim: 11 },
+  }],
+  ['eligible reason count above pre-duplicate eligible count', {
+    ...validPersistedNominationPolicy,
+    eligibleReasonCounts: { ...validPersistedNominationPolicy.eligibleReasonCounts, specific_integration: 8 },
+  }],
+  ['unknown status', { ...validPersistedNominationPolicy, status: 'unknown' }],
+  ['wrong evaluated value', { ...validPersistedNominationPolicy, evaluated: false }],
+  ['incorrect duplicateCheck', { ...validPersistedNominationPolicy, duplicateCheck: 'complete' }],
+  ['caller-controlled duplicateCheck object', { ...validPersistedNominationPolicy, duplicateCheck: { status: 'hostile' } }],
+  ['incoming policy_failed hostile counts', {
+    ...validPersistedNominationPolicy,
+    status: 'policy_failed',
+    evaluated: false,
+    duplicateCheck: 'deferred',
+    candidateCount: 99,
+    preDuplicateEligibleCount: 88,
+    blockedCount: 77,
+  }],
+]) {
+  const file = join(qualityTempDir, `quality-shadow-nomination-policy-${label.replaceAll(' ', '-').replaceAll('+', 'plus')}.jsonl`);
+  _setQualityShadowFileForTest(file);
+  await appendQualityShadowRecord({
+    createdAt: '2026-07-16T00:00:03.000Z',
+    answerId: `ans_policy_${label.replaceAll(' ', '_')}`,
+    quality: { nominationPolicy },
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-16T00:00:03.000Z'),
+  });
+  const record = JSON.parse((await readFile(file, 'utf-8')).trim());
+  assert.deepEqual(record.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `malformed nomination policy ${label} canonicalizes to policy_failed`);
+}
+
 await appendQualityAuditEvent({
   type: 'contract_created',
   actor: { type: 'bot', userId: 'U123', name: 'Bot User' },
