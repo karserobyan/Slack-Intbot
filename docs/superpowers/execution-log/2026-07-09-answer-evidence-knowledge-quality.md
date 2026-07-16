@@ -543,3 +543,19 @@ Created `src/quality/nomination-policy.js` with controlled claim types, controll
 **Verification:** Added failing Task 3 tests first and ran `node test.js`; result: failed in the `quality shadow storage/audit` section at `valid evaluated nomination policy persists in canonical form with approved keys only`, followed by `TypeError: Cannot read properties of undefined (reading 'duplicateCheck')`, which was expected because the shadow store still omitted `quality.nominationPolicy`. After implementation, ran `node test.js`; result: `904 passed, 0 failed`. Final verification after the execution-log update also ran `node test.js` with `904 passed, 0 failed`, `git diff --check` clean, and `git status --short --branch` showing only the intended Task 3 tracked files modified plus untracked `AGENTS.md`.
 
 **Decision / Follow-up:** Task 3 remains shadow-store-only. Existing step-coverage behavior, evidence persistence, retention, privacy boundaries, audit behavior, live nomination logic, Slack cards/text/buttons/action IDs, review/approval handlers, prompts, `knowledge.md`, and recorder behavior remain unchanged. Recorder integration is still deferred beyond this task.
+
+## 2026-07-16 - PR 2 Task 3 Review Fix: Eligible Reason Allowlist Matches Task 2 Producer
+
+**Intent:** Fix the reviewed Task 3 bug where `quality.nominationPolicy.eligibleReasonCounts` accepted stale alias names instead of the actual Task 2 producer vocabulary.
+
+**Action Taken:** Verified the actual `POLICY_ELIGIBLE_REASONS` export in `src/quality/nomination-policy.js` before changing anything. Updated the Task 3 tests first so the persisted canonical summary now expects only the real Task 2 eligible reason names: `specific_integration`, `cohesive_qualifying_evidence`, `durable_claim_type`, `non_tenant_specific`, and `concrete_claim`. Added a regression proving stale alias names (`direct_evidence`, `safe_evidence`, `supported_source_quality`, and `reusable_evidence`) are dropped from `eligibleReasonCounts` at the shadow-store boundary. Updated `src/quality/shadow-store.js` so the eligible-reason allowlist matches the actual Task 2 producer vocabulary exactly. Tightened the alias-drop regression to use structured assertions on the persisted `eligibleReasonCounts` map after an intermediate false red caused by substring overlap with the legitimate blocker `no_direct_evidence`.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after updating the tests first: `node test.js` failed with `903 passed, 6 failed out of 909 tests` in the `quality shadow storage/audit` section, including `valid evaluated nomination policy persists in canonical form with approved keys only`, `nomination policy persists actual Task 2 eligible reason names only`, and stale-alias omission assertions. That failure was expected because the shadow-store allowlist still preserved the alias vocabulary and rejected the real Task 2 reason map. After updating the allowlist and tightening the alias assertion to avoid substring overlap, ran `node test.js`; result: `909 passed, 0 failed`. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** Task 3 remains shadow-store-only. No recorder integration, live nomination behavior, Slack UX, prompts, audit behavior, or `knowledge.md` behavior changed.

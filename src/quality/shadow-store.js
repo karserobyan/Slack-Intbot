@@ -49,12 +49,10 @@ const NOMINATION_POLICY_BLOCKERS = new Set([
 ]);
 const NOMINATION_POLICY_ELIGIBLE_REASONS = new Set([
   'specific_integration',
+  'cohesive_qualifying_evidence',
   'durable_claim_type',
-  'direct_evidence',
-  'safe_evidence',
-  'supported_source_quality',
-  'reusable_evidence',
   'non_tenant_specific',
+  'concrete_claim',
 ]);
 const NOMINATION_POLICY_CLAIM_TYPES = new Set(['action', 'backend', 'verify', 'escalate', 'step']);
 const NOMINATION_POLICY_SUPPORT_KEYS = new Set([

@@ -3826,12 +3826,10 @@ assert(recoveredShadowText.includes('ans_recovered'), 'quality shadow store reco
 
 const TASK3_POLICY_ELIGIBLE_REASONS = [
   'specific_integration',
+  'cohesive_qualifying_evidence',
   'durable_claim_type',
-  'direct_evidence',
-  'safe_evidence',
-  'supported_source_quality',
-  'reusable_evidence',
   'non_tenant_specific',
+  'concrete_claim',
 ];
 const TASK3_POLICY_SUPPORT_KEYS = [
   'resolvedCount',
@@ -3919,6 +3917,10 @@ await appendQualityShadowRecord({
       },
       eligibleReasonCounts: {
         ...validPersistedNominationPolicy.eligibleReasonCounts,
+        direct_evidence: 1,
+        safe_evidence: 1,
+        supported_source_quality: 1,
+        reusable_evidence: 1,
         arbitrary_reason: 1,
       },
       byClaimType: {
@@ -3957,6 +3959,7 @@ const validNominationPolicyRecord = JSON.parse(validNominationPolicyText.trim())
 assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'valid evaluated nomination policy persists in canonical form with approved keys only');
 assert(validNominationPolicyRecord.quality.nominationPolicy.duplicateCheck === 'deferred', 'nomination policy persists duplicateCheck deferred');
 assert(validNominationPolicyRecord.quality.nominationPolicy.blockerCounts.no_cohesive_qualifying_evidence === 1, 'nomination policy allowlists no_cohesive_qualifying_evidence');
+assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts, validPersistedNominationPolicy.eligibleReasonCounts, 'nomination policy persists actual Task 2 eligible reason names only');
 assert(!validNominationPolicyText.includes('qc_private_1'), 'nomination policy persistence omits candidate ids');
 assert(!validNominationPolicyText.includes('claim_private_1'), 'nomination policy persistence omits source step ids');
 assert(!validNominationPolicyText.includes('Jane Customer'), 'nomination policy persistence omits raw claim and integration prose');
@@ -3964,6 +3967,10 @@ assert(!validNominationPolicyText.includes('jane.customer@example.com'), 'nomina
 assert(!validNominationPolicyText.includes('xoxb-secret'), 'nomination policy persistence omits privacy canary token text');
 assert(!validNominationPolicyText.includes('policy_failed\":99'), 'nomination policy persistence omits disallowed blocker keys');
 assert(!validNominationPolicyText.includes('withResolvedEvidence'), 'nomination policy persistence omits non-canonical support aliases');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.direct_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason direct_evidence');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.safe_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason safe_evidence');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.supported_source_quality === undefined, 'nomination policy persistence omits stale alias eligible reason supported_source_quality');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.reusable_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason reusable_evidence');
 
 const zeroCandidateNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-zero-candidate.jsonl');
 _setQualityShadowFileForTest(zeroCandidateNominationPolicyFile);
