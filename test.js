@@ -4297,6 +4297,62 @@ for (const [label, nominationPolicyEvaluator] of [
   assert(JSON.stringify(failureRecord.contract).includes('jane.customer@example.com') === false, `${label} nomination policy failure returned contract omits privacy canaries`);
 }
 
+const firstMutationShadowFile = join(recorderTempDir, 'policy-failure-mutation-first-shadow.jsonl');
+const firstMutationAuditFile = join(recorderTempDir, 'policy-failure-mutation-first-audit.jsonl');
+_setQualityShadowFileForTest(firstMutationShadowFile);
+_setQualityAuditFileForTest(firstMutationAuditFile);
+const firstMutationWarnings = [];
+const firstMutationFailure = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => firstMutationWarnings.push(message) },
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: () => {
+    throw new Error('mutation canary first failure jane.customer@example.com xoxb-secret tenant 123');
+  },
+});
+firstMutationFailure.contract.quality.nominationPolicy.blockerCounts.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.byClaimType.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.supportCounts.mutation_canary = 1;
+
+const secondMutationShadowFile = join(recorderTempDir, 'policy-failure-mutation-second-shadow.jsonl');
+const secondMutationAuditFile = join(recorderTempDir, 'policy-failure-mutation-second-audit.jsonl');
+_setQualityShadowFileForTest(secondMutationShadowFile);
+_setQualityAuditFileForTest(secondMutationAuditFile);
+const secondMutationWarnings = [];
+const secondMutationFailure = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => secondMutationWarnings.push(message) },
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => Promise.reject(new Error('mutation canary second failure jane.customer@example.com xoxb-secret tenant 123')),
+});
+const secondMutationShadowText = await readFile(secondMutationShadowFile, 'utf-8');
+const secondMutationAuditText = await readFile(secondMutationAuditFile, 'utf-8');
+const secondMutationShadowRecord = JSON.parse(secondMutationShadowText.trim());
+assert(firstMutationFailure.status === 'recorded', 'first mutation-isolation policy failure still returns recorded');
+assert(secondMutationFailure.status === 'recorded', 'second mutation-isolation policy failure still returns recorded');
+assert(firstMutationWarnings.length === 1, 'first mutation-isolation policy failure emits exactly one warning');
+assert(secondMutationWarnings.length === 1, 'second mutation-isolation policy failure emits exactly one warning');
+assert(firstMutationWarnings[0] === '[quality] nomination policy failed', 'first mutation-isolation policy failure emits generic bounded warning');
+assert(secondMutationWarnings[0] === '[quality] nomination policy failed', 'second mutation-isolation policy failure emits generic bounded warning');
+assert(firstMutationFailure.contract.quality.nominationPolicy !== secondMutationFailure.contract.quality.nominationPolicy, 'separate policy failures receive distinct summary objects');
+assert(firstMutationFailure.contract.quality.nominationPolicy.blockerCounts !== secondMutationFailure.contract.quality.nominationPolicy.blockerCounts, 'separate policy failures receive distinct blocker count maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts !== secondMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts, 'separate policy failures receive distinct eligible reason maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.byClaimType !== secondMutationFailure.contract.quality.nominationPolicy.byClaimType, 'separate policy failures receive distinct claim-type maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.supportCounts !== secondMutationFailure.contract.quality.nominationPolicy.supportCounts, 'separate policy failures receive distinct support-count maps');
+assert.deepEqual(secondMutationFailure.contract.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, 'mutating first failure summary does not alter later returned policy_failed summary');
+assert.deepEqual(secondMutationShadowRecord.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, 'mutating first failure summary does not alter later persisted policy_failed summary');
+assert(!secondMutationShadowText.includes('mutation_canary'), 'mutation canary does not enter later shadow JSONL');
+assert(!secondMutationAuditText.includes('mutation_canary'), 'mutation canary does not enter later audit JSONL');
+
 const invalidRecorderParent = join(recorderTempDir, 'not-a-directory');
 await writeFile(invalidRecorderParent, 'plain file');
 _setQualityShadowFileForTest(join(invalidRecorderParent, 'shadow.jsonl'));

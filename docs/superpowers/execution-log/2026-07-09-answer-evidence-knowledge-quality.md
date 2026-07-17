@@ -578,3 +578,19 @@ Expanded the recorder coverage in `test.js` with strict gating checks for policy
 **Verification:** TDD red run after adding the tests first: `node test.js` exited 1 in the `quality shadow recorder` section. The expected missing-integration failures included `all quality flags enabled invokes the nomination policy evaluator exactly once`, `successful nomination policy evaluation attaches only the summary to the returned contract`, `successful nomination policy evaluation persists a canonical evaluated summary`, and the `policy_failed`/bounded-warning assertions for the isolated policy-failure cases. The run then hit a follow-on `TypeError: Cannot read properties of undefined (reading 'includes')` because the pre-Task-4 recorder never emitted the nested policy warning, which was consistent with the missing integration. After the recorder change, ran `node test.js`; result: `978 passed, 0 failed`.
 
 **Decision / Follow-up:** Task 4 stays shadow-only. Audit payload shape remains unchanged, shadow-store sanitization remains the trust boundary for persisted policy summaries, policy failures remain isolated from the outer recorder fail-open path, and no Slack rendering, live nomination cards/conditions, review flows, prompts, `knowledge.md`, database behavior, or `src/handlers/mention.js` logic changed. Stop here for Task 4 review; do not begin Task 5 or rollout validation.
+
+## 2026-07-17 - PR 2 Task 4 Review Fix: Fresh Policy Failure Summaries
+
+**Intent:** Resolve the Task 4 review carry-forward by ensuring each isolated nomination-policy failure receives a fresh canonical `policy_failed` summary object, including fresh nested count maps, so mutation of one returned contract cannot affect later requests.
+
+**Action Taken:** Replaced the shared mutable `POLICY_FAILED_SUMMARY` object in `src/quality/shadow-recorder.js` with an internal `createPolicyFailedSummary()` factory. The recorder now calls the factory for every isolated nomination-policy failure path: synchronous evaluator throw, rejected evaluator promise, missing summary, and non-object summary. The factory is not exported. Added black-box recorder tests in `test.js` that trigger two separate policy failures through `recordQualityShadow()`, mutate the first returned contract's `blockerCounts`, `eligibleReasonCounts`, `byClaimType`, and `supportCounts`, then verify the second returned contract and persisted JSONL still contain the canonical zero-count `policy_failed` summary.
+
+**Files Touched:**
+
+- `src/quality/shadow-recorder.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after adding tests first: `node test.js` failed with `987 passed, 6 failed out of 993 tests`. The failing assertions were the expected mutation-isolation checks: distinct summary object, distinct nested maps, and the later returned `policy_failed` summary remaining canonical after mutating the first returned contract. After replacing the shared object with the factory, ran `node test.js`; result: `993 passed, 0 failed`.
+
+**Decision / Follow-up:** The Task 4 Minor review note is resolved. Each isolated policy failure still emits exactly one generic `[quality] nomination policy failed` warning, returns `status: 'recorded'` when shadow/audit writes succeed, keeps mutation canaries out of later shadow and audit JSONL, and leaves store/audit failure behavior as `failed_open`. No Slack rendering, live nomination behavior, prompts, approval/review flows, audit-log implementation, `knowledge.md`, or Task 5 validation work changed.

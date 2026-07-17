@@ -4,19 +4,21 @@ import { appendQualityAuditEvent } from './audit-log.js';
 import { appendQualityShadowRecord } from './shadow-store.js';
 import { evaluateContractNominationPolicy } from './nomination-policy.js';
 
-const POLICY_FAILED_SUMMARY = {
-  version: 1,
-  status: 'policy_failed',
-  evaluated: false,
-  duplicateCheck: 'deferred',
-  candidateCount: 0,
-  preDuplicateEligibleCount: 0,
-  blockedCount: 0,
-  blockerCounts: {},
-  eligibleReasonCounts: {},
-  byClaimType: {},
-  supportCounts: {},
-};
+function createPolicyFailedSummary() {
+  return {
+    version: 1,
+    status: 'policy_failed',
+    evaluated: false,
+    duplicateCheck: 'deferred',
+    candidateCount: 0,
+    preDuplicateEligibleCount: 0,
+    blockedCount: 0,
+    blockerCounts: {},
+    eligibleReasonCounts: {},
+    byClaimType: {},
+    supportCounts: {},
+  };
+}
 
 export async function recordQualityShadow({
   answer,
@@ -49,11 +51,11 @@ export async function recordQualityShadow({
           contract.quality.nominationPolicy = summary;
         } else {
           logger?.warn?.('[quality] nomination policy failed');
-          contract.quality.nominationPolicy = POLICY_FAILED_SUMMARY;
+          contract.quality.nominationPolicy = createPolicyFailedSummary();
         }
       } catch {
         logger?.warn?.('[quality] nomination policy failed');
-        contract.quality.nominationPolicy = POLICY_FAILED_SUMMARY;
+        contract.quality.nominationPolicy = createPolicyFailedSummary();
       }
     }
 
