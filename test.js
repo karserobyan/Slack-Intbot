@@ -4139,11 +4139,15 @@ _setQualityAuditFileForTest(join(recorderTempDir, 'audit.jsonl'));
 
 const oldQualityLayerEnabled = process.env.QUALITY_LAYER_ENABLED;
 const oldQualityShadowMode = process.env.QUALITY_LAYER_SHADOW_MODE;
+const oldQualityNominationPolicyEnabled = process.env.QUALITY_NOMINATION_POLICY_ENABLED;
 const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const oldNewPipeline = process.env.NEW_PIPELINE;
+const readJsonl = async (file) => (await readFile(file, 'utf-8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 
 process.env.QUALITY_LAYER_ENABLED = 'false';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let layerDisabledEvaluatorCalls = 0;
 const disabledRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -4151,11 +4155,18 @@ const disabledRecord = await recordQualityShadow({
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
+  nominationPolicyEvaluator: async () => {
+    layerDisabledEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
 });
 assert(disabledRecord.status === 'disabled', 'recordQualityShadow skips when quality layer disabled');
+assert(layerDisabledEvaluatorCalls === 0, 'quality-layer-disabled recorder never invokes nomination policy evaluator');
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let notShadowEvaluatorCalls = 0;
 const notShadowModeRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -4163,11 +4174,51 @@ const notShadowModeRecord = await recordQualityShadow({
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
+  nominationPolicyEvaluator: async () => {
+    notShadowEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
 });
 assert(notShadowModeRecord.status === 'not_shadow_mode', 'recordQualityShadow skips when QUALITY_LAYER_SHADOW_MODE=false');
+assert(notShadowEvaluatorCalls === 0, 'non-shadow recorder never invokes nomination policy evaluator');
 
+const policyDisabledShadowFile = join(recorderTempDir, 'policy-disabled-shadow.jsonl');
+const policyDisabledAuditFile = join(recorderTempDir, 'policy-disabled-audit.jsonl');
+_setQualityShadowFileForTest(policyDisabledShadowFile);
+_setQualityAuditFileForTest(policyDisabledAuditFile);
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'false';
+let policyDisabledEvaluatorCalls = 0;
+const policyDisabledRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => {
+    policyDisabledEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
+});
+assert(policyDisabledRecord.status === 'recorded', 'recordQualityShadow records base contract when nomination policy flag is disabled');
+assert(policyDisabledRecord.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract with nomination policy disabled');
+assert(policyDisabledRecord.contract?.quality?.nominationPolicy === undefined, 'policy-disabled recorder omits nomination policy summary from returned contract');
+assert(policyDisabledEvaluatorCalls === 0, 'policy-disabled recorder never invokes nomination policy evaluator');
+const policyDisabledShadowRecord = (await readJsonl(policyDisabledShadowFile))[0];
+const policyDisabledAuditRecord = (await readJsonl(policyDisabledAuditFile))[0];
+assert(policyDisabledShadowRecord.quality.nominationPolicy === undefined, 'policy-disabled recorder omits nomination policy summary from shadow JSONL');
+
+const policyEnabledShadowFile = join(recorderTempDir, 'policy-enabled-shadow.jsonl');
+const policyEnabledAuditFile = join(recorderTempDir, 'policy-enabled-audit.jsonl');
+_setQualityShadowFileForTest(policyEnabledShadowFile);
+_setQualityAuditFileForTest(policyEnabledAuditFile);
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let policyEnabledEvaluatorCalls = 0;
 const recorded = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -4176,13 +4227,83 @@ const recorded = await recordQualityShadow({
   threadTs: '1700000000.000',
   logger: console,
   now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async (contract) => {
+    policyEnabledEvaluatorCalls++;
+    assert(contract.answerId.startsWith('ans_'), 'nomination policy evaluator receives the built answer-evidence contract');
+    return {
+      summary: { ...validPersistedNominationPolicy },
+      candidates: [{
+        candidateId: 'qc_private_enabled',
+        sourceStepId: 'claim_private_enabled',
+        privacyCanary: 'qc_private_enabled Jane Customer jane.customer@example.com xoxb-secret',
+      }],
+    };
+  },
 });
 assert(recorded.status === 'recorded', 'recordQualityShadow records in shadow mode');
 assert(recorded.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract');
+assert(policyEnabledEvaluatorCalls === 1, 'all quality flags enabled invokes the nomination policy evaluator exactly once');
+assert.deepEqual(recorded.contract?.quality?.nominationPolicy, validPersistedNominationPolicy, 'successful nomination policy evaluation attaches only the summary to the returned contract');
+assert(recorded.contract?.quality?.nominationPolicy?.candidates === undefined, 'only policyResult.summary is attached to the returned contract');
+const policyEnabledShadowText = await readFile(policyEnabledShadowFile, 'utf-8');
+const policyEnabledShadowRecord = JSON.parse(policyEnabledShadowText.trim());
+const policyEnabledAuditRecord = (await readJsonl(policyEnabledAuditFile))[0];
+assert.deepEqual(policyEnabledShadowRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'successful nomination policy evaluation persists a canonical evaluated summary');
+assert(!policyEnabledShadowText.includes('qc_private_enabled'), 'successful nomination policy evaluation never persists candidate ids to shadow JSONL');
+assert(!policyEnabledShadowText.includes('claim_private_enabled'), 'successful nomination policy evaluation never persists source step ids to shadow JSONL');
+assert(!policyEnabledShadowText.includes('jane.customer@example.com'), 'successful nomination policy evaluation never persists privacy canaries to shadow JSONL');
+assert.deepEqual(Object.keys(policyDisabledAuditRecord.metadata).sort(), Object.keys(policyEnabledAuditRecord.metadata).sort(), 'audit event metadata keys remain unchanged with nomination policy enabled');
+assert(policyEnabledAuditRecord.metadata.nominationPolicy === undefined, 'audit event omits nomination policy fields when evaluation succeeds');
+
+for (const [label, nominationPolicyEvaluator] of [
+  ['sync throw', () => {
+    throw new Error('privacy canary sync throw jane.customer@example.com xoxb-secret tenant 123');
+  }],
+  ['rejected promise', async () => Promise.reject(new Error('privacy canary rejected promise jane.customer@example.com xoxb-secret tenant 123'))],
+  ['missing summary', async () => ({})],
+  ['non-object summary', async () => ({ summary: 'privacy canary summary jane.customer@example.com xoxb-secret tenant 123' })],
+]) {
+  const failureShadowFile = join(recorderTempDir, `policy-failure-${label.replaceAll(' ', '-')}-shadow.jsonl`);
+  const failureAuditFile = join(recorderTempDir, `policy-failure-${label.replaceAll(' ', '-')}-audit.jsonl`);
+  _setQualityShadowFileForTest(failureShadowFile);
+  _setQualityAuditFileForTest(failureAuditFile);
+  const policyWarnMessages = [];
+  const failureRecord = await recordQualityShadow({
+    answer: contractAnswer,
+    query: 'Zapier API access disabled',
+    role: 'csa',
+    channelId: 'C123',
+    threadTs: '1700000000.000',
+    logger: { warn: (message) => policyWarnMessages.push(message) },
+    now: new Date('2026-07-09T00:00:00.000Z'),
+    nominationPolicyEvaluator,
+  });
+  const failureShadowText = await readFile(failureShadowFile, 'utf-8');
+  const failureAuditText = await readFile(failureAuditFile, 'utf-8');
+  const failureShadowRecord = JSON.parse(failureShadowText.trim());
+  const failureAuditRecord = JSON.parse(failureAuditText.trim());
+  assert(failureRecord.status === 'recorded', `${label} nomination policy failure still returns recorded`);
+  assert(failureRecord.error === undefined, `${label} nomination policy failure does not return a raw error field`);
+  assert.deepEqual(failureRecord.contract?.quality?.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure returns canonical policy_failed summary`);
+  assert.deepEqual(failureShadowRecord.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure persists canonical policy_failed summary`);
+  assert.deepEqual(Object.keys(failureAuditRecord.metadata).sort(), Object.keys(policyDisabledAuditRecord.metadata).sort(), `${label} nomination policy failure leaves audit metadata keys unchanged`);
+  assert(failureShadowRecord.quality.stepCoverage.stepCount === contractAnswer.agent_steps.length, `${label} nomination policy failure still persists base step coverage`);
+  assert(failureShadowRecord.answerId === failureRecord.contract?.answerId, `${label} nomination policy failure still persists the base answer-evidence contract`);
+  assert(policyWarnMessages.length === 1, `${label} nomination policy failure emits exactly one warning`);
+  assert(policyWarnMessages[0] === '[quality] nomination policy failed', `${label} nomination policy failure emits the generic bounded warning`);
+  assert(!policyWarnMessages[0].includes('jane.customer@example.com') && !policyWarnMessages[0].includes('xoxb-secret') && !policyWarnMessages[0].includes('tenant 123'), `${label} nomination policy failure warning omits privacy canaries`);
+  assert(!failureShadowText.includes('jane.customer@example.com') && !failureShadowText.includes('xoxb-secret') && !failureShadowText.includes('tenant 123'), `${label} nomination policy failure shadow JSONL omits privacy canaries`);
+  assert(!failureAuditText.includes('jane.customer@example.com') && !failureAuditText.includes('xoxb-secret') && !failureAuditText.includes('tenant 123'), `${label} nomination policy failure audit JSONL omits privacy canaries`);
+  assert(JSON.stringify(failureRecord.contract).includes('jane.customer@example.com') === false, `${label} nomination policy failure returned contract omits privacy canaries`);
+}
 
 const invalidRecorderParent = join(recorderTempDir, 'not-a-directory');
 await writeFile(invalidRecorderParent, 'plain file');
 _setQualityShadowFileForTest(join(invalidRecorderParent, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(recorderTempDir, 'store-failure-audit.jsonl'));
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
 const warnMessages = [];
 const failedOpen = await recordQualityShadow({
   answer: contractAnswer,
@@ -4192,6 +4313,7 @@ const failedOpen = await recordQualityShadow({
   threadTs: '1700000000.000',
   logger: { warn: (message) => warnMessages.push(message) },
   now: new Date('2026-07-09T00:00:01.000Z'),
+  nominationPolicyEvaluator: async () => ({ summary: validPersistedNominationPolicy }),
 });
 assert(failedOpen.status === 'failed_open', 'recordQualityShadow fails open when storage write fails');
 assert(warnMessages.some((message) => message.includes('[quality] shadow record failed:')), 'recordQualityShadow logs bounded warning on failure');
@@ -4251,6 +4373,8 @@ if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABL
 else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
 if (oldQualityShadowMode === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
 else process.env.QUALITY_LAYER_SHADOW_MODE = oldQualityShadowMode;
+if (oldQualityNominationPolicyEnabled === undefined) delete process.env.QUALITY_NOMINATION_POLICY_ENABLED;
+else process.env.QUALITY_NOMINATION_POLICY_ENABLED = oldQualityNominationPolicyEnabled;
 
 await rm(recorderTempDir, { recursive: true, force: true });
 await rm(mentionShadowDir, { recursive: true, force: true });
