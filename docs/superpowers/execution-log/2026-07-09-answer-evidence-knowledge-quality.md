@@ -594,3 +594,65 @@ Expanded the recorder coverage in `test.js` with strict gating checks for policy
 **Verification:** Red run after adding tests first: `node test.js` failed with `987 passed, 6 failed out of 993 tests`. The failing assertions were the expected mutation-isolation checks: distinct summary object, distinct nested maps, and the later returned `policy_failed` summary remaining canonical after mutating the first returned contract. After replacing the shared object with the factory, ran `node test.js`; result: `993 passed, 0 failed`.
 
 **Decision / Follow-up:** The Task 4 Minor review note is resolved. Each isolated policy failure still emits exactly one generic `[quality] nomination policy failed` warning, returns `status: 'recorded'` when shadow/audit writes succeed, keeps mutation canaries out of later shadow and audit JSONL, and leaves store/audit failure behavior as `failed_open`. No Slack rendering, live nomination behavior, prompts, approval/review flows, audit-log implementation, `knowledge.md`, or Task 5 validation work changed.
+
+## 2026-07-17 - PR 2 Task 5 Documentation And Controlled Validation
+
+**Intent:** Document the implemented PR 2 shadow nomination-policy boundary and rerun controlled synthetic validation before final branch review, without changing production code.
+
+**Documentation Updated:** Updated `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md` so the source of truth now reflects the implemented runtime behavior: strict opt-in `QUALITY_NOMINATION_POLICY_ENABLED=true`, required base quality/shadow gates, one in-memory candidate per normalized answer step, pre-duplicate policy eligibility only, deferred duplicate checking, cohesive single-record evidence qualification, controlled blockers/reasons/support keys, shared bounded evidence/step normalization, aggregate-only `quality.nominationPolicy` persistence, canonical `evaluated` and `policy_failed` summaries, fresh nested failure-summary maps per request, unchanged audit payload shape, and unchanged live whole-answer nomination behavior. The spec also explicitly preserves the limitations: approximate evidence mapping, policy pass does not prove semantic correctness, duplicate detection is deferred, candidates cannot drive live nomination cards yet, and PR 2 is a measurement step before PR 3 planning.
+
+**Controlled Validation Environment:** Used a local synthetic harness with mocked Slack client, mocked Anthropic responses, mocked Slack/Atlassian search responses, real `handleQuery()` new-pipeline path, real Block Kit rendering, real current whole-answer nomination conditions, real shadow/audit writers, temporary shadow/audit JSONL files, temporary nomination storage, no live Slack workspace, no customer data, and no production services. KB source chips/evidence were exercised through mocked answer `kb_refs`; the harness did not return live KB search-tool results so pipeline KB auto-save could not touch production `knowledge.md`. Temporary validation output stayed local under `/var/folders/vq/3cqq3zh510770khd6ld4fxr40000gp/T/intbot-pr2-task5-HO46Js`; the corrected isolated-failure probe used `/var/folders/vq/3cqq3zh510770khd6ld4fxr40000gp/T/intbot-pr2-task5-failure-corrected-7K1A0u`.
+
+**Synthetic Cases:** Reused ten representative categories: strong Confluence + KB match, Slack-only evidence, mixed Slack/Atlassian/KB evidence, specialist-sensitive Jira evidence in CSA view, weak/low-confidence evidence, no useful refs, escalation case, non-escalation case eligible under the old whole-answer trigger, privacy canary, and KB-only evidence.
+
+**Three-Mode Comparison:**
+
+- Mode A (`QUALITY_LAYER_ENABLED=false`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=true`): 10 answers delivered, 7 current live whole-answer nominations, 0 shadow records, 0 audit records, 0 warnings, 0 errors. Policy was bypassed by the layer gate.
+- Mode B (`QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=false`): 10 answers delivered, 7 current live whole-answer nominations, 10 shadow records, 10 audit records, `quality.stepCoverage` present, `quality.nominationPolicy` absent from all shadow records, 0 policy warnings, 0 errors.
+- Mode C (`QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=true`): 10 answers delivered, 7 current live whole-answer nominations, 10 shadow records, 10 audit records, canonical aggregate `quality.nominationPolicy` summaries present, 0 policy warnings, 0 errors.
+
+Visible-answer comparison found 0 mismatches across A->B, A->C, and B->C after normalizing dynamic timestamps/button payload values. Live nomination comparison found 0 mismatches across all mode pairs. Block Kit card structure, answer text, steps, buttons/action IDs, source chips, escalation behavior, and current whole-answer nomination decisions remained unchanged.
+
+**Policy Summary Validation:** Every normal Mode C shadow record had `status: evaluated`, `evaluated: true`, `duplicateCheck: deferred`, non-negative integer counts, `preDuplicateEligibleCount + blockedCount === candidateCount`, `candidateCount === sum(byClaimType)`, all support counts `<= candidateCount`, all blocker counts `<= blockedCount`, all eligible-reason counts `<= preDuplicateEligibleCount`, no unknown blocker/reason/claim-type/support keys, and `nominationPolicy.candidateCount === stepCoverage.stepCount`. The zero-step answer produced a zero-candidate evaluated summary. No `policy_failed` summaries were produced during normal Mode C runs. No `no_cohesive_qualifying_evidence` case occurred in this ten-case harness; existing Task 2/3 tests continue to cover that controlled blocker.
+
+**Aggregate Pre-Duplicate Policy Metrics:**
+
+- Total synthetic cases: 10.
+- Current live whole-answer nominations: 7.
+- Total claim candidates: 22.
+- Total pre-duplicate policy-eligible candidates: 14.
+- Total blocked candidates: 8.
+- Pre-duplicate eligible ratio: 63.6%.
+- Candidate count per answer: `[3, 2, 4, 2, 2, 0, 2, 3, 2, 2]`.
+- Pre-duplicate eligible count per answer: `[3, 2, 4, 0, 0, 0, 0, 3, 0, 2]`.
+- Answers with multiple pre-duplicate eligible candidates: strong Confluence + KB, Slack-only, mixed evidence, old whole-answer nomination-eligible, KB-only.
+- Answers with zero candidates: no useful refs.
+- Answers with candidates but zero pre-duplicate eligible candidates: specialist-sensitive Jira in CSA view, weak/low-confidence evidence, escalation case, privacy canary.
+- Old whole-answer nominations with zero new pre-duplicate eligible claims: specialist-sensitive Jira in CSA view, weak/low-confidence evidence, privacy canary.
+- Answers skipped by the old trigger but containing pre-duplicate eligible claims: KB-only evidence.
+
+Blocker distribution: `no_safe_direct_evidence: 4`, `specialist_only_evidence: 4`, `low_confidence_answer: 2`, `escalation_claim: 1`, `answer_requires_escalation: 2`.
+
+Eligible-reason distribution: `specific_integration: 14`, `durable_claim_type: 14`, `concrete_claim: 14`, `non_tenant_specific: 14`, `cohesive_qualifying_evidence: 14`.
+
+Claim-type distribution: `backend: 6`, `action: 4`, `verify: 11`, `escalate: 1`.
+
+Distribution by confidence:
+
+- High: 6 answers, 16 candidates, 12 pre-duplicate eligible, 4 blocked.
+- Medium: 2 answers, 4 candidates, 2 pre-duplicate eligible, 2 blocked.
+- Low: 2 answers, 2 candidates, 0 pre-duplicate eligible, 2 blocked.
+
+Support-count distributions: `resolvedCount: 22`, `directCount: 22`, `safeDirectCount: 18`, `specialistOnlyCount: 4`, `exclusivelySpecialistOnly: 4`, `highOrMediumQualityCount: 18`, `highOrMediumReuseCount: 18`, `qualifyingEvidenceCount: 18`, `unknownFreshnessQualifyingEvidenceCount: 18`. `freshQualifyingEvidenceCount` and `staleOtherwiseQualifyingEvidenceCount` were 0 in this harness because the synthetic refs did not carry dated freshness metadata.
+
+**Privacy Inspection:** Mode C shadow/audit JSONL contained only minimized metadata. `quality.nominationPolicy` persisted controlled statuses, booleans, integer counts, allowlisted blocker keys, allowlisted eligible-reason keys, controlled claim types, controlled support-count keys, and `duplicateCheck: deferred`. Structural inspection found no unexpected policy keys and no forbidden hits for candidate arrays, candidate IDs, source step IDs, step evidence mappings, step IDs, claim text, step titles/details/tags, integration names, raw queries, source titles/snippets/URLs/channels, diagnosis/customer-message/escalation prose, customer/person names, emails, phone numbers, tenant/account/location text, tokens/secrets, prompts, headers, payloads, exception text, or mutation canaries. Audit metadata keys remained unchanged from Mode B: `approximateMapping`, `integrationTypeHash`, `nominationEligible`, `queryHash`, and `reasons`.
+
+**Isolated Policy Failure Probe:** Ran recorder-level failures with the injectable evaluator throwing/rejecting errors that contained privacy canaries. Each isolated failure returned `status: recorded`, emitted exactly one generic `[quality] nomination policy failed` warning, persisted the base contract and step coverage, produced the exact canonical zero-count `policy_failed` summary, left audit payload keys unchanged, and omitted the canary from captured warnings, shadow JSONL, audit JSONL, and returned contract. A later normal request returned `status: recorded` with an evaluated policy summary. Fresh top-level summary objects and nested `blockerCounts`, `eligibleReasonCounts`, `byClaimType`, and `supportCounts` maps remained isolated; mutating the first failure result did not affect the later failure result or JSONL.
+
+**Store Failure And Bypass Probes:** Direct recorder storage failure returned `status: failed_open`, emitted one bounded `[quality] shadow record failed:` warning, produced no corrupt/partial shadow record, produced 0 audit records on the failed write, and recovered on the next valid write (`status: recorded`, 1 recovered shadow record). A handleQuery delivery probe with an invalid shadow path still delivered the Slack answer and emitted one bounded shadow-record warning. With `QUALITY_LAYER_ENABLED=false`, another synthetic answer delivered, wrote 0 new shadow records, wrote 0 new audit records, and emitted 0 nomination-policy warnings.
+
+**Interpretation:** Product-behavior safety is clean: PR 2 shadow policy did not alter visible answers or current live whole-answer nominations. Policy selectivity is materially different from the old trigger: it blocked three old whole-answer nomination cases with no credible reusable claim under the policy and found reusable KB-only claims that the old Slack/Atlassian-ref timing trigger skipped. Policy usefulness is promising, but still bounded by approximate evidence mapping and synthetic data. Duplicate detection is deferred, and a high pre-duplicate eligibility rate must not be used alone to approve PR 3.
+
+**Final Verification:** Ran `node test.js`; result: `993 passed, 0 failed out of 993 tests`. Ran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the two intended Task 5 docs files modified plus untracked `AGENTS.md`. Ran `git diff --name-only main...HEAD`; result: expected PR 2 branch files only, with no tracked `.superpowers/sdd/*` scratch artifacts and no live Slack/nomination/review/knowledge files added by Task 5.
+
+**Recommendation:** PR 2 is ready for final whole-branch review.

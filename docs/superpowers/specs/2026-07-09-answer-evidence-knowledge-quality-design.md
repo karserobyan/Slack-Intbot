@@ -674,6 +674,87 @@ Evidence blocker precedence:
 
 Avoid adding weak-quality and low-reuse blockers to a claim that has no resolved evidence.
 
+### Implemented PR 2 Runtime Boundary
+
+PR 2 implements claim-level nomination policy in shadow mode only.
+
+Activation is strict opt-in:
+
+- `QUALITY_LAYER_ENABLED` must be exactly `true` (case-insensitive).
+- `QUALITY_LAYER_SHADOW_MODE` must allow shadow mode.
+- `QUALITY_NOMINATION_POLICY_ENABLED` must be exactly `true` (case-insensitive).
+- Unset, empty, `false`, `0`, `off`, or typo values keep the nomination policy disabled.
+
+The implemented policy uses the shared bounded normalization in `src/quality/shadow-normalization.js`:
+
+- Evidence is normalized with the same ID validation, ten-record persistence limit, enum clamping, URL hashing, hostname/reason allowlists, and first-valid-record-wins resolution used by shadow persistence.
+- Steps are normalized through the same malformed-step filtering and 1,000-step bound used for step coverage.
+- Claim candidates are created one per valid normalized answer step.
+- Candidate claim text, source step IDs, evidence mappings, and candidate objects remain in memory only.
+- Candidate builders map `action`, `backend`, `verify`, `escalate`, and fallback `step` claim types.
+- Caller-supplied `nominationEligible`, `eligibility`, `reasons`, and `blockers` are ignored.
+- The current approximate mapping state is preserved.
+
+The implemented evaluator returns in-memory candidates plus an aggregate summary, but `recordQualityShadow()` attaches and persists only the aggregate `quality.nominationPolicy` summary. The persisted summary is pre-duplicate policy eligibility, not final nomination eligibility:
+
+- `duplicateCheck` is always `deferred`.
+- Duplicate detection has not run.
+- Candidate summaries must not drive live nomination cards yet.
+- Current whole-answer nomination behavior remains unchanged.
+
+Canonical evaluated summary:
+
+```js
+{
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount,
+  preDuplicateEligibleCount,
+  blockedCount,
+  blockerCounts,
+  eligibleReasonCounts,
+  byClaimType,
+  supportCounts,
+}
+```
+
+Canonical policy-failure summary:
+
+```js
+{
+  version: 1,
+  status: 'policy_failed',
+  evaluated: false,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}
+```
+
+Policy failures are isolated inside the recorder:
+
+- Synchronous evaluator throws, rejected evaluator promises, missing summaries, and non-object summaries produce a canonical `policy_failed` summary.
+- Each failure receives a fresh summary object and fresh nested maps; mutation of one returned contract must not affect a later request.
+- The warning is a single generic `[quality] nomination policy failed` message with no raw exception text.
+- Shadow/audit writes still proceed when possible.
+- Audit payload shape remains unchanged and does not include nomination-policy fields.
+
+Remaining PR 2 limitations:
+
+- Evidence mapping is still approximate.
+- Passing the policy does not prove semantic correctness.
+- Duplicate detection is deferred.
+- Candidate arrays are intentionally not persisted.
+- Candidates must not drive live nomination cards yet.
+- PR 2 measures whether the policy looks useful enough to plan PR 3; it is not approval to replace the live nomination workflow.
+
 ## Review Candidate Lifecycle
 
 Feedback and nominations should share one review candidate lifecycle while preserving event type.
@@ -810,6 +891,7 @@ Likely file-backed stores under `data/`:
     - `candidateCount === sum(byClaimType)`
     - every `supportCounts` value is `<= candidateCount`
   - For `status: policy_failed`, `evaluated` is false, candidate counts are zero, maps are empty, and the status itself represents the failure.
+  - Every isolated policy failure must receive a fresh canonical `policy_failed` object and fresh nested maps.
   - Malformed or inconsistent caller-supplied nomination-policy summaries should canonicalize to a controlled `policy_failed` summary or be omitted.
 
 - `data/quality-candidates.json`
@@ -841,12 +923,20 @@ Recommended rollout defaults:
   - `QUALITY_LAYER_SHADOW_MODE=true`
   - all behavior-changing flags false
 
+- PR 2:
+  - `QUALITY_LAYER_ENABLED=true`
+  - `QUALITY_LAYER_SHADOW_MODE=true`
+  - `QUALITY_NOMINATION_POLICY_ENABLED=true`
+  - current live nomination behavior still unchanged
+
 - Later PRs:
-  - Enable nomination policy after shadow metrics look acceptable.
+  - Enable claim-level nomination cards only after PR 2 shadow metrics look acceptable and duplicate detection is designed.
   - Enable unified review store after compatibility tests pass.
   - Enable quality-controlled knowledge writes after reviewer flow is stable.
 
 If `QUALITY_LAYER_ENABLED=false`, the app should behave exactly as it does today.
+
+`QUALITY_NOMINATION_POLICY_ENABLED` is strict opt-in. Only the literal value `true`, case-insensitive, enables it. The flag has no effect unless the base quality layer is enabled and shadow mode is active.
 
 ## Success Measurement Before Answer UX Redesign
 
@@ -1076,6 +1166,7 @@ Success:
 - New policy produces explainable pre-duplicate policy-eligible or blocked decisions.
 - Policy decisions require cohesive qualifying evidence and persist `duplicateCheck: 'deferred'`.
 - Metrics show whether claim-level nominations are useful.
+- No Slack answer card, answer text, source chip, button, action ID, live nomination card, approval flow, prompt, `knowledge.md`, or audit payload shape changes.
 
 ### PR 3: Claim-Level Nomination Review Cards
 
