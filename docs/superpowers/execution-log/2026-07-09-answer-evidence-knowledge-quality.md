@@ -258,6 +258,38 @@ This log records the actual steps taken while designing and implementing the Ans
 
 **Decision / Follow-up:** Branch was pushed and synced at `4fe1e96` before this final log-only note. No PR 2 work started.
 
+## 2026-07-16 - PR 2 Task 2 Eligibility Evaluation And Summary Aggregation
+
+**Intent:** Add the in-memory-only claim-level nomination policy evaluator and aggregate summary logic for PR 2 without changing the live Slack nomination path or starting persistence work.
+
+**Action Taken:** Confirmed `git diff --name-only main...HEAD` does not include `.superpowers/sdd/task-1-report.md`. Added failing Task 2 tests first, then implemented `evaluateNominationEligibility`, `evaluateContractNominationPolicy`, and `summarizeNominationPolicy` in `src/quality/nomination-policy.js`. The evaluator now uses the same bounded normalized evidence population as shadow persistence, resolves evidence with first-valid-record-wins semantics, enforces the documented evidence-blocker precedence, carries forward the single-record cohesive-evidence rule with the controlled `no_cohesive_qualifying_evidence` blocker, returns evaluated candidate copies without mutating contracts or caller-supplied eligibility state, and aggregates deterministic count-only in-memory summaries. No live nomination behavior changed, and no nomination-policy summary is persisted in Task 2.
+
+**Files Touched:**
+
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after adding Task 2 imports/tests first: `node test.js` failed with `SyntaxError: The requested module './src/quality/nomination-policy.js' does not provide an export named 'evaluateContractNominationPolicy'`, which was expected because the new evaluator exports were not implemented yet. After implementation, `node test.js` passed with `876 passed, 0 failed`. Final Task 2 verification also ran `git diff --check` and `git status --short --branch`.
+
+**Decision / Follow-up:** Task 2 remains in-memory only. Carry forward that `no_cohesive_qualifying_evidence` must be added to the Task 3 persistence allowlist, Task 2 persists no nomination-policy summary, and no live nomination behavior changed.
+
+## 2026-07-16 - PR 2 Task 2 Review Fix: Strip Stale Top-Level nominationEligible
+
+**Intent:** Address the Important Task 2 review finding that evaluated candidate copies were still carrying a caller-supplied top-level `nominationEligible` field even though `eligibility` was recomputed.
+
+**Action Taken:** Added a failing regression test proving a caller-supplied top-level `nominationEligible: false` could conflict with a recomputed eligible candidate if it survived the return copy. Updated `evaluateNominationEligibility()` to omit `nominationEligible` from the copied candidate payload before rebuilding the evaluated result. Caller-supplied `eligibility`, `reasons`, and `blockers` continue to be ignored and recomputed.
+
+**Files Touched:**
+
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run: `node test.js` failed with `876 passed, 1 failed out of 877 tests` at `caller-provided top-level nominationEligible does not survive evaluated candidates`, which was expected because the stale top-level field still leaked through `{ ...candidate, ... }`. After the fix, `node test.js` passed with `877 passed, 0 failed`. Final verification also ran `git diff --check`.
+
+**Decision / Follow-up:** Fix stays within Task 2 scope and remains in-memory only. No live nomination behavior changed.
+
 ## 2026-07-10 - PR 1 Re-review Fix: Hash Integration Type And Clamp Persisted Dimensions
 
 **Intent:** Resolve the final re-review blockers before merging PR #34.
@@ -442,3 +474,207 @@ This log records the actual steps taken while designing and implementing the Ans
 **Verification:** After this log-only completion entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Confirmed `QUALITY_LAYER_ENABLED=false` returns disabled. Ran `git status --short --branch`; result: `main...origin/main` with this execution-log update and untracked `AGENTS.md`.
 
 **Decision / Follow-up:** PR 1.1 is fully complete. Do not begin PR 2 implementation. The next step may be a separate plan-only PR for shadow claim-level nomination policy that keeps the current nomination workflow live and generates new claim candidates only in shadow mode.
+
+## 2026-07-15 - PR 2 Shadow Claim-Level Nomination Policy Plan Created
+
+**Intent:** Create a traceable plan-only PR for shadow claim-level nomination policy after PR 1 and PR 1.1 were completed, without starting PR 2 implementation.
+
+**Action Taken:** Created `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md` on branch `codex/pr2-shadow-claim-nomination-policy-plan`. Before writing the plan, inspected the current quality contract/scoring/recorder/store/config modules, current mention-handler nomination trigger points, `src/slack/nominations.js`, and `src/slack/knowledge-writer.js`. The plan keeps `src/handlers/mention.js`, live nomination cards, approve/reject flow, prompts, Slack rendering, audit payload behavior, and `knowledge.md` behavior out of scope. It adds a future strict opt-in `QUALITY_NOMINATION_POLICY_ENABLED` flag, a new in-memory `src/quality/nomination-policy.js` module, aggregate/count-only `quality.nominationPolicy` shadow summaries, nested fail-open policy isolation inside the existing shadow recorder, and a controlled 10-case rollout validation. The plan explicitly defers duplicate detection because existing knowledge dedupe is issue-title based, not claim-level.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. Plan self-review result: scope clean, privacy boundary clean, and no production code changed.
+
+**Decision / Follow-up:** Stop for approval before any PR 2 implementation. The next approved implementation, if any, should execute the plan task-by-task with review gates and keep current live nomination behavior unchanged.
+
+## 2026-07-15 - PR 2 Plan Refinement: Cohesive Evidence And Pre-Duplicate Semantics
+
+**Intent:** Apply the approved plan-only refinement before any PR 2 implementation begins.
+
+**Action Taken:** Refined the PR 2 plan and source-of-truth design spec so claim policy uses pre-duplicate eligibility semantics, requires one cohesive qualifying evidence record instead of combining unrelated sources, evaluates normalized bounded evidence and step populations shared with shadow persistence, and explicitly defers duplicate detection with `duplicateCheck: 'deferred'`. Added plan requirements for `stale_evidence`, `non_durable_claim_type`, concrete-vs-generic placeholder classification, expanded tenant-specific detection, privacy-safe nomination-policy failure logging, injectable policy evaluator tests, canonicalized persisted summaries, evidence blocker precedence, and controlled validation wording that labels all eligible counts as pre-duplicate policy eligibility.
+
+**Files Touched:**
+
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Before this log entry, ran `node test.js`; result: 757 passed, 0 failed. Ran `git diff --check`; result: clean. After this log entry, reran `node test.js`; result: 757 passed, 0 failed. Reran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the intended plan/spec/log docs modified plus untracked `AGENTS.md`.
+
+**Decision / Follow-up:** This remains plan/spec/log only. No production code changed, no Task 1 implementation started, and PR 2 remains paused pending review.
+
+## 2026-07-16 - PR 2 Task 1 Feature Flag, Shared Normalization, And Policy Skeleton
+
+**Intent:** Implement only PR 2 Task 1 from `.superpowers/sdd/task-1-brief.md`: strict nomination-policy opt-in flag, shared shadow normalization helpers, shadow-store refactor with persisted JSONL parity, and an in-memory nomination-policy skeleton with candidate construction only.
+
+**Action Taken:** Added `isQualityNominationPolicyEnabled()` as a strict `QUALITY_NOMINATION_POLICY_ENABLED=true` opt-in. Extracted overlapping evidence and step normalization into `src/quality/shadow-normalization.js`, including retained evidence ID validation, controlled enum clamping, hostname/reason allowlists, ten-record evidence bounding, first-valid-record-wins evidence lookup, malformed-step skipping, sanitized step evidence IDs, thousand-step bounding, non-negative integer checks, and controlled count-map sanitization. Updated `src/quality/shadow-store.js` to use the shared evidence and step helpers while preserving the existing count-only `quality.stepCoverage` persisted shape and deriving coverage from the same retained evidence population as before.
+
+Created `src/quality/nomination-policy.js` with controlled claim types, controlled eligible reasons, controlled blockers, `emptyEvidenceSummary()`, and `buildClaimCandidates()`. Candidate construction is in-memory only: one candidate per normalized bounded step, sanitized and deduplicated evidence IDs, approximate-mapping propagation, answer escalation context, claim type mapping, tenant-specific detection, generic-placeholder detection, empty unevaluated eligibility, and an empty evidence summary. Task 1 does not evaluate eligibility, aggregate policy summaries, integrate the recorder, or persist `quality.nominationPolicy`.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/shadow-normalization.js`
+- `src/quality/shadow-store.js`
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+- `.superpowers/sdd/task-1-report.md`
+
+**Verification:** Initial TDD red run: `node test.js` exited 1 with `Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/Users/kserobyan@servicetitan.com/Slack-Intbot/src/quality/shadow-normalization.js' imported from /Users/kserobyan@servicetitan.com/Slack-Intbot/test.js`. Final implementation verification before this log update: `node test.js` exited 0 with `Results: 818 passed, 0 failed out of 818 tests`. Controller-side verification after the reviewer fix also passed: `node test.js` exited 0 with `Results: 818 passed, 0 failed out of 818 tests`, and `git diff --check` was clean.
+
+**Decision / Follow-up:** Task 1 remains shadow-only and does not change Slack cards/text/source chips/buttons/action IDs, nominations, review/approval handlers, answerer prompts, audit payload behavior, `knowledge.md`, the knowledge writer, or database/review store behavior. Carry forward to Task 2: policy eligibility evaluation, policy summary aggregation, shadow-summary persistence, recorder integration, and any `quality.nominationPolicy` JSONL persistence remain explicitly deferred. Also carry forward the cohesive-evidence blocker rule: if separate evidence records individually satisfy quality and reuse but no single evidence record satisfies all cohesive qualifying dimensions, the candidate must receive a controlled blocker and must never become a blockerless decision; the exact controlled blocker should be finalized during Task 2 review.
+
+## 2026-07-16 - PR 2 Task 3 Shadow Store Sanitization
+
+**Intent:** Add shadow-store trust-boundary sanitization for the aggregate `quality.nominationPolicy` summary only, without integrating the evaluator into the recorder or changing any live nomination behavior.
+
+**Action Taken:** Added `quality.nominationPolicy` sanitization in `src/quality/shadow-store.js` only when a summary object is present on the incoming record. The shadow store now persists either a canonical evaluated aggregate summary or the exact zero-count canonical `policy_failed` summary, while omitting the field entirely when no nomination-policy summary is supplied. The sanitizer enforces `duplicateCheck: 'deferred'`, non-negative integer counts, `preDuplicateEligibleCount + blockedCount === candidateCount`, `sum(byClaimType) === candidateCount`, and per-map upper bounds. It drops unknown blocker/eligible-reason/claim-type/support keys, rejects malformed controlled counts instead of repairing them, never persists `policy_failed` as a blocker key, and keeps the persisted shape count-only with no candidates, IDs, step mappings, claim text, integration names, source prose, or privacy canaries. Before finalizing the support-key allowlist, verified the actual Task 2 producer names in `src/quality/nomination-policy.js`: `resolvedCount`, `directCount`, `safeDirectCount`, `specialistOnlyCount`, `exclusivelySpecialistOnly`, `highOrMediumQualityCount`, `highOrMediumReuseCount`, `qualifyingEvidenceCount`, `freshQualifyingEvidenceCount`, `unknownFreshnessQualifyingEvidenceCount`, and `staleOtherwiseQualifyingEvidenceCount`. Confirmed `no_cohesive_qualifying_evidence` remains allowlisted. No recorder integration was added in Task 3.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Added failing Task 3 tests first and ran `node test.js`; result: failed in the `quality shadow storage/audit` section at `valid evaluated nomination policy persists in canonical form with approved keys only`, followed by `TypeError: Cannot read properties of undefined (reading 'duplicateCheck')`, which was expected because the shadow store still omitted `quality.nominationPolicy`. After implementation, ran `node test.js`; result: `904 passed, 0 failed`. Final verification after the execution-log update also ran `node test.js` with `904 passed, 0 failed`, `git diff --check` clean, and `git status --short --branch` showing only the intended Task 3 tracked files modified plus untracked `AGENTS.md`.
+
+**Decision / Follow-up:** Task 3 remains shadow-store-only. Existing step-coverage behavior, evidence persistence, retention, privacy boundaries, audit behavior, live nomination logic, Slack cards/text/buttons/action IDs, review/approval handlers, prompts, `knowledge.md`, and recorder behavior remain unchanged. Recorder integration is still deferred beyond this task.
+
+## 2026-07-16 - PR 2 Task 3 Review Fix: Eligible Reason Allowlist Matches Task 2 Producer
+
+**Intent:** Fix the reviewed Task 3 bug where `quality.nominationPolicy.eligibleReasonCounts` accepted stale alias names instead of the actual Task 2 producer vocabulary.
+
+**Action Taken:** Verified the actual `POLICY_ELIGIBLE_REASONS` export in `src/quality/nomination-policy.js` before changing anything. Updated the Task 3 tests first so the persisted canonical summary now expects only the real Task 2 eligible reason names: `specific_integration`, `cohesive_qualifying_evidence`, `durable_claim_type`, `non_tenant_specific`, and `concrete_claim`. Added a regression proving stale alias names (`direct_evidence`, `safe_evidence`, `supported_source_quality`, and `reusable_evidence`) are dropped from `eligibleReasonCounts` at the shadow-store boundary. Updated `src/quality/shadow-store.js` so the eligible-reason allowlist matches the actual Task 2 producer vocabulary exactly. Tightened the alias-drop regression to use structured assertions on the persisted `eligibleReasonCounts` map after an intermediate false red caused by substring overlap with the legitimate blocker `no_direct_evidence`.
+
+**Files Touched:**
+
+- `src/quality/shadow-store.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after updating the tests first: `node test.js` failed with `903 passed, 6 failed out of 909 tests` in the `quality shadow storage/audit` section, including `valid evaluated nomination policy persists in canonical form with approved keys only`, `nomination policy persists actual Task 2 eligible reason names only`, and stale-alias omission assertions. That failure was expected because the shadow-store allowlist still preserved the alias vocabulary and rejected the real Task 2 reason map. After updating the allowlist and tightening the alias assertion to avoid substring overlap, ran `node test.js`; result: `909 passed, 0 failed`. Ran `git diff --check`; result: clean.
+
+**Decision / Follow-up:** Task 3 remains shadow-store-only. No recorder integration, live nomination behavior, Slack UX, prompts, audit behavior, or `knowledge.md` behavior changed.
+
+## 2026-07-17 - PR 2 Task 4 Recorder Integration With Nested Fail-Open
+
+**Intent:** Wire the shadow-only nomination policy evaluator into `recordQualityShadow()` behind the existing quality-layer gates plus a strict `QUALITY_NOMINATION_POLICY_ENABLED=true` opt-in, while keeping the current Slack answer flow and live nomination workflow unchanged.
+
+**Action Taken:** Updated `src/quality/shadow-recorder.js` to accept an optional internal `nominationPolicyEvaluator` dependency that defaults to `evaluateContractNominationPolicy`. The recorder still exits early unless `QUALITY_LAYER_ENABLED=true` and `QUALITY_LAYER_SHADOW_MODE=true`; only after building the base Answer Evidence Contract does it check `isQualityNominationPolicyEnabled()`. When the policy flag is enabled, the recorder now uses `await nominationPolicyEvaluator(contract)` inside a nested fail-open boundary, attaches only `policyResult.summary` to `contract.quality.nominationPolicy`, and treats thrown evaluators, rejected promises, missing summaries, and non-object summaries as isolated policy failures. Those isolated failures emit exactly one generic `[quality] nomination policy failed` warning, attach the canonical zero-count `policy_failed` summary, and still proceed to `appendQualityShadowRecord`, `appendQualityAuditEvent`, and `status: 'recorded'`. The outer recorder failure path remains unchanged for storage or audit write failures and still returns `status: 'failed_open'` with the existing bounded shadow-record warning.
+
+Expanded the recorder coverage in `test.js` with strict gating checks for policy-disabled, layer-disabled, and non-shadow runs; a success-path evaluator injection that verifies only the aggregate summary enters the returned contract and JSONL; audit metadata-key regression coverage with policy disabled versus enabled; canonical `policy_failed` behavior for synchronous throws, rejected promises, missing summaries, and non-object summaries; privacy-canary assertions across logs, shadow JSONL, audit JSONL, and returned contracts; preservation of base contract and step-coverage persistence after policy failure; confirmation that shadow-store failures still fail open; and confirmation that the existing mention-handler fail-open regression stays green without modifying `src/handlers/mention.js`. Updated `.env.example` with the exact strict opt-in flag documentation and default.
+
+**Files Touched:**
+
+- `src/quality/shadow-recorder.js`
+- `test.js`
+- `.env.example`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** TDD red run after adding the tests first: `node test.js` exited 1 in the `quality shadow recorder` section. The expected missing-integration failures included `all quality flags enabled invokes the nomination policy evaluator exactly once`, `successful nomination policy evaluation attaches only the summary to the returned contract`, `successful nomination policy evaluation persists a canonical evaluated summary`, and the `policy_failed`/bounded-warning assertions for the isolated policy-failure cases. The run then hit a follow-on `TypeError: Cannot read properties of undefined (reading 'includes')` because the pre-Task-4 recorder never emitted the nested policy warning, which was consistent with the missing integration. After the recorder change, ran `node test.js`; result: `978 passed, 0 failed`.
+
+**Decision / Follow-up:** Task 4 stays shadow-only. Audit payload shape remains unchanged, shadow-store sanitization remains the trust boundary for persisted policy summaries, policy failures remain isolated from the outer recorder fail-open path, and no Slack rendering, live nomination cards/conditions, review flows, prompts, `knowledge.md`, database behavior, or `src/handlers/mention.js` logic changed. Stop here for Task 4 review; do not begin Task 5 or rollout validation.
+
+## 2026-07-17 - PR 2 Task 4 Review Fix: Fresh Policy Failure Summaries
+
+**Intent:** Resolve the Task 4 review carry-forward by ensuring each isolated nomination-policy failure receives a fresh canonical `policy_failed` summary object, including fresh nested count maps, so mutation of one returned contract cannot affect later requests.
+
+**Action Taken:** Replaced the shared mutable `POLICY_FAILED_SUMMARY` object in `src/quality/shadow-recorder.js` with an internal `createPolicyFailedSummary()` factory. The recorder now calls the factory for every isolated nomination-policy failure path: synchronous evaluator throw, rejected evaluator promise, missing summary, and non-object summary. The factory is not exported. Added black-box recorder tests in `test.js` that trigger two separate policy failures through `recordQualityShadow()`, mutate the first returned contract's `blockerCounts`, `eligibleReasonCounts`, `byClaimType`, and `supportCounts`, then verify the second returned contract and persisted JSONL still contain the canonical zero-count `policy_failed` summary.
+
+**Files Touched:**
+
+- `src/quality/shadow-recorder.js`
+- `test.js`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Red run after adding tests first: `node test.js` failed with `987 passed, 6 failed out of 993 tests`. The failing assertions were the expected mutation-isolation checks: distinct summary object, distinct nested maps, and the later returned `policy_failed` summary remaining canonical after mutating the first returned contract. After replacing the shared object with the factory, ran `node test.js`; result: `993 passed, 0 failed`.
+
+**Decision / Follow-up:** The Task 4 Minor review note is resolved. Each isolated policy failure still emits exactly one generic `[quality] nomination policy failed` warning, returns `status: 'recorded'` when shadow/audit writes succeed, keeps mutation canaries out of later shadow and audit JSONL, and leaves store/audit failure behavior as `failed_open`. No Slack rendering, live nomination behavior, prompts, approval/review flows, audit-log implementation, `knowledge.md`, or Task 5 validation work changed.
+
+## 2026-07-17 - PR 2 Task 5 Documentation And Controlled Validation
+
+**Intent:** Document the implemented PR 2 shadow nomination-policy boundary and rerun controlled synthetic validation before final branch review, without changing production code.
+
+**Documentation Updated:** Updated `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md` so the source of truth now reflects the implemented runtime behavior: strict opt-in `QUALITY_NOMINATION_POLICY_ENABLED=true`, required base quality/shadow gates, one in-memory candidate per normalized answer step, pre-duplicate policy eligibility only, deferred duplicate checking, cohesive single-record evidence qualification, controlled blockers/reasons/support keys, shared bounded evidence/step normalization, aggregate-only `quality.nominationPolicy` persistence, canonical `evaluated` and `policy_failed` summaries, fresh nested failure-summary maps per request, unchanged audit payload shape, and unchanged live whole-answer nomination behavior. The spec also explicitly preserves the limitations: approximate evidence mapping, policy pass does not prove semantic correctness, duplicate detection is deferred, candidates cannot drive live nomination cards yet, and PR 2 is a measurement step before PR 3 planning.
+
+**Controlled Validation Environment:** Used a local synthetic harness with mocked Slack client, mocked Anthropic responses, mocked Slack/Atlassian search responses, real `handleQuery()` new-pipeline path, real Block Kit rendering, real current whole-answer nomination conditions, real shadow/audit writers, temporary shadow/audit JSONL files, temporary nomination storage, no live Slack workspace, no customer data, and no production services. KB source chips/evidence were exercised through mocked answer `kb_refs`; the harness did not return live KB search-tool results so pipeline KB auto-save could not touch production `knowledge.md`. Temporary validation output stayed local under `/var/folders/vq/3cqq3zh510770khd6ld4fxr40000gp/T/intbot-pr2-task5-HO46Js`; the corrected isolated-failure probe used `/var/folders/vq/3cqq3zh510770khd6ld4fxr40000gp/T/intbot-pr2-task5-failure-corrected-7K1A0u`.
+
+**Synthetic Cases:** Reused ten representative categories: strong Confluence + KB match, Slack-only evidence, mixed Slack/Atlassian/KB evidence, specialist-sensitive Jira evidence in CSA view, weak/low-confidence evidence, no useful refs, escalation case, non-escalation case eligible under the old whole-answer trigger, privacy canary, and KB-only evidence.
+
+**Three-Mode Comparison:**
+
+- Mode A (`QUALITY_LAYER_ENABLED=false`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=true`): 10 answers delivered, 7 current live whole-answer nominations, 0 shadow records, 0 audit records, 0 warnings, 0 errors. Policy was bypassed by the layer gate.
+- Mode B (`QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=false`): 10 answers delivered, 7 current live whole-answer nominations, 10 shadow records, 10 audit records, `quality.stepCoverage` present, `quality.nominationPolicy` absent from all shadow records, 0 policy warnings, 0 errors.
+- Mode C (`QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, `QUALITY_NOMINATION_POLICY_ENABLED=true`): 10 answers delivered, 7 current live whole-answer nominations, 10 shadow records, 10 audit records, canonical aggregate `quality.nominationPolicy` summaries present, 0 policy warnings, 0 errors.
+
+Visible-answer comparison found 0 mismatches across A->B, A->C, and B->C after normalizing dynamic timestamps/button payload values. Live nomination comparison found 0 mismatches across all mode pairs. Block Kit card structure, answer text, steps, buttons/action IDs, source chips, escalation behavior, and current whole-answer nomination decisions remained unchanged.
+
+**Policy Summary Validation:** Every normal Mode C shadow record had `status: evaluated`, `evaluated: true`, `duplicateCheck: deferred`, non-negative integer counts, `preDuplicateEligibleCount + blockedCount === candidateCount`, `candidateCount === sum(byClaimType)`, all support counts `<= candidateCount`, all blocker counts `<= blockedCount`, all eligible-reason counts `<= preDuplicateEligibleCount`, no unknown blocker/reason/claim-type/support keys, and `nominationPolicy.candidateCount === stepCoverage.stepCount`. The zero-step answer produced a zero-candidate evaluated summary. No `policy_failed` summaries were produced during normal Mode C runs. No `no_cohesive_qualifying_evidence` case occurred in this ten-case harness; existing Task 2/3 tests continue to cover that controlled blocker.
+
+**Aggregate Pre-Duplicate Policy Metrics:**
+
+- Total synthetic cases: 10.
+- Current live whole-answer nominations: 7.
+- Total claim candidates: 22.
+- Total pre-duplicate policy-eligible candidates: 14.
+- Total blocked candidates: 8.
+- Pre-duplicate eligible ratio: 63.6%.
+- Candidate count per answer: `[3, 2, 4, 2, 2, 0, 2, 3, 2, 2]`.
+- Pre-duplicate eligible count per answer: `[3, 2, 4, 0, 0, 0, 0, 3, 0, 2]`.
+- Answers with multiple pre-duplicate eligible candidates: strong Confluence + KB, Slack-only, mixed evidence, old whole-answer nomination-eligible, KB-only.
+- Answers with zero candidates: no useful refs.
+- Answers with candidates but zero pre-duplicate eligible candidates: specialist-sensitive Jira in CSA view, weak/low-confidence evidence, escalation case, privacy canary.
+- Old whole-answer nominations with zero new pre-duplicate eligible claims: specialist-sensitive Jira in CSA view, weak/low-confidence evidence, privacy canary.
+- Answers skipped by the old trigger but containing pre-duplicate eligible claims: KB-only evidence.
+
+Blocker distribution: `no_safe_direct_evidence: 4`, `specialist_only_evidence: 4`, `low_confidence_answer: 2`, `escalation_claim: 1`, `answer_requires_escalation: 2`.
+
+Eligible-reason distribution: `specific_integration: 14`, `durable_claim_type: 14`, `concrete_claim: 14`, `non_tenant_specific: 14`, `cohesive_qualifying_evidence: 14`.
+
+Claim-type distribution: `backend: 6`, `action: 4`, `verify: 11`, `escalate: 1`.
+
+Distribution by confidence:
+
+- High: 6 answers, 16 candidates, 12 pre-duplicate eligible, 4 blocked.
+- Medium: 2 answers, 4 candidates, 2 pre-duplicate eligible, 2 blocked.
+- Low: 2 answers, 2 candidates, 0 pre-duplicate eligible, 2 blocked.
+
+Support-count distributions: `resolvedCount: 22`, `directCount: 22`, `safeDirectCount: 18`, `specialistOnlyCount: 4`, `exclusivelySpecialistOnly: 4`, `highOrMediumQualityCount: 18`, `highOrMediumReuseCount: 18`, `qualifyingEvidenceCount: 18`, `unknownFreshnessQualifyingEvidenceCount: 18`. `freshQualifyingEvidenceCount` and `staleOtherwiseQualifyingEvidenceCount` were 0 in this harness because the synthetic refs did not carry dated freshness metadata.
+
+**Privacy Inspection:** Mode C shadow/audit JSONL contained only minimized metadata. `quality.nominationPolicy` persisted controlled statuses, booleans, integer counts, allowlisted blocker keys, allowlisted eligible-reason keys, controlled claim types, controlled support-count keys, and `duplicateCheck: deferred`. Structural inspection found no unexpected policy keys and no forbidden hits for candidate arrays, candidate IDs, source step IDs, step evidence mappings, step IDs, claim text, step titles/details/tags, integration names, raw queries, source titles/snippets/URLs/channels, diagnosis/customer-message/escalation prose, customer/person names, emails, phone numbers, tenant/account/location text, tokens/secrets, prompts, headers, payloads, exception text, or mutation canaries. Audit metadata keys remained unchanged from Mode B: `approximateMapping`, `integrationTypeHash`, `nominationEligible`, `queryHash`, and `reasons`.
+
+**Isolated Policy Failure Probe:** Ran recorder-level failures with the injectable evaluator throwing/rejecting errors that contained privacy canaries. Each isolated failure returned `status: recorded`, emitted exactly one generic `[quality] nomination policy failed` warning, persisted the base contract and step coverage, produced the exact canonical zero-count `policy_failed` summary, left audit payload keys unchanged, and omitted the canary from captured warnings, shadow JSONL, audit JSONL, and returned contract. A later normal request returned `status: recorded` with an evaluated policy summary. Fresh top-level summary objects and nested `blockerCounts`, `eligibleReasonCounts`, `byClaimType`, and `supportCounts` maps remained isolated; mutating the first failure result did not affect the later failure result or JSONL.
+
+**Store Failure And Bypass Probes:** Direct recorder storage failure returned `status: failed_open`, emitted one bounded `[quality] shadow record failed:` warning, produced no corrupt/partial shadow record, produced 0 audit records on the failed write, and recovered on the next valid write (`status: recorded`, 1 recovered shadow record). A handleQuery delivery probe with an invalid shadow path still delivered the Slack answer and emitted one bounded shadow-record warning. With `QUALITY_LAYER_ENABLED=false`, another synthetic answer delivered, wrote 0 new shadow records, wrote 0 new audit records, and emitted 0 nomination-policy warnings.
+
+**Interpretation:** Product-behavior safety is clean: PR 2 shadow policy did not alter visible answers or current live whole-answer nominations. Policy selectivity is materially different from the old trigger: it blocked three old whole-answer nomination cases with no credible reusable claim under the policy and found reusable KB-only claims that the old Slack/Atlassian-ref timing trigger skipped. Policy usefulness is promising, but still bounded by approximate evidence mapping and synthetic data. Duplicate detection is deferred, and a high pre-duplicate eligibility rate must not be used alone to approve PR 3.
+
+**Final Verification:** Ran `node test.js`; result: `993 passed, 0 failed out of 993 tests`. Ran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the two intended Task 5 docs files modified plus untracked `AGENTS.md`. Ran `git diff --name-only main...HEAD`; result: expected PR 2 branch files only, with no tracked `.superpowers/sdd/*` scratch artifacts and no live Slack/nomination/review/knowledge files added by Task 5.
+
+**Recommendation:** PR 2 is ready for final whole-branch review.
+
+## 2026-07-20 - PR 2 Merge-Readiness Review Fix
+
+**Intent:** Resolve final whole-branch review blockers without starting PR 3 or changing live nomination behavior: make nomination-policy execution require an explicit shadow-mode opt-in, align current docs with the implemented runtime vocabulary, and ensure caller-supplied top-level candidate reason/blocker fields are ignored.
+
+**Action Taken:** Added a strict `isQualityShadowModeExplicitlyEnabled()` helper in `src/quality/config.js` and used it only for nomination-policy execution inside `recordQualityShadow()`. Base quality shadow recording keeps its existing `isQualityShadowMode()` behavior, but the policy evaluator now runs only when `QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, and `QUALITY_NOMINATION_POLICY_ENABLED=true`. When the base layer records while the explicit policy shadow gate is unset, empty, `0`, `off`, or typoed, the recorder omits `quality.nominationPolicy`, does not invoke the evaluator, and emits no policy warning.
+
+Updated `evaluateNominationEligibility()` so evaluated candidate copies drop caller-supplied top-level `nominationEligible`, `eligibility`, `reasons`, `blockers`, and arbitrary non-approved fields, then attach only the controlled eligibility result produced by the policy. Updated the design spec and PR 2 plan current-schema sections so eligible reasons are `specific_integration`, `durable_claim_type`, `concrete_claim`, `non_tenant_specific`, and `cohesive_qualifying_evidence`; blocker codes include `no_cohesive_qualifying_evidence`; and support-count keys match the runtime producer: `resolvedCount`, `directCount`, `safeDirectCount`, `specialistOnlyCount`, `exclusivelySpecialistOnly`, `highOrMediumQualityCount`, `highOrMediumReuseCount`, `qualifyingEvidenceCount`, `freshQualifyingEvidenceCount`, `unknownFreshnessQualifyingEvidenceCount`, and `staleOtherwiseQualifyingEvidenceCount`.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/shadow-recorder.js`
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Test-first red run after adding the new checks: `node test.js` exited 1 because `src/quality/config.js` did not yet export `isQualityShadowModeExplicitlyEnabled`, proving the new strict policy-shadow gate test was active. After the runtime fixes, ran `node test.js`; result: `1042 passed, 0 failed out of 1042 tests`. Documentation cleanup grep over the current spec and plan found no stale current-schema occurrences of `'direct_evidence'`, `'safe_evidence'`, `'supported_source_quality'`, `'reusable_evidence'`, `withResolvedEvidence`, `withDirectEvidence`, `withSafeDirectEvidence`, `withSpecialistOnlyEvidence`, `withHighOrMediumQuality`, `withHighOrMediumReuse`, or `staleOnlyOtherwiseQualifyingEvidenceCount`.
+
+**Decision / Follow-up:** This is a narrow PR 2 merge-readiness patch only. No `src/handlers/mention.js`, Slack rendering/cards/buttons/source chips/action IDs, live nomination conditions, review/approval flow, audit payload behavior, prompts, `knowledge.md`, database/storage architecture, synthetic rollout rerun, or PR 3 work changed.
