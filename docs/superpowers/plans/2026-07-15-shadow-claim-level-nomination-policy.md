@@ -283,31 +283,28 @@ quality: {
     eligibleReasonCounts: {
       specific_integration: 1,
       durable_claim_type: 1,
-      direct_evidence: 1,
-      safe_evidence: 1,
-      supported_source_quality: 1,
-      reusable_evidence: 1,
+      concrete_claim: 1,
       non_tenant_specific: 1,
+      cohesive_qualifying_evidence: 1,
     },
     byClaimType: {
       action: 1,
       backend: 1,
       verify: 1,
       escalate: 1,
-      step: 0,
     },
     supportCounts: {
-      withResolvedEvidence: 3,
-      withDirectEvidence: 2,
-      withSafeDirectEvidence: 1,
-      withSpecialistOnlyEvidence: 1,
+      resolvedCount: 3,
+      directCount: 2,
+      safeDirectCount: 1,
+      specialistOnlyCount: 1,
       exclusivelySpecialistOnly: 1,
-      withHighOrMediumQuality: 2,
-      withHighOrMediumReuse: 2,
+      highOrMediumQualityCount: 2,
+      highOrMediumReuseCount: 2,
       qualifyingEvidenceCount: 1,
       freshQualifyingEvidenceCount: 1,
       unknownFreshnessQualifyingEvidenceCount: 0,
-      staleOnlyOtherwiseQualifyingEvidenceCount: 0,
+      staleOtherwiseQualifyingEvidenceCount: 0,
     },
   },
 }
@@ -329,6 +326,7 @@ const BLOCKER_CODES = new Set([
   'stale_evidence',
   'weak_source_quality',
   'low_reuse_value',
+  'no_cohesive_qualifying_evidence',
   'tenant_specific_claim',
   'specialist_only_evidence',
   'escalation_claim',
@@ -347,11 +345,9 @@ const BLOCKER_CODES = new Set([
 const ELIGIBLE_REASON_CODES = new Set([
   'specific_integration',
   'durable_claim_type',
-  'direct_evidence',
-  'safe_evidence',
-  'supported_source_quality',
-  'reusable_evidence',
+  'concrete_claim',
   'non_tenant_specific',
+  'cohesive_qualifying_evidence',
 ]);
 ```
 
@@ -381,11 +377,12 @@ Do not let unrelated evidence records combine to satisfy these dimensions. For e
 | Specific integration is present and not `General`, `Unknown`, `Integration Issue`, or empty | `specific_integration` | `missing_specific_integration` |
 | Claim type is `action`, `backend`, or `verify` | `durable_claim_type` | `escalation_claim` for `escalate`; `non_durable_claim_type` for fallback `step`; `empty_claim` for empty text |
 | Candidate has at least one evidence ID resolving to retained evidence | none | `unsupported_claim` |
-| At least one resolved evidence record has `directness === 'direct'` | `direct_evidence` | `no_direct_evidence` |
-| At least one resolved evidence record has `directness === 'direct'` and `sensitivity === 'safe'` | `safe_evidence` | `no_safe_direct_evidence` |
-| At least one direct-safe evidence record has `sourceQuality === 'high'` or `'medium'` | `supported_source_quality` | `weak_source_quality` |
-| At least one direct-safe evidence record has `reuseValue === 'high'` or `'medium'` | `reusable_evidence` | `low_reuse_value` |
-| At least one direct-safe high/medium-quality high/medium-reuse evidence record has `freshness === 'fresh'` or `'unknown'` | none | `stale_evidence` when all otherwise qualifying evidence is stale |
+| Claim text is specific and not a vague placeholder | `concrete_claim` | `generic_placeholder` |
+| At least one resolved evidence record has `directness === 'direct'` | none | `no_direct_evidence` |
+| At least one resolved evidence record has `directness === 'direct'` and `sensitivity === 'safe'` | none | `no_safe_direct_evidence` |
+| At least one direct-safe evidence record has `sourceQuality === 'high'` or `'medium'` | none | `weak_source_quality` |
+| At least one direct-safe evidence record has `reuseValue === 'high'` or `'medium'` | none | `low_reuse_value` |
+| At least one single direct-safe high/medium-quality high/medium-reuse evidence record has `freshness === 'fresh'` or `'unknown'` | `cohesive_qualifying_evidence` | `no_cohesive_qualifying_evidence`; `stale_evidence` when all otherwise qualifying evidence is stale |
 | Candidate is not tenant/customer/account/location-specific | `non_tenant_specific` | `tenant_specific_claim` |
 | Candidate does not depend exclusively on specialist-only evidence | none | `specialist_only_evidence` |
 | Answer does not require escalation | none | `answer_requires_escalation` |
@@ -601,17 +598,17 @@ const CLAIM_TYPES = new Set(['action', 'backend', 'verify', 'escalate', 'step'])
 const NOMINATION_BLOCKER_CODES = new Set([...]);
 const NOMINATION_ELIGIBLE_REASON_CODES = new Set([...]);
 const SUPPORT_COUNT_KEYS = new Set([
-  'withResolvedEvidence',
-  'withDirectEvidence',
-  'withSafeDirectEvidence',
-  'withSpecialistOnlyEvidence',
+  'resolvedCount',
+  'directCount',
+  'safeDirectCount',
+  'specialistOnlyCount',
   'exclusivelySpecialistOnly',
-  'withHighOrMediumQuality',
-  'withHighOrMediumReuse',
+  'highOrMediumQualityCount',
+  'highOrMediumReuseCount',
   'qualifyingEvidenceCount',
   'freshQualifyingEvidenceCount',
   'unknownFreshnessQualifyingEvidenceCount',
-  'staleOnlyOtherwiseQualifyingEvidenceCount',
+  'staleOtherwiseQualifyingEvidenceCount',
 ]);
 
 function safeNonNegativeInt(value, max = 1000) {

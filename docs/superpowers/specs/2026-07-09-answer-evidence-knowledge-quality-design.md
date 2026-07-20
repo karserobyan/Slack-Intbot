@@ -383,11 +383,9 @@ The five dimensions must remain separate. Do not collapse them into a single sco
     reasons: [
       'specific_integration',
       'durable_claim_type',
-      'direct_evidence',
-      'safe_evidence',
-      'supported_source_quality',
-      'reusable_evidence',
-      'non_tenant_specific'
+      'concrete_claim',
+      'non_tenant_specific',
+      'cohesive_qualifying_evidence'
     ],
     blockers: []
   },
@@ -395,6 +393,10 @@ The five dimensions must remain separate. Do not collapse them into a single sco
     resolvedCount: 2,
     directCount: 1,
     safeDirectCount: 1,
+    specialistOnlyCount: 0,
+    exclusivelySpecialistOnly: false,
+    highOrMediumQualityCount: 1,
+    highOrMediumReuseCount: 1,
     qualifyingEvidenceCount: 1,
     freshQualifyingEvidenceCount: 0,
     unknownFreshnessQualifyingEvidenceCount: 1,
@@ -681,7 +683,7 @@ PR 2 implements claim-level nomination policy in shadow mode only.
 Activation is strict opt-in:
 
 - `QUALITY_LAYER_ENABLED` must be exactly `true` (case-insensitive).
-- `QUALITY_LAYER_SHADOW_MODE` must allow shadow mode.
+- `QUALITY_LAYER_SHADOW_MODE` must be exactly `true` (case-insensitive) for nomination-policy execution. Base shadow recording keeps its existing shadow-mode behavior.
 - `QUALITY_NOMINATION_POLICY_ENABLED` must be exactly `true` (case-insensitive).
 - Unset, empty, `false`, `0`, `off`, or typo values keep the nomination policy disabled.
 

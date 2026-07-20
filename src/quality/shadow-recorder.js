@@ -1,4 +1,9 @@
-import { isQualityLayerEnabled, isQualityNominationPolicyEnabled, isQualityShadowMode } from './config.js';
+import {
+  isQualityLayerEnabled,
+  isQualityNominationPolicyEnabled,
+  isQualityShadowMode,
+  isQualityShadowModeExplicitlyEnabled,
+} from './config.js';
 import { buildAnswerEvidenceContract } from './evidence-contract.js';
 import { appendQualityAuditEvent } from './audit-log.js';
 import { appendQualityShadowRecord } from './shadow-store.js';
@@ -43,7 +48,7 @@ export async function recordQualityShadow({
       now,
     });
 
-    if (isQualityNominationPolicyEnabled()) {
+    if (isQualityNominationPolicyEnabled() && isQualityShadowModeExplicitlyEnabled()) {
       try {
         const policyResult = await nominationPolicyEvaluator(contract);
         const summary = policyResult?.summary;

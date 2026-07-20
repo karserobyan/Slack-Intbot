@@ -656,3 +656,25 @@ Support-count distributions: `resolvedCount: 22`, `directCount: 22`, `safeDirect
 **Final Verification:** Ran `node test.js`; result: `993 passed, 0 failed out of 993 tests`. Ran `git diff --check`; result: clean. Ran `git status --short --branch`; result: only the two intended Task 5 docs files modified plus untracked `AGENTS.md`. Ran `git diff --name-only main...HEAD`; result: expected PR 2 branch files only, with no tracked `.superpowers/sdd/*` scratch artifacts and no live Slack/nomination/review/knowledge files added by Task 5.
 
 **Recommendation:** PR 2 is ready for final whole-branch review.
+
+## 2026-07-20 - PR 2 Merge-Readiness Review Fix
+
+**Intent:** Resolve final whole-branch review blockers without starting PR 3 or changing live nomination behavior: make nomination-policy execution require an explicit shadow-mode opt-in, align current docs with the implemented runtime vocabulary, and ensure caller-supplied top-level candidate reason/blocker fields are ignored.
+
+**Action Taken:** Added a strict `isQualityShadowModeExplicitlyEnabled()` helper in `src/quality/config.js` and used it only for nomination-policy execution inside `recordQualityShadow()`. Base quality shadow recording keeps its existing `isQualityShadowMode()` behavior, but the policy evaluator now runs only when `QUALITY_LAYER_ENABLED=true`, `QUALITY_LAYER_SHADOW_MODE=true`, and `QUALITY_NOMINATION_POLICY_ENABLED=true`. When the base layer records while the explicit policy shadow gate is unset, empty, `0`, `off`, or typoed, the recorder omits `quality.nominationPolicy`, does not invoke the evaluator, and emits no policy warning.
+
+Updated `evaluateNominationEligibility()` so evaluated candidate copies drop caller-supplied top-level `nominationEligible`, `eligibility`, `reasons`, `blockers`, and arbitrary non-approved fields, then attach only the controlled eligibility result produced by the policy. Updated the design spec and PR 2 plan current-schema sections so eligible reasons are `specific_integration`, `durable_claim_type`, `concrete_claim`, `non_tenant_specific`, and `cohesive_qualifying_evidence`; blocker codes include `no_cohesive_qualifying_evidence`; and support-count keys match the runtime producer: `resolvedCount`, `directCount`, `safeDirectCount`, `specialistOnlyCount`, `exclusivelySpecialistOnly`, `highOrMediumQualityCount`, `highOrMediumReuseCount`, `qualifyingEvidenceCount`, `freshQualifyingEvidenceCount`, `unknownFreshnessQualifyingEvidenceCount`, and `staleOtherwiseQualifyingEvidenceCount`.
+
+**Files Touched:**
+
+- `src/quality/config.js`
+- `src/quality/shadow-recorder.js`
+- `src/quality/nomination-policy.js`
+- `test.js`
+- `docs/superpowers/specs/2026-07-09-answer-evidence-knowledge-quality-design.md`
+- `docs/superpowers/plans/2026-07-15-shadow-claim-level-nomination-policy.md`
+- `docs/superpowers/execution-log/2026-07-09-answer-evidence-knowledge-quality.md`
+
+**Verification:** Test-first red run after adding the new checks: `node test.js` exited 1 because `src/quality/config.js` did not yet export `isQualityShadowModeExplicitlyEnabled`, proving the new strict policy-shadow gate test was active. After the runtime fixes, ran `node test.js`; result: `1042 passed, 0 failed out of 1042 tests`. Documentation cleanup grep over the current spec and plan found no stale current-schema occurrences of `'direct_evidence'`, `'safe_evidence'`, `'supported_source_quality'`, `'reusable_evidence'`, `withResolvedEvidence`, `withDirectEvidence`, `withSafeDirectEvidence`, `withSpecialistOnlyEvidence`, `withHighOrMediumQuality`, `withHighOrMediumReuse`, or `staleOnlyOtherwiseQualifyingEvidenceCount`.
+
+**Decision / Follow-up:** This is a narrow PR 2 merge-readiness patch only. No `src/handlers/mention.js`, Slack rendering/cards/buttons/source chips/action IDs, live nomination conditions, review/approval flow, audit payload behavior, prompts, `knowledge.md`, database/storage architecture, synthetic rollout rerun, or PR 3 work changed.

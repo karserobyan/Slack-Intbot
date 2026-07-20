@@ -208,13 +208,13 @@ export function buildClaimCandidates(contract, { now = new Date() } = {}) {
 }
 
 export function evaluateNominationEligibility(candidate, contract, context = null) {
-  const { nominationEligible: _ignoredNominationEligible, ...candidateWithoutNominationEligible } = candidate ?? {};
   const text = sanitizePreview(candidate?.text ?? '', 500);
   const claimType = CLAIM_TYPES.has(candidate?.claimType) ? candidate.claimType : 'step';
   const tenantSpecific = candidate?.tenantSpecific === true || TENANT_SPECIFIC_TEXT.test(text);
   const genericPlaceholder = isGenericPlaceholder(text);
   const answerRequiresEscalation = candidate?.answerRequiresEscalation === true || contract?.sections?.escalation?.shouldEscalate === true;
   const integrationType = sanitizePreview(candidate?.integrationType ?? contract?.integrationType ?? '', 80);
+  const evidenceIds = [...new Set(Array.isArray(candidate?.evidenceIds) ? candidate.evidenceIds : [])];
   const evidenceContext = context ?? normalizedEvidenceContext(contract);
   const resolvedEvidence = resolveCandidateEvidence(candidate, evidenceContext.evidenceById);
   const evidenceSummary = evidenceSummaryForResolvedEvidence(resolvedEvidence);
@@ -247,11 +247,15 @@ export function evaluateNominationEligibility(candidate, contract, context = nul
     : [];
 
   return {
-    ...candidateWithoutNominationEligible,
+    version: 1,
+    candidateId: candidate?.candidateId,
+    answerId: candidate?.answerId,
+    sourceStepId: candidate?.sourceStepId,
+    claimOrdinal: candidate?.claimOrdinal,
     claimType,
     text,
     integrationType,
-    evidenceIds: [...new Set(Array.isArray(candidate?.evidenceIds) ? candidate.evidenceIds : [])],
+    evidenceIds,
     approximateMapping: candidate?.approximateMapping === true,
     tenantSpecific,
     genericPlaceholder,

@@ -59,7 +59,13 @@ import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
-import { isQualityLayerEnabled, isQualityNominationPolicyEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
+import {
+  isQualityLayerEnabled,
+  isQualityNominationPolicyEnabled,
+  isQualityShadowMode,
+  isQualityShadowModeExplicitlyEnabled,
+  getQualityShadowRetention,
+} from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
 import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
@@ -2741,6 +2747,7 @@ delete process.env.QUALITY_SHADOW_MAX_BYTES;
 assert(isQualityLayerEnabled() === false, 'quality layer defaults disabled');
 assert(isQualityNominationPolicyEnabled() === false, 'quality nomination policy defaults disabled');
 assert(isQualityShadowMode() === true, 'quality shadow mode defaults true');
+assert(isQualityShadowModeExplicitlyEnabled() === false, 'quality shadow mode explicit gate defaults disabled');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 2000,
   maxAgeDays: 14,
@@ -2752,22 +2759,29 @@ for (const disabledValue of ['', 'false', '0', 'off', 'definitely']) {
   assert(isQualityLayerEnabled() === false, `QUALITY_LAYER_ENABLED=${JSON.stringify(disabledValue)} keeps quality layer disabled`);
   process.env.QUALITY_NOMINATION_POLICY_ENABLED = disabledValue;
   assert(isQualityNominationPolicyEnabled() === false, `QUALITY_NOMINATION_POLICY_ENABLED=${JSON.stringify(disabledValue)} keeps nomination policy disabled`);
+  process.env.QUALITY_LAYER_SHADOW_MODE = disabledValue;
+  assert(isQualityShadowModeExplicitlyEnabled() === false, `QUALITY_LAYER_SHADOW_MODE=${JSON.stringify(disabledValue)} keeps explicit shadow gate disabled`);
 }
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
-process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
 process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
 process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
 process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
 
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
 assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=true enables nomination policy');
+assert(isQualityShadowModeExplicitlyEnabled() === true, 'QUALITY_LAYER_SHADOW_MODE=true enables explicit shadow gate');
 process.env.QUALITY_LAYER_ENABLED = 'TRUE';
 process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'TRUE';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'TRUE';
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=TRUE enables quality layer');
 assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=TRUE enables nomination policy');
+assert(isQualityShadowModeExplicitlyEnabled() === true, 'QUALITY_LAYER_SHADOW_MODE=TRUE enables explicit shadow gate');
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
 assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
+assert(isQualityShadowModeExplicitlyEnabled() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables explicit shadow gate');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 3,
   maxAgeDays: 2,
@@ -3328,6 +3342,9 @@ const duplicateCandidateEvidence = evaluateNominationEligibility({
   evidenceIds: ['ev_dup_ids', 'ev_dup_ids', 'ev_dup_ids'],
   approximateMapping: true,
   nominationEligible: false,
+  reasons: ['hostile_top_level_reason'],
+  blockers: ['hostile_top_level_blocker'],
+  privacyCanary: 'hostile arbitrary caller field',
   tenantSpecific: false,
   genericPlaceholder: false,
   answerRequiresEscalation: false,
@@ -3341,6 +3358,9 @@ const duplicateCandidateEvidence = evaluateNominationEligibility({
 assert(duplicateCandidateEvidence.evidenceSummary.resolvedCount === 1, 'duplicate candidate evidence ids do not inflate counts');
 assert(duplicateCandidateEvidence.eligibility.preDuplicateEligible === true, 'caller-provided eligibility values are ignored and recomputed');
 assert(duplicateCandidateEvidence.nominationEligible === undefined, 'caller-provided top-level nominationEligible does not survive evaluated candidates');
+assert(duplicateCandidateEvidence.reasons === undefined, 'caller-provided top-level reasons do not survive evaluated candidates');
+assert(duplicateCandidateEvidence.blockers === undefined, 'caller-provided top-level blockers do not survive evaluated candidates');
+assert(duplicateCandidateEvidence.privacyCanary === undefined, 'arbitrary caller-provided top-level fields do not survive evaluated candidates');
 assert.deepEqual(duplicateCandidateEvidence.eligibility.reasons, [
   'specific_integration',
   'durable_claim_type',
@@ -3349,6 +3369,12 @@ assert.deepEqual(duplicateCandidateEvidence.eligibility.reasons, [
   'cohesive_qualifying_evidence',
 ], 'caller-provided reasons are ignored');
 assert.deepEqual(duplicateCandidateEvidence.eligibility.blockers, [], 'caller-provided blockers are ignored');
+const hostileCallerSummary = summarizeNominationPolicy({
+  status: 'evaluated',
+  candidates: [duplicateCandidateEvidence],
+});
+assert(hostileCallerSummary.eligibleReasonCounts.hostile_top_level_reason === undefined, 'caller-provided top-level reasons do not affect summaries');
+assert(hostileCallerSummary.blockerCounts.hostile_top_level_blocker === undefined, 'caller-provided top-level blockers do not affect summaries');
 
 const duplicateEvidenceRecordsResult = evaluateContractNominationPolicy(policyContract({
   answerId: 'ans_policy_dup_records',
@@ -4211,6 +4237,52 @@ const policyDisabledShadowRecord = (await readJsonl(policyDisabledShadowFile))[0
 const policyDisabledAuditRecord = (await readJsonl(policyDisabledAuditFile))[0];
 assert(policyDisabledShadowRecord.quality.nominationPolicy === undefined, 'policy-disabled recorder omits nomination policy summary from shadow JSONL');
 
+for (const [label, shadowValue, expectedStatus] of [
+  ['unset', undefined, 'recorded'],
+  ['empty', '', 'recorded'],
+  ['false', 'false', 'not_shadow_mode'],
+  ['zero', '0', 'recorded'],
+  ['off', 'off', 'recorded'],
+  ['typo', 'definitely', 'recorded'],
+]) {
+  const shadowGateShadowFile = join(recorderTempDir, `policy-shadow-gate-${label}-shadow.jsonl`);
+  const shadowGateAuditFile = join(recorderTempDir, `policy-shadow-gate-${label}-audit.jsonl`);
+  _setQualityShadowFileForTest(shadowGateShadowFile);
+  _setQualityAuditFileForTest(shadowGateAuditFile);
+  process.env.QUALITY_LAYER_ENABLED = 'true';
+  if (shadowValue === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
+  else process.env.QUALITY_LAYER_SHADOW_MODE = shadowValue;
+  process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+
+  let shadowGateEvaluatorCalls = 0;
+  const shadowGateWarnings = [];
+  const shadowGateRecord = await recordQualityShadow({
+    answer: contractAnswer,
+    query: 'Zapier API access disabled',
+    role: 'csa',
+    channelId: 'C123',
+    threadTs: '1700000000.000',
+    logger: { warn: (message) => shadowGateWarnings.push(message) },
+    now: new Date('2026-07-09T00:00:00.000Z'),
+    nominationPolicyEvaluator: async () => {
+      shadowGateEvaluatorCalls++;
+      return { summary: validPersistedNominationPolicy };
+    },
+  });
+
+  assert(shadowGateRecord.status === expectedStatus, `QUALITY_LAYER_SHADOW_MODE ${label} preserves base quality-layer behavior`);
+  assert(shadowGateEvaluatorCalls === 0, `QUALITY_LAYER_SHADOW_MODE ${label} does not invoke nomination policy evaluator without explicit true`);
+  assert(!shadowGateWarnings.includes('[quality] nomination policy failed'), `QUALITY_LAYER_SHADOW_MODE ${label} emits no nomination policy warning`);
+
+  if (expectedStatus === 'recorded') {
+    const shadowGateShadowRecord = (await readJsonl(shadowGateShadowFile))[0];
+    const shadowGateAuditRecord = (await readJsonl(shadowGateAuditFile))[0];
+    assert(shadowGateRecord.contract?.quality?.nominationPolicy === undefined, `QUALITY_LAYER_SHADOW_MODE ${label} omits nomination policy from returned contract`);
+    assert(shadowGateShadowRecord.quality.nominationPolicy === undefined, `QUALITY_LAYER_SHADOW_MODE ${label} omits nomination policy from shadow JSONL`);
+    assert.deepEqual(Object.keys(shadowGateAuditRecord.metadata).sort(), Object.keys(policyDisabledAuditRecord.metadata).sort(), `QUALITY_LAYER_SHADOW_MODE ${label} preserves normal audit metadata`);
+  }
+}
+
 const policyEnabledShadowFile = join(recorderTempDir, 'policy-enabled-shadow.jsonl');
 const policyEnabledAuditFile = join(recorderTempDir, 'policy-enabled-audit.jsonl');
 _setQualityShadowFileForTest(policyEnabledShadowFile);
@@ -4254,6 +4326,30 @@ assert(!policyEnabledShadowText.includes('claim_private_enabled'), 'successful n
 assert(!policyEnabledShadowText.includes('jane.customer@example.com'), 'successful nomination policy evaluation never persists privacy canaries to shadow JSONL');
 assert.deepEqual(Object.keys(policyDisabledAuditRecord.metadata).sort(), Object.keys(policyEnabledAuditRecord.metadata).sort(), 'audit event metadata keys remain unchanged with nomination policy enabled');
 assert(policyEnabledAuditRecord.metadata.nominationPolicy === undefined, 'audit event omits nomination policy fields when evaluation succeeds');
+
+const policyEnabledUpperShadowFile = join(recorderTempDir, 'policy-enabled-upper-shadow.jsonl');
+const policyEnabledUpperAuditFile = join(recorderTempDir, 'policy-enabled-upper-audit.jsonl');
+_setQualityShadowFileForTest(policyEnabledUpperShadowFile);
+_setQualityAuditFileForTest(policyEnabledUpperAuditFile);
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'TRUE';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let policyEnabledUpperEvaluatorCalls = 0;
+const recordedUpper = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => {
+    policyEnabledUpperEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
+});
+assert(recordedUpper.status === 'recorded', 'QUALITY_LAYER_SHADOW_MODE=TRUE preserves shadow recording');
+assert(policyEnabledUpperEvaluatorCalls === 1, 'QUALITY_LAYER_SHADOW_MODE=TRUE may invoke nomination policy evaluator');
 
 for (const [label, nominationPolicyEvaluator] of [
   ['sync throw', () => {
