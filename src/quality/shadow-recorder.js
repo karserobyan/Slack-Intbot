@@ -1,7 +1,29 @@
-import { isQualityLayerEnabled, isQualityShadowMode } from './config.js';
+import {
+  isQualityLayerEnabled,
+  isQualityNominationPolicyEnabled,
+  isQualityShadowMode,
+  isQualityShadowModeExplicitlyEnabled,
+} from './config.js';
 import { buildAnswerEvidenceContract } from './evidence-contract.js';
 import { appendQualityAuditEvent } from './audit-log.js';
 import { appendQualityShadowRecord } from './shadow-store.js';
+import { evaluateContractNominationPolicy } from './nomination-policy.js';
+
+function createPolicyFailedSummary() {
+  return {
+    version: 1,
+    status: 'policy_failed',
+    evaluated: false,
+    duplicateCheck: 'deferred',
+    candidateCount: 0,
+    preDuplicateEligibleCount: 0,
+    blockedCount: 0,
+    blockerCounts: {},
+    eligibleReasonCounts: {},
+    byClaimType: {},
+    supportCounts: {},
+  };
+}
 
 export async function recordQualityShadow({
   answer,
@@ -11,6 +33,7 @@ export async function recordQualityShadow({
   threadTs,
   logger = console,
   now = new Date(),
+  nominationPolicyEvaluator = evaluateContractNominationPolicy,
 }) {
   if (!isQualityLayerEnabled()) return { status: 'disabled' };
   if (!isQualityShadowMode()) return { status: 'not_shadow_mode' };
@@ -24,6 +47,22 @@ export async function recordQualityShadow({
       threadTs,
       now,
     });
+
+    if (isQualityNominationPolicyEnabled() && isQualityShadowModeExplicitlyEnabled()) {
+      try {
+        const policyResult = await nominationPolicyEvaluator(contract);
+        const summary = policyResult?.summary;
+        if (summary && typeof summary === 'object' && !Array.isArray(summary)) {
+          contract.quality.nominationPolicy = summary;
+        } else {
+          logger?.warn?.('[quality] nomination policy failed');
+          contract.quality.nominationPolicy = createPolicyFailedSummary();
+        }
+      } catch {
+        logger?.warn?.('[quality] nomination policy failed');
+        contract.quality.nominationPolicy = createPolicyFailedSummary();
+      }
+    }
 
     await appendQualityShadowRecord(contract, { now });
     await appendQualityAuditEvent({

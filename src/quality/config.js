@@ -17,6 +17,14 @@ export function isQualityLayerEnabled() {
   return envStrictTrue('QUALITY_LAYER_ENABLED');
 }
 
+export function isQualityNominationPolicyEnabled() {
+  return envStrictTrue('QUALITY_NOMINATION_POLICY_ENABLED');
+}
+
+export function isQualityShadowModeExplicitlyEnabled() {
+  return envStrictTrue('QUALITY_LAYER_SHADOW_MODE');
+}
+
 export function isQualityShadowMode() {
   return envFlag('QUALITY_LAYER_SHADOW_MODE', true);
 }

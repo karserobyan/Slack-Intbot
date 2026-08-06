@@ -307,7 +307,7 @@ These schemas are intentionally plain JavaScript objects to match the current co
         trust: 'direct',
         reusable: true,
         tenantSpecific: false,
-        nominationEligible: true
+        nominationEligible: false
       }
     ]
   },
@@ -332,7 +332,7 @@ These schemas are intentionally plain JavaScript objects to match the current co
   quality: {
     directAnswer: true,
     reusableKnowledge: true,
-    nominationEligible: true,
+    nominationEligible: false,
     approximateMapping: true,
     reasons: ['direct_source_match', 'reusable_backend_claim'],
     stepCoverage: {
@@ -365,29 +365,47 @@ The five dimensions must remain separate. Do not collapse them into a single sco
 
 ```js
 {
-  id: 'claim_1',
+  version: 1,
+  candidateId: 'qc_...',
   answerId: 'ans_...',
-  claimType: 'resolution_step',
+  sourceStepId: 'claim_1',
+  claimOrdinal: 1,
+  claimType: 'backend',
   integrationType: 'Zapier',
-  issueTitle: 'Zapier API access',
-  text: 'Enable Zapier API access on the ServiceTitan backend for this tenant.',
-  sourceStepIds: ['claim_1'],
+  text: 'Enable Zapier API access in ServiceTitan backend settings before reconnecting.',
   evidenceIds: ['ev_1', 'ev_2'],
-  reusable: true,
+  approximateMapping: true,
   tenantSpecific: false,
-  sensitivity: 'safe',
+  genericPlaceholder: false,
+  answerRequiresEscalation: false,
   eligibility: {
-    eligible: true,
-    confidence: 'high',
-    reasons: ['direct_evidence', 'reusable_claim'],
+    preDuplicateEligible: true,
+    reasons: [
+      'specific_integration',
+      'durable_claim_type',
+      'concrete_claim',
+      'non_tenant_specific',
+      'cohesive_qualifying_evidence'
+    ],
     blockers: []
   },
-  proposedKnowledgeEntry: {
-    integration: 'Zapier',
-    body: '- [auto, 2026-07-09] Zapier API access: Enable Zapier API access on the ServiceTitan backend for this tenant. Confirmed in Confluence + Slack.'
+  evidenceSummary: {
+    resolvedCount: 2,
+    directCount: 1,
+    safeDirectCount: 1,
+    specialistOnlyCount: 0,
+    exclusivelySpecialistOnly: false,
+    highOrMediumQualityCount: 1,
+    highOrMediumReuseCount: 1,
+    qualifyingEvidenceCount: 1,
+    freshQualifyingEvidenceCount: 0,
+    unknownFreshnessQualifyingEvidenceCount: 1,
+    staleOtherwiseQualifyingEvidenceCount: 0
   }
 }
 ```
+
+This raw candidate is in memory only. PR 2 persistence stores aggregate `quality.nominationPolicy` summaries with `duplicateCheck: 'deferred'`, not candidate text, step IDs, evidence mappings, or proposed knowledge entries.
 
 ### Review Candidate
 
@@ -602,19 +620,33 @@ Escalation metadata is useful for later UX, but it should not change current ans
 
 Nominations are claim-level. A whole answer is never the nomination unit.
 
-### Eligible Claims
+### PR 2 Pre-Duplicate Policy-Eligible Claims
 
-A claim is eligible when all are true:
+PR 2 must not describe candidates as final nomination-eligible. Duplicate detection is intentionally deferred, so the correct runtime and reporting term is `preDuplicateEligible` or pre-duplicate policy-eligible.
+
+A claim is pre-duplicate policy-eligible when all are true:
 
 - It has a specific integration type.
 - It is a durable resolution, verification, or setup rule.
-- It has at least one evidence source with `directness: direct`.
-- Its best evidence has `sourceQuality: high` or `medium`.
-- Its reuse value is `high` or `medium`.
-- It does not require specialist-only evidence for a CSA-facing knowledge entry.
+- The answer is not low confidence.
 - It is not tenant-specific.
-- It is not already present in `knowledge.md` under a materially equivalent claim.
-- The answer is not low confidence unless the claim is a safe escalation/routing rule.
+- The answer does not require unresolved escalation.
+- It has at least one single cohesive evidence record that simultaneously has:
+  - `directness: direct`
+  - `sensitivity: safe`
+  - `sourceQuality: high` or `medium`
+  - `reuseValue: high` or `medium`
+  - `freshness: fresh` or `unknown`
+
+Do not allow separate unrelated evidence records to independently satisfy the directness, sensitivity, quality, reuse, and freshness requirements.
+
+PR 2 must persist:
+
+```js
+duplicateCheck: 'deferred'
+```
+
+These candidates must not drive live nominations until duplicate detection is added.
 
 ### Blocked Claims
 
@@ -626,12 +658,104 @@ A claim is blocked when any are true:
 - It is merely a suggested channel post or customer-facing message.
 - It is a generic troubleshooting placeholder.
 - It is an escalation instruction without durable integration knowledge.
-- It duplicates an existing knowledge entry.
+- It has all otherwise qualifying evidence stale.
+- It has a fallback non-durable claim type.
+- Duplicate checks are deferred in PR 2 and must not create runtime duplicate decisions.
 - It conflicts with newer knowledge.
 
 ### Candidate Output
 
-The policy should return both eligible and blocked candidates in shadow mode so we can measure false positives and false negatives. Only eligible candidates should be sent to the existing nomination workflow after the rollout flag is enabled.
+The policy should return both pre-duplicate policy-eligible and blocked candidates in shadow mode so we can measure whether claim-level nomination would improve the current whole-answer trigger. PR 2 must not send these candidates to the existing live nomination workflow.
+
+Evidence blocker precedence:
+
+1. No resolved evidence -> `unsupported_claim`.
+2. Resolved but no direct evidence -> `no_direct_evidence`.
+3. Direct but no safe direct evidence -> `no_safe_direct_evidence`.
+4. Then evaluate stale evidence, source quality, and reuse against the direct-safe evidence population.
+
+Avoid adding weak-quality and low-reuse blockers to a claim that has no resolved evidence.
+
+### Implemented PR 2 Runtime Boundary
+
+PR 2 implements claim-level nomination policy in shadow mode only.
+
+Activation is strict opt-in:
+
+- `QUALITY_LAYER_ENABLED` must be exactly `true` (case-insensitive).
+- `QUALITY_LAYER_SHADOW_MODE` must be exactly `true` (case-insensitive) for nomination-policy execution. Base shadow recording keeps its existing shadow-mode behavior.
+- `QUALITY_NOMINATION_POLICY_ENABLED` must be exactly `true` (case-insensitive).
+- Unset, empty, `false`, `0`, `off`, or typo values keep the nomination policy disabled.
+
+The implemented policy uses the shared bounded normalization in `src/quality/shadow-normalization.js`:
+
+- Evidence is normalized with the same ID validation, ten-record persistence limit, enum clamping, URL hashing, hostname/reason allowlists, and first-valid-record-wins resolution used by shadow persistence.
+- Steps are normalized through the same malformed-step filtering and 1,000-step bound used for step coverage.
+- Claim candidates are created one per valid normalized answer step.
+- Candidate claim text, source step IDs, evidence mappings, and candidate objects remain in memory only.
+- Candidate builders map `action`, `backend`, `verify`, `escalate`, and fallback `step` claim types.
+- Caller-supplied `nominationEligible`, `eligibility`, `reasons`, and `blockers` are ignored.
+- The current approximate mapping state is preserved.
+
+The implemented evaluator returns in-memory candidates plus an aggregate summary, but `recordQualityShadow()` attaches and persists only the aggregate `quality.nominationPolicy` summary. The persisted summary is pre-duplicate policy eligibility, not final nomination eligibility:
+
+- `duplicateCheck` is always `deferred`.
+- Duplicate detection has not run.
+- Candidate summaries must not drive live nomination cards yet.
+- Current whole-answer nomination behavior remains unchanged.
+
+Canonical evaluated summary:
+
+```js
+{
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount,
+  preDuplicateEligibleCount,
+  blockedCount,
+  blockerCounts,
+  eligibleReasonCounts,
+  byClaimType,
+  supportCounts,
+}
+```
+
+Canonical policy-failure summary:
+
+```js
+{
+  version: 1,
+  status: 'policy_failed',
+  evaluated: false,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}
+```
+
+Policy failures are isolated inside the recorder:
+
+- Synchronous evaluator throws, rejected evaluator promises, missing summaries, and non-object summaries produce a canonical `policy_failed` summary.
+- Each failure receives a fresh summary object and fresh nested maps; mutation of one returned contract must not affect a later request.
+- The warning is a single generic `[quality] nomination policy failed` message with no raw exception text.
+- Shadow/audit writes still proceed when possible.
+- Audit payload shape remains unchanged and does not include nomination-policy fields.
+
+Remaining PR 2 limitations:
+
+- Evidence mapping is still approximate.
+- Passing the policy does not prove semantic correctness.
+- Duplicate detection is deferred.
+- Candidate arrays are intentionally not persisted.
+- Candidates must not drive live nomination cards yet.
+- PR 2 measures whether the policy looks useful enough to plan PR 3; it is not approval to replace the live nomination workflow.
 
 ## Review Candidate Lifecycle
 
@@ -738,6 +862,18 @@ Likely file-backed stores under `data/`:
       - `mappedStepCount`
       - `directMappedStepCount`
       - `unsupportedStepCount`
+    - `nominationPolicy` when PR 2 policy is enabled
+      - `version`
+      - `status`
+      - `evaluated`
+      - `duplicateCheck: 'deferred'`
+      - `candidateCount`
+      - `preDuplicateEligibleCount`
+      - `blockedCount`
+      - `blockerCounts`
+      - `eligibleReasonCounts`
+      - `byClaimType`
+      - `supportCounts`
   - `quality.stepCoverage` counts are derived by `src/quality/shadow-store.js`, not trusted from caller-supplied `quality.stepCoverage` values.
   - The shadow serializer computes the sanitized/retained `evidence[]` array once. That exact array is both persisted and used for coverage calculation.
   - Only valid normalized step objects from `sections.steps[]` count toward `stepCount`, and the step population is bounded before coverage is calculated.
@@ -751,6 +887,14 @@ Likely file-backed stores under `data/`:
     - `mappedStepCount + unsupportedStepCount === stepCount`
     - `directMappedStepCount <= mappedStepCount`
   - Step coverage persistence remains count-only and must not add step IDs or mappings, step titles/details/tags, source titles/snippets/URLs, query/customer text, diagnosis/customer-message/escalation prose, or other customer payload text.
+  - `quality.nominationPolicy` is aggregate/count-only. It must not persist candidate IDs, step IDs, step ordinals, evidence IDs from step mappings, claim text, step titles/details/tags, integration names, source titles/snippets/URLs/channels, raw queries, customer text, diagnosis/customer-message/escalation prose, names, emails, phone numbers, tenant/account/location text, prompts, headers, payloads, unknown reason strings, or policy exception messages.
+  - For `status: evaluated`, PR 2 nomination-policy summaries must enforce:
+    - `preDuplicateEligibleCount + blockedCount === candidateCount`
+    - `candidateCount === sum(byClaimType)`
+    - every `supportCounts` value is `<= candidateCount`
+  - For `status: policy_failed`, `evaluated` is false, candidate counts are zero, maps are empty, and the status itself represents the failure.
+  - Every isolated policy failure must receive a fresh canonical `policy_failed` object and fresh nested maps.
+  - Malformed or inconsistent caller-supplied nomination-policy summaries should canonicalize to a controlled `policy_failed` summary or be omitted.
 
 - `data/quality-candidates.json`
   - Unified pending review candidates.
@@ -781,12 +925,20 @@ Recommended rollout defaults:
   - `QUALITY_LAYER_SHADOW_MODE=true`
   - all behavior-changing flags false
 
+- PR 2:
+  - `QUALITY_LAYER_ENABLED=true`
+  - `QUALITY_LAYER_SHADOW_MODE=true`
+  - `QUALITY_NOMINATION_POLICY_ENABLED=true`
+  - current live nomination behavior still unchanged
+
 - Later PRs:
-  - Enable nomination policy after shadow metrics look acceptable.
+  - Enable claim-level nomination cards only after PR 2 shadow metrics look acceptable and duplicate detection is designed.
   - Enable unified review store after compatibility tests pass.
   - Enable quality-controlled knowledge writes after reviewer flow is stable.
 
 If `QUALITY_LAYER_ENABLED=false`, the app should behave exactly as it does today.
+
+`QUALITY_NOMINATION_POLICY_ENABLED` is strict opt-in. Only the literal value `true`, case-insensitive, enables it. The flag has no effect unless the base quality layer is enabled and shadow mode is active.
 
 ## Success Measurement Before Answer UX Redesign
 
@@ -803,9 +955,9 @@ Minimum shadow-mode metrics:
   - unsupported steps
 - Percent of steps marked reusable.
 - Candidate generation rate per answer.
-- Eligible vs blocked claim ratio.
+- Pre-duplicate policy-eligible vs blocked claim ratio.
 - Reasons for blocked nominations.
-- Approximate duplicate detection rate.
+- Count of candidates awaiting duplicate detection.
 - False positive sample rate from manual review.
 - Any quality-layer failures that would have affected answering if not fail-open.
 
@@ -842,7 +994,8 @@ Goal: Learn whether claim-level nominations are good.
 Behavior:
 
 - Generate claim candidates from answer steps.
-- Mark candidates eligible or blocked with reasons.
+- Mark candidates pre-duplicate policy-eligible or blocked with reasons.
+- Persist `duplicateCheck: 'deferred'`; do not make final nomination-eligibility claims.
 - Store shadow candidate summaries.
 - Continue using existing nomination behavior for live review.
 - Compare old nomination trigger vs new claim-level policy.
@@ -940,10 +1093,15 @@ All tests should be added to `test.js` using the existing plain `assert` style.
 - Creates claim candidate from a reusable supported step.
 - Blocks whole-answer nomination.
 - Blocks unsupported step.
+- Blocks unrelated evidence records that only collectively satisfy direct/safe/quality/reuse/freshness.
+- Blocks otherwise qualifying stale-only evidence with `stale_evidence`.
 - Blocks tenant-specific claim.
 - Blocks specialist-only evidence for CSA-facing knowledge.
-- Blocks duplicate claim against sample `knowledge.md`.
+- Marks duplicate checking as `duplicateCheck: 'deferred'`; PR 2 does not block duplicates.
+- Blocks fallback step claims with `non_durable_claim_type`.
+- Distinguishes vague placeholders such as `Investigate further` from concrete actions such as `Check the OAuth mapping in Settings`.
 - Returns blocked reasons for shadow metrics.
+- Logs policy failures without raw exception messages.
 
 ### Review Candidate Tests
 
@@ -998,16 +1156,19 @@ Success:
 
 Scope:
 
+- Add shared evidence/step normalization for shadow persistence and policy evaluation.
 - Add `src/quality/nomination-policy.js`.
-- Generate eligible and blocked claim candidates.
+- Generate pre-duplicate policy-eligible and blocked claim candidates.
 - Store/log shadow candidate summaries.
 - Do not replace live nomination cards yet.
 
 Success:
 
 - Old nomination behavior still works.
-- New policy produces explainable eligible/blocked decisions.
+- New policy produces explainable pre-duplicate policy-eligible or blocked decisions.
+- Policy decisions require cohesive qualifying evidence and persist `duplicateCheck: 'deferred'`.
 - Metrics show whether claim-level nominations are useful.
+- No Slack answer card, answer text, source chip, button, action ID, live nomination card, approval flow, prompt, `knowledge.md`, or audit payload shape changes.
 
 ### PR 3: Claim-Level Nomination Review Cards
 

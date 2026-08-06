@@ -2,22 +2,18 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getQualityShadowRetention } from './config.js';
 import { hashValue, sanitizePreview } from './privacy.js';
+import {
+  evidenceByIdFirstWins,
+  isSafeNonNegativeInt,
+  normalizeQualityEvidence,
+  normalizeQualitySteps,
+  sanitizeCountMap,
+} from './shadow-normalization.js';
 
 let _shadowFile = join(process.cwd(), 'data', 'quality-shadow.jsonl');
 let _writeQueue = Promise.resolve();
 
-const SOURCE_TYPES = new Set(['slack', 'confluence', 'jira', 'kb', 'unknown']);
-const SOURCE_QUALITY_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
-const DIRECTNESS_VALUES = new Set(['direct', 'related', 'background', 'unknown']);
-const FRESHNESS_VALUES = new Set(['fresh', 'stale', 'unknown']);
-const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'specialist_only', 'unknown']);
-const REUSE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
 const CONFIDENCE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
-const ALLOWED_HOSTNAMES = new Set([
-  'help.servicetitan.com',
-  'servicetitan.atlassian.net',
-  'servicetitan.slack.com',
-]);
 const REASON_CODES = new Set([
   'actionable_resolution',
   'approximate_mapping',
@@ -33,8 +29,61 @@ const REASON_CODES = new Set([
   'symptom_match',
   'weak_evidence',
 ]);
-const MAX_PERSISTED_EVIDENCE_RECORDS = 10;
-const MAX_STEP_COVERAGE_COUNT = 1000;
+const NOMINATION_POLICY_BLOCKERS = new Set([
+  'low_confidence_answer',
+  'missing_specific_integration',
+  'unsupported_claim',
+  'no_direct_evidence',
+  'no_safe_direct_evidence',
+  'stale_evidence',
+  'weak_source_quality',
+  'low_reuse_value',
+  'no_cohesive_qualifying_evidence',
+  'tenant_specific_claim',
+  'specialist_only_evidence',
+  'escalation_claim',
+  'answer_requires_escalation',
+  'non_durable_claim_type',
+  'generic_placeholder',
+  'empty_claim',
+]);
+const NOMINATION_POLICY_ELIGIBLE_REASONS = new Set([
+  'specific_integration',
+  'cohesive_qualifying_evidence',
+  'durable_claim_type',
+  'non_tenant_specific',
+  'concrete_claim',
+]);
+const NOMINATION_POLICY_CLAIM_TYPES = new Set(['action', 'backend', 'verify', 'escalate', 'step']);
+const NOMINATION_POLICY_SUPPORT_KEYS = new Set([
+  'resolvedCount',
+  'directCount',
+  'safeDirectCount',
+  'specialistOnlyCount',
+  'exclusivelySpecialistOnly',
+  'highOrMediumQualityCount',
+  'highOrMediumReuseCount',
+  'qualifyingEvidenceCount',
+  'freshQualifyingEvidenceCount',
+  'unknownFreshnessQualifyingEvidenceCount',
+  'staleOtherwiseQualifyingEvidenceCount',
+]);
+
+function canonicalPolicyFailedSummary() {
+  return {
+    version: 1,
+    status: 'policy_failed',
+    evaluated: false,
+    duplicateCheck: 'deferred',
+    candidateCount: 0,
+    preDuplicateEligibleCount: 0,
+    blockedCount: 0,
+    blockerCounts: {},
+    eligibleReasonCounts: {},
+    byClaimType: {},
+    supportCounts: {},
+  };
+}
 
 export function _setQualityShadowFileForTest(path) {
   _shadowFile = path;
@@ -52,11 +101,6 @@ function safeEnum(value, allowed, fallback = 'unknown') {
   return allowed.has(normalized) ? normalized : fallback;
 }
 
-function safeHostname(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  return ALLOWED_HOSTNAMES.has(normalized) ? normalized : '';
-}
-
 function safeReasonCodes(reasons = []) {
   return reasons
     .slice(0, 8)
@@ -65,39 +109,80 @@ function safeReasonCodes(reasons = []) {
     .filter(r => REASON_CODES.has(r));
 }
 
-function sanitizeEvidenceId(value) {
-  const id = sanitizePreview(value, 40);
-  return /^ev_[a-z0-9_-]+$/i.test(id) ? id : '';
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function normalizeCoverageStep(step) {
-  if (!step || typeof step !== 'object' || Array.isArray(step)) return null;
-  const evidenceIds = Array.isArray(step.evidenceIds)
-    ? step.evidenceIds.map(sanitizeEvidenceId).filter(Boolean)
-    : [];
-  return { evidenceIds };
+function sanitizeNominationPolicyCountMap(value, allowedKeys) {
+  if (!isPlainObject(value)) return null;
+  for (const [key, count] of Object.entries(value)) {
+    if (allowedKeys.has(key) && !isSafeNonNegativeInt(count)) return null;
+  }
+  return sanitizeCountMap(value, allowedKeys);
+}
+
+function sanitizeNominationPolicySummary(value) {
+  if (!isPlainObject(value)) return canonicalPolicyFailedSummary();
+  if (value.status === 'policy_failed') return canonicalPolicyFailedSummary();
+  if (value.status !== 'evaluated') return canonicalPolicyFailedSummary();
+  if (value.evaluated !== true) return canonicalPolicyFailedSummary();
+  if (value.duplicateCheck !== 'deferred') return canonicalPolicyFailedSummary();
+  if (
+    !isSafeNonNegativeInt(value.candidateCount) ||
+    !isSafeNonNegativeInt(value.preDuplicateEligibleCount) ||
+    !isSafeNonNegativeInt(value.blockedCount)
+  ) {
+    return canonicalPolicyFailedSummary();
+  }
+
+  const blockerCounts = sanitizeNominationPolicyCountMap(value.blockerCounts, NOMINATION_POLICY_BLOCKERS);
+  const eligibleReasonCounts = sanitizeNominationPolicyCountMap(value.eligibleReasonCounts, NOMINATION_POLICY_ELIGIBLE_REASONS);
+  const byClaimType = sanitizeNominationPolicyCountMap(value.byClaimType, NOMINATION_POLICY_CLAIM_TYPES);
+  const supportCounts = sanitizeNominationPolicyCountMap(value.supportCounts, NOMINATION_POLICY_SUPPORT_KEYS);
+
+  if (!blockerCounts || !eligibleReasonCounts || !byClaimType || !supportCounts) {
+    return canonicalPolicyFailedSummary();
+  }
+
+  if (value.preDuplicateEligibleCount + value.blockedCount !== value.candidateCount) {
+    return canonicalPolicyFailedSummary();
+  }
+
+  const byClaimTypeTotal = Object.values(byClaimType).reduce((sum, count) => sum + count, 0);
+  if (byClaimTypeTotal !== value.candidateCount) return canonicalPolicyFailedSummary();
+
+  if (Object.values(supportCounts).some(count => count > value.candidateCount)) {
+    return canonicalPolicyFailedSummary();
+  }
+  if (Object.values(blockerCounts).some(count => count > value.blockedCount)) {
+    return canonicalPolicyFailedSummary();
+  }
+  if (Object.values(eligibleReasonCounts).some(count => count > value.preDuplicateEligibleCount)) {
+    return canonicalPolicyFailedSummary();
+  }
+
+  return {
+    version: 1,
+    status: 'evaluated',
+    evaluated: true,
+    duplicateCheck: 'deferred',
+    candidateCount: value.candidateCount,
+    preDuplicateEligibleCount: value.preDuplicateEligibleCount,
+    blockedCount: value.blockedCount,
+    blockerCounts,
+    eligibleReasonCounts,
+    byClaimType,
+    supportCounts,
+  };
 }
 
 function coverageStepPopulation(record = {}) {
-  return (Array.isArray(record.sections?.steps) ? record.sections.steps : [])
-    .map(normalizeCoverageStep)
-    .filter(Boolean)
-    .slice(0, MAX_STEP_COVERAGE_COUNT);
-}
-
-function evidenceByIdFromPersistedEvidence(persistedEvidence = []) {
-  const evidenceById = new Map();
-  for (const item of persistedEvidence) {
-    const id = typeof item?.id === 'string' ? item.id : '';
-    if (!id || evidenceById.has(id)) continue;
-    evidenceById.set(id, item);
-  }
-  return evidenceById;
+  return normalizeQualitySteps(record.sections?.steps);
 }
 
 function deriveStepCoverage(record = {}, persistedEvidence = []) {
   const steps = coverageStepPopulation(record);
-  const evidenceById = evidenceByIdFromPersistedEvidence(persistedEvidence);
+  const evidenceById = evidenceByIdFirstWins(persistedEvidence);
 
   let mappedStepCount = 0;
   let directMappedStepCount = 0;
@@ -125,30 +210,20 @@ function deriveStepCoverage(record = {}, persistedEvidence = []) {
   };
 }
 
-function sanitizeEvidence(evidence = []) {
-  return evidence
-    .map((e) => {
-      const id = sanitizeEvidenceId(e?.id);
-      if (!id) return null;
-      return {
-        id,
-        source: safeEnum(e.source, SOURCE_TYPES),
-        hostname: safeHostname(e.hostname),
-        urlHash: safeHash(e.urlHash, e.url ?? ''),
-        sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
-        directness: safeEnum(e.directness, DIRECTNESS_VALUES),
-        freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
-        sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
-        reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
-        reasons: safeReasonCodes(e.reasons),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, MAX_PERSISTED_EVIDENCE_RECORDS);
-}
-
 function sanitizeShadowRecord(record) {
-  const persistedEvidence = sanitizeEvidence(record.evidence);
+  const persistedEvidence = normalizeQualityEvidence(record.evidence);
+  const nominationPolicy = record.quality?.nominationPolicy === undefined
+    ? undefined
+    : sanitizeNominationPolicySummary(record.quality.nominationPolicy);
+  const quality = {
+    directAnswer: record.quality?.directAnswer === true,
+    reusableKnowledge: record.quality?.reusableKnowledge === true,
+    nominationEligible: record.quality?.nominationEligible === true,
+    approximateMapping: record.quality?.approximateMapping === true,
+    reasons: safeReasonCodes(record.quality?.reasons),
+    stepCoverage: deriveStepCoverage(record, persistedEvidence),
+  };
+  if (nominationPolicy !== undefined) quality.nominationPolicy = nominationPolicy;
   return {
     createdAt: record.createdAt ?? new Date().toISOString(),
     answerId: sanitizePreview(record.answerId, 80),
@@ -160,14 +235,7 @@ function sanitizeShadowRecord(record) {
     integrationTypeHash: record.integrationType ? hashValue(record.integrationType) : null,
     confidence: safeEnum(record.confidence, CONFIDENCE_VALUES),
     evidence: persistedEvidence,
-    quality: {
-      directAnswer: record.quality?.directAnswer === true,
-      reusableKnowledge: record.quality?.reusableKnowledge === true,
-      nominationEligible: record.quality?.nominationEligible === true,
-      approximateMapping: record.quality?.approximateMapping === true,
-      reasons: safeReasonCodes(record.quality?.reasons),
-      stepCoverage: deriveStepCoverage(record, persistedEvidence),
-    },
+    quality,
   };
 }
 

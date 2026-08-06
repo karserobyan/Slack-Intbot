@@ -59,10 +59,32 @@ import { runAnswerer } from './src/claude/answerer.js';
 import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
 import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
-import { isQualityLayerEnabled, isQualityShadowMode, getQualityShadowRetention } from './src/quality/config.js';
+import {
+  isQualityLayerEnabled,
+  isQualityNominationPolicyEnabled,
+  isQualityShadowMode,
+  isQualityShadowModeExplicitlyEnabled,
+  getQualityShadowRetention,
+} from './src/quality/config.js';
 import { sanitizePreview, hashValue, makeQualityId, normalizeForQuality } from './src/quality/privacy.js';
 import { refToEvidence, scoreEvidenceSource, scoreEvidenceSources } from './src/quality/source-scoring.js';
 import { buildAnswerEvidenceContract, isValidAnswerEvidenceContract } from './src/quality/evidence-contract.js';
+import {
+  evidenceByIdFirstWins,
+  normalizeQualityEvidence,
+  normalizeQualitySteps,
+  sanitizeCountMap,
+} from './src/quality/shadow-normalization.js';
+import {
+  CLAIM_TYPES,
+  POLICY_BLOCKERS,
+  POLICY_ELIGIBLE_REASONS,
+  buildClaimCandidates,
+  emptyEvidenceSummary,
+  evaluateNominationEligibility,
+  evaluateContractNominationPolicy,
+  summarizeNominationPolicy,
+} from './src/quality/nomination-policy.js';
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
@@ -2708,6 +2730,7 @@ console.log('\n🔹 quality config/privacy');
 
 const originalQualityEnv = {
   QUALITY_LAYER_ENABLED: process.env.QUALITY_LAYER_ENABLED,
+  QUALITY_NOMINATION_POLICY_ENABLED: process.env.QUALITY_NOMINATION_POLICY_ENABLED,
   QUALITY_LAYER_SHADOW_MODE: process.env.QUALITY_LAYER_SHADOW_MODE,
   QUALITY_SHADOW_MAX_RECORDS: process.env.QUALITY_SHADOW_MAX_RECORDS,
   QUALITY_SHADOW_MAX_AGE_DAYS: process.env.QUALITY_SHADOW_MAX_AGE_DAYS,
@@ -2715,13 +2738,16 @@ const originalQualityEnv = {
 };
 
 delete process.env.QUALITY_LAYER_ENABLED;
+delete process.env.QUALITY_NOMINATION_POLICY_ENABLED;
 delete process.env.QUALITY_LAYER_SHADOW_MODE;
 delete process.env.QUALITY_SHADOW_MAX_RECORDS;
 delete process.env.QUALITY_SHADOW_MAX_AGE_DAYS;
 delete process.env.QUALITY_SHADOW_MAX_BYTES;
 
 assert(isQualityLayerEnabled() === false, 'quality layer defaults disabled');
+assert(isQualityNominationPolicyEnabled() === false, 'quality nomination policy defaults disabled');
 assert(isQualityShadowMode() === true, 'quality shadow mode defaults true');
+assert(isQualityShadowModeExplicitlyEnabled() === false, 'quality shadow mode explicit gate defaults disabled');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 2000,
   maxAgeDays: 14,
@@ -2731,18 +2757,31 @@ assert.deepEqual(getQualityShadowRetention(), {
 for (const disabledValue of ['', 'false', '0', 'off', 'definitely']) {
   process.env.QUALITY_LAYER_ENABLED = disabledValue;
   assert(isQualityLayerEnabled() === false, `QUALITY_LAYER_ENABLED=${JSON.stringify(disabledValue)} keeps quality layer disabled`);
+  process.env.QUALITY_NOMINATION_POLICY_ENABLED = disabledValue;
+  assert(isQualityNominationPolicyEnabled() === false, `QUALITY_NOMINATION_POLICY_ENABLED=${JSON.stringify(disabledValue)} keeps nomination policy disabled`);
+  process.env.QUALITY_LAYER_SHADOW_MODE = disabledValue;
+  assert(isQualityShadowModeExplicitlyEnabled() === false, `QUALITY_LAYER_SHADOW_MODE=${JSON.stringify(disabledValue)} keeps explicit shadow gate disabled`);
 }
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
-process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
 process.env.QUALITY_SHADOW_MAX_RECORDS = '3';
 process.env.QUALITY_SHADOW_MAX_AGE_DAYS = '2';
 process.env.QUALITY_SHADOW_MAX_BYTES = '1000';
 
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=true enables quality layer');
+assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=true enables nomination policy');
+assert(isQualityShadowModeExplicitlyEnabled() === true, 'QUALITY_LAYER_SHADOW_MODE=true enables explicit shadow gate');
 process.env.QUALITY_LAYER_ENABLED = 'TRUE';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'TRUE';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'TRUE';
 assert(isQualityLayerEnabled() === true, 'QUALITY_LAYER_ENABLED=TRUE enables quality layer');
+assert(isQualityNominationPolicyEnabled() === true, 'QUALITY_NOMINATION_POLICY_ENABLED=TRUE enables nomination policy');
+assert(isQualityShadowModeExplicitlyEnabled() === true, 'QUALITY_LAYER_SHADOW_MODE=TRUE enables explicit shadow gate');
+process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
 assert(isQualityShadowMode() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables shadow mode');
+assert(isQualityShadowModeExplicitlyEnabled() === false, 'QUALITY_LAYER_SHADOW_MODE=false disables explicit shadow gate');
 assert.deepEqual(getQualityShadowRetention(), {
   maxRecords: 3,
   maxAgeDays: 2,
@@ -2912,6 +2951,550 @@ const sparseContract = buildAnswerEvidenceContract({
 assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
 assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
 
+// ── quality shared normalization and nomination policy skeleton ──────────────
+console.log('\n🔹 quality shared normalization and nomination policy skeleton');
+
+const normalizedEvidence = normalizeQualityEvidence([
+  { id: 'Bad Customer 123', source: 'kb', directness: 'direct' },
+  {
+    id: 'ev_first',
+    source: 'kb',
+    hostname: 'help.servicetitan.com',
+    urlHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    sourceQuality: 'HIGH',
+    directness: 'DIRECT',
+    freshness: 'FRESH',
+    sensitivity: 'SAFE',
+    reuseValue: 'HIGH',
+    reasons: ['direct_source_match', 'tenant 123'],
+  },
+  {
+    id: 'ev_dup',
+    source: 'jira',
+    hostname: 'servicetitan.atlassian.net',
+    sourceQuality: 'medium',
+    directness: 'related',
+    freshness: 'unknown',
+    sensitivity: 'internal',
+    reuseValue: 'medium',
+  },
+  {
+    id: 'ev_dup',
+    source: 'confluence',
+    sourceQuality: 'high',
+    directness: 'direct',
+    freshness: 'fresh',
+    sensitivity: 'safe',
+    reuseValue: 'high',
+  },
+  ...Array.from({ length: 12 }, (_, index) => ({
+    id: `ev_bound_${index}`,
+    source: index === 0 ? 'bad source' : 'kb',
+    hostname: 'not-servicetitan.example.com',
+    sourceQuality: 'excellent',
+    directness: 'exact',
+    freshness: 'ancient',
+    sensitivity: 'public',
+    reuseValue: 'forever',
+  })),
+]);
+assert(normalizedEvidence.length === 10, 'shared evidence normalization applies the ten-record bound after dropping invalid IDs');
+assert(normalizedEvidence.every(e => e.id.startsWith('ev_')), 'shared evidence normalization retains only valid evidence IDs');
+assert(normalizedEvidence[0].source === 'kb', 'shared evidence normalization keeps valid source enum');
+assert(normalizedEvidence[0].sourceQuality === 'high', 'shared evidence normalization lowercases valid source quality enum');
+assert(normalizedEvidence[0].directness === 'direct', 'shared evidence normalization lowercases valid directness enum');
+assert(normalizedEvidence[0].freshness === 'fresh', 'shared evidence normalization lowercases valid freshness enum');
+assert(normalizedEvidence[0].sensitivity === 'safe', 'shared evidence normalization lowercases valid sensitivity enum');
+assert(normalizedEvidence[0].reuseValue === 'high', 'shared evidence normalization lowercases valid reuse enum');
+assert(normalizedEvidence.find(e => e.id === 'ev_bound_0').source === 'unknown', 'shared evidence normalization clamps invalid source enum');
+assert(normalizedEvidence.at(-1).sourceQuality === 'unknown', 'shared evidence normalization clamps invalid quality enum');
+assert(normalizedEvidence.at(-1).directness === 'unknown', 'shared evidence normalization clamps invalid directness enum');
+assert(normalizedEvidence.at(-1).freshness === 'unknown', 'shared evidence normalization clamps invalid freshness enum');
+assert(normalizedEvidence.at(-1).sensitivity === 'unknown', 'shared evidence normalization clamps invalid sensitivity enum');
+assert(normalizedEvidence.at(-1).reuseValue === 'unknown', 'shared evidence normalization clamps invalid reuse enum');
+assert.deepEqual(normalizedEvidence[0].reasons, ['direct_source_match'], 'shared evidence normalization allowlists reason codes');
+const normalizedEvidenceById = evidenceByIdFirstWins(normalizedEvidence);
+assert(normalizedEvidenceById.get('ev_dup').source === 'jira', 'shared evidence duplicate resolution uses first valid record');
+assert(normalizedEvidenceById.get('ev_bound_8') === undefined, 'shared evidence bound is applied before evidence lookup');
+
+const overLimitSteps = Array.from({ length: 1005 }, (_, index) => ({
+  id: `claim_${index}`,
+  title: index === 0 ? 'Check OAuth mapping in Settings' : `Step ${index}`,
+  detail: index === 999 ? 'Past kept step' : '',
+  tag: index === 0 ? 'backend' : 'action',
+  evidenceIds: ['ev_first', 'Bad Customer 123', 'ev_dup', 'ev_dup'],
+}));
+const normalizedSteps = normalizeQualitySteps([
+  null,
+  'not a step',
+  [],
+  { id: 'claim_valid', title: 'Enable API access', detail: 'Use Marketplace settings', tag: 'ACTION', evidenceIds: ['ev_first', 'Bad Customer 123'] },
+  ...overLimitSteps,
+]);
+assert(normalizedSteps.length === 1000, 'shared step normalization skips malformed entries and applies the step bound');
+assert.deepEqual(normalizedSteps[0].evidenceIds, ['ev_first'], 'shared step normalization sanitizes evidence IDs');
+assert(normalizedSteps[0].tag === 'action', 'shared step normalization lowercases valid claim type tags');
+assert(normalizedSteps[1].tag === 'backend', 'shared step normalization preserves controlled backend tag');
+assert(normalizedSteps.at(-1).title === 'Step 998', 'shared step normalization applies bound before candidate construction');
+assert.deepEqual(sanitizeCountMap({ action: 2, backend: 1, bad: 9, verify: -1 }, CLAIM_TYPES), {
+  action: 2,
+  backend: 1,
+}, 'shared count map sanitization keeps only controlled non-negative counts');
+
+assert(CLAIM_TYPES.has('action') && CLAIM_TYPES.has('backend') && CLAIM_TYPES.has('verify') && CLAIM_TYPES.has('step') && CLAIM_TYPES.has('escalate'), 'nomination policy exports controlled claim types');
+assert(POLICY_ELIGIBLE_REASONS.has('durable_claim_type'), 'nomination policy exports controlled eligible reasons');
+assert(POLICY_BLOCKERS.has('generic_placeholder'), 'nomination policy exports controlled blockers');
+assert.deepEqual(emptyEvidenceSummary(), {
+  resolvedCount: 0,
+  directCount: 0,
+  safeDirectCount: 0,
+  specialistOnlyCount: 0,
+  exclusivelySpecialistOnly: false,
+  highOrMediumQualityCount: 0,
+  highOrMediumReuseCount: 0,
+  qualifyingEvidenceCount: 0,
+  freshQualifyingEvidenceCount: 0,
+  unknownFreshnessQualifyingEvidenceCount: 0,
+  staleOtherwiseQualifyingEvidenceCount: 0,
+}, 'nomination policy empty evidence summary has stable zero shape');
+
+const candidateContract = {
+  answerId: 'ans_candidates',
+  integrationType: 'Zapier',
+  quality: { approximateMapping: true },
+  sections: {
+    escalation: { shouldEscalate: true },
+    steps: [
+      null,
+      { id: 'claim_action', title: 'Enable API access', detail: 'Enable Zapier API access in Settings.', tag: 'action', evidenceIds: ['ev_first', 'bad id', 'ev_dup', 'ev_dup'] },
+      { id: 'claim_backend', title: 'Check OAuth mapping in Settings', detail: '', tag: 'backend', evidenceIds: ['ev_first'] },
+      { id: 'claim_verify', title: 'Review the webhook subscription status', detail: '', tag: 'verify', evidenceIds: [] },
+      { id: 'claim_escalate', title: 'Escalate this tenant to engineering', detail: '', tag: 'escalate', tenantSpecific: true, evidenceIds: ['ev_first'] },
+      { id: 'claim_unknown', title: 'Investigate further', detail: '', tag: 'misc', evidenceIds: ['ev_first'] },
+      { id: 'claim_retry', title: 'Try again', detail: '', tag: 'action', evidenceIds: [] },
+      { id: 'claim_customer', title: 'Ask the customer to reconnect', detail: '', tag: 'verify', evidenceIds: [] },
+      { id: 'claim_account', title: 'Reset account 456 mapping', detail: '', tag: 'backend', evidenceIds: [] },
+    ],
+  },
+};
+const originalCandidateContract = JSON.stringify(candidateContract);
+const candidates = buildClaimCandidates(candidateContract, { now: new Date('2026-07-15T12:00:00.000Z') });
+const boundedCandidates = buildClaimCandidates({
+  answerId: 'ans_bounded_candidates',
+  sections: { steps: [null, 'not a step', [], ...overLimitSteps] },
+}, { now: new Date('2026-07-15T12:00:00.000Z') });
+assert(candidates.length === 8, 'candidate builder creates one candidate per valid normalized bounded step');
+assert(boundedCandidates.length === 1000, 'candidate builder count matches valid bounded step population');
+assert(candidates.every(c => c.version === 1), 'candidate builder uses version 1 candidates');
+assert(candidates.every(c => c.candidateId.startsWith('qc_20260715T120000000Z_')), 'candidate builder creates quality candidate ids');
+assert(candidates[0].answerId === 'ans_candidates', 'candidate builder copies answer id');
+assert(candidates[0].sourceStepId === 'claim_action', 'candidate builder keeps valid source step id');
+assert(candidates[0].claimOrdinal === 1, 'candidate builder assigns normalized claim ordinal');
+assert(candidates[0].claimType === 'action', 'candidate builder maps action claim type');
+assert(candidates[1].claimType === 'backend', 'candidate builder maps backend claim type');
+assert(candidates[2].claimType === 'verify', 'candidate builder maps verify claim type');
+assert(candidates[3].claimType === 'escalate', 'candidate builder maps escalate claim type');
+assert(candidates[4].claimType === 'step', 'candidate builder falls back to step claim type');
+assert.deepEqual(candidates[0].evidenceIds, ['ev_first', 'ev_dup'], 'candidate builder dedupes and sanitizes evidence ids');
+assert(candidates.every(c => c.approximateMapping === true), 'candidate builder marks approximate mapping from contract quality');
+assert(candidates.every(c => c.answerRequiresEscalation === true), 'candidate builder marks answer escalation context');
+assert(candidates[3].tenantSpecific === true, 'candidate builder marks explicit tenant-specific step flag');
+assert(candidates[7].tenantSpecific === true, 'candidate builder marks numbered account references as tenant-specific');
+assert(candidates[6].tenantSpecific === false, 'candidate builder does not mark generic customer reconnect instruction tenant-specific');
+assert(candidates[4].genericPlaceholder === true, 'candidate builder marks investigate further as generic placeholder');
+assert(candidates[5].genericPlaceholder === true, 'candidate builder marks try again as generic placeholder');
+assert(candidates[1].genericPlaceholder === false, 'candidate builder keeps concrete OAuth mapping action non-generic');
+assert(candidates[2].genericPlaceholder === false, 'candidate builder keeps concrete webhook review action non-generic');
+assert.deepEqual(candidates[0].eligibility, { preDuplicateEligible: false, reasons: [], blockers: [] }, 'candidate builder leaves eligibility unevaluated for Task 1');
+assert.deepEqual(candidates[0].evidenceSummary, emptyEvidenceSummary(), 'candidate builder attaches empty evidence summary for Task 1');
+assert(JSON.stringify(candidateContract) === originalCandidateContract, 'candidate builder does not mutate the original contract');
+
+// ── quality nomination policy evaluation and aggregation ────────────────────
+console.log('\n🔹 quality nomination policy evaluation and aggregation');
+
+function policyEvidence(overrides = {}) {
+  const suffix = String(overrides.id ?? 'ev_policy').replace(/^ev_/, '');
+  return {
+    id: overrides.id ?? 'ev_policy',
+    source: overrides.source ?? 'kb',
+    hostname: overrides.hostname ?? 'help.servicetitan.com',
+    urlHash: overrides.urlHash ?? `sha256:${suffix.padEnd(64, 'a').slice(0, 64)}`,
+    sourceQuality: overrides.sourceQuality ?? 'high',
+    directness: overrides.directness ?? 'direct',
+    freshness: overrides.freshness ?? 'fresh',
+    sensitivity: overrides.sensitivity ?? 'safe',
+    reuseValue: overrides.reuseValue ?? 'high',
+    reasons: overrides.reasons ?? ['direct_source_match'],
+  };
+}
+
+function policyStep(overrides = {}) {
+  return {
+    id: overrides.id ?? 'claim_policy',
+    title: overrides.title ?? 'Enable API access',
+    detail: overrides.detail ?? 'Use Settings to re-enable the integration.',
+    tag: overrides.tag ?? 'action',
+    evidenceIds: [...(overrides.evidenceIds ?? ['ev_policy'])],
+    tenantSpecific: overrides.tenantSpecific === true,
+  };
+}
+
+function policyContract(overrides = {}) {
+  const steps = overrides.steps ?? [policyStep()];
+  const evidence = overrides.evidence ?? [policyEvidence()];
+  return {
+    answerId: overrides.answerId ?? 'ans_policy',
+    confidence: overrides.confidence ?? 'high',
+    integrationType: overrides.integrationType ?? 'Zapier',
+    evidence: evidence.map(item => ({ ...item, reasons: [...(item.reasons ?? [])] })),
+    quality: { approximateMapping: overrides.approximateMapping !== false },
+    sections: {
+      escalation: { shouldEscalate: overrides.shouldEscalate === true },
+      steps: steps.map(step => ({
+        ...step,
+        evidenceIds: [...(step.evidenceIds ?? [])],
+      })),
+    },
+  };
+}
+
+const eligiblePolicyResult = evaluateContractNominationPolicy(policyContract(), {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+assert(eligiblePolicyResult.status === 'evaluated', 'policy evaluation returns evaluated status');
+assert(eligiblePolicyResult.candidates.length === 1, 'policy evaluation builds one candidate for one valid step');
+assert(eligiblePolicyResult.candidates[0].eligibility.preDuplicateEligible === true, 'one cohesive supported claim is pre-duplicate eligible');
+assert.deepEqual(eligiblePolicyResult.candidates[0].eligibility.blockers, [], 'eligible cohesive claim has no blockers');
+assert.deepEqual(eligiblePolicyResult.candidates[0].eligibility.reasons, [
+  'specific_integration',
+  'durable_claim_type',
+  'concrete_claim',
+  'non_tenant_specific',
+  'cohesive_qualifying_evidence',
+], 'eligible cohesive claim gets the controlled eligible reasons only');
+assert.deepEqual(eligiblePolicyResult.candidates[0].evidenceSummary, {
+  resolvedCount: 1,
+  directCount: 1,
+  safeDirectCount: 1,
+  specialistOnlyCount: 0,
+  exclusivelySpecialistOnly: false,
+  highOrMediumQualityCount: 1,
+  highOrMediumReuseCount: 1,
+  qualifyingEvidenceCount: 1,
+  freshQualifyingEvidenceCount: 1,
+  unknownFreshnessQualifyingEvidenceCount: 0,
+  staleOtherwiseQualifyingEvidenceCount: 0,
+}, 'eligible cohesive claim gets the expected evidence summary shape and counts');
+assert.deepEqual(eligiblePolicyResult.summary, summarizeNominationPolicy(eligiblePolicyResult), 'policy result summary matches direct summarization');
+
+const mediumConfidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_medium',
+  confidence: 'medium',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(mediumConfidenceResult.candidates[0].eligibility.preDuplicateEligible === true, 'medium-confidence supported claim may be eligible');
+
+const lowConfidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_low',
+  confidence: 'low',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(lowConfidenceResult.candidates[0].eligibility.preDuplicateEligible === false, 'low-confidence claim is blocked');
+assert.deepEqual(lowConfidenceResult.candidates[0].eligibility.blockers, ['low_confidence_answer'], 'low-confidence supported claim gets only the low-confidence blocker');
+
+const unrelatedEvidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_unrelated',
+  evidence: [
+    policyEvidence({ id: 'ev_quality_only', sourceQuality: 'high', reuseValue: 'low' }),
+    policyEvidence({ id: 'ev_reuse_only', sourceQuality: 'low', reuseValue: 'high' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_quality_only', 'ev_reuse_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(unrelatedEvidenceResult.candidates[0].eligibility.preDuplicateEligible === false, 'unrelated sources cannot combine into eligibility');
+assert.deepEqual(unrelatedEvidenceResult.candidates[0].eligibility.blockers, ['no_cohesive_qualifying_evidence'], 'the unrelated-source case receives the cohesive-evidence blocker');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.highOrMediumQualityCount === 1, 'quality-only support count stays per record');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.highOrMediumReuseCount === 1, 'reuse-only support count stays per record');
+assert(unrelatedEvidenceResult.candidates[0].evidenceSummary.qualifyingEvidenceCount === 0, 'no single evidence record qualifies cohesively');
+
+const staleOnlyResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_stale',
+  evidence: [policyEvidence({ id: 'ev_stale_only', freshness: 'stale' })],
+  steps: [policyStep({ evidenceIds: ['ev_stale_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(staleOnlyResult.candidates[0].eligibility.blockers, ['stale_evidence'], 'stale-only otherwise qualifying evidence gets stale_evidence');
+assert(staleOnlyResult.candidates[0].evidenceSummary.staleOtherwiseQualifyingEvidenceCount === 1, 'stale-only qualifying evidence is counted separately');
+
+const unsupportedEvidenceResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_unsupported',
+  evidence: [policyEvidence({ id: 'ev_kept' })],
+  steps: [policyStep({ evidenceIds: ['ev_missing', 'bad id', 'ev_missing'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(unsupportedEvidenceResult.candidates[0].eligibility.blockers, ['unsupported_claim'], 'unsupported evidence gets only the correct precedence blocker');
+assert(unsupportedEvidenceResult.candidates[0].evidenceSummary.resolvedCount === 0, 'dangling and invalid evidence ids do not resolve');
+
+const noDirectResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_related',
+  evidence: [policyEvidence({ id: 'ev_related_only', directness: 'related' })],
+  steps: [policyStep({ evidenceIds: ['ev_related_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(noDirectResult.candidates[0].eligibility.blockers, ['no_direct_evidence'], 'related/background-only evidence gets no_direct_evidence');
+
+const specialistOnlyResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_specialist',
+  evidence: [policyEvidence({ id: 'ev_specialist_only', sensitivity: 'specialist_only' })],
+  steps: [policyStep({ evidenceIds: ['ev_specialist_only'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(specialistOnlyResult.candidates[0].eligibility.blockers, ['no_safe_direct_evidence', 'specialist_only_evidence'], 'direct specialist-only evidence gets the safe/specialist blockers without quality or reuse noise');
+
+const weakQualityResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_weak_quality',
+  evidence: [policyEvidence({ id: 'ev_weak_quality', sourceQuality: 'low', reuseValue: 'high' })],
+  steps: [policyStep({ evidenceIds: ['ev_weak_quality'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(weakQualityResult.candidates[0].eligibility.blockers, ['weak_source_quality'], 'weak-quality-only direct-safe evidence gets the quality blocker');
+
+const lowReuseResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_low_reuse',
+  evidence: [policyEvidence({ id: 'ev_low_reuse', sourceQuality: 'high', reuseValue: 'low' })],
+  steps: [policyStep({ evidenceIds: ['ev_low_reuse'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(lowReuseResult.candidates[0].eligibility.blockers, ['low_reuse_value'], 'low-reuse-only direct-safe evidence gets the reuse blocker');
+
+const mixedSafeAndSpecialistResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_mixed_support',
+  evidence: [
+    policyEvidence({ id: 'ev_safe_kept' }),
+    policyEvidence({ id: 'ev_specialist_extra', sensitivity: 'specialist_only' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_safe_kept', 'ev_specialist_extra'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(mixedSafeAndSpecialistResult.candidates[0].eligibility.preDuplicateEligible === true, 'mixed safe cohesive evidence plus specialist evidence may remain eligible');
+assert(mixedSafeAndSpecialistResult.candidates[0].evidenceSummary.specialistOnlyCount === 1, 'specialist evidence is still counted in mixed support summaries');
+
+const tenantSpecificResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_tenant_specific',
+  steps: [policyStep({ title: 'Reset account 456 mapping', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(tenantSpecificResult.candidates[0].eligibility.blockers.includes('tenant_specific_claim'), 'tenant-specific claim is blocked');
+
+const escalationClaimResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_escalation_claim',
+  steps: [policyStep({ tag: 'escalate', title: 'Escalate to engineering', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(escalationClaimResult.candidates[0].eligibility.blockers.includes('escalation_claim'), 'escalation claim is blocked');
+
+const answerEscalationResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_answer_escalation',
+  shouldEscalate: true,
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(answerEscalationResult.candidates[0].eligibility.blockers.includes('answer_requires_escalation'), 'answer requiring escalation is blocked');
+
+const fallbackStepResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_fallback_step',
+  steps: [policyStep({ tag: 'misc', title: 'Check the OAuth mapping in Settings', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(fallbackStepResult.candidates[0].claimType === 'step', 'unknown tags fall back to step claims for policy evaluation');
+assert.deepEqual(fallbackStepResult.candidates[0].eligibility.blockers, ['non_durable_claim_type'], 'fallback step claim gets the non-durable blocker only when otherwise supported');
+
+const genericInstructionResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_generic',
+  steps: [policyStep({ title: 'Try again', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(genericInstructionResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'generic instruction is blocked as a placeholder');
+
+const concreteInstructionResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_concrete',
+  steps: [policyStep({ title: 'Check the OAuth mapping in Settings', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(!concreteInstructionResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'concrete instruction is not treated as a placeholder');
+
+const missingIntegrationResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_general_integration',
+  integrationType: 'General',
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(missingIntegrationResult.candidates[0].eligibility.blockers.includes('missing_specific_integration'), 'general integration is blocked as missing specific integration');
+
+const emptyClaimResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_empty_claim',
+  steps: [policyStep({ title: '', detail: '', evidenceIds: ['ev_policy'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(emptyClaimResult.candidates[0].eligibility.blockers.includes('empty_claim'), 'empty claim is blocked');
+assert(!emptyClaimResult.candidates[0].eligibility.blockers.includes('generic_placeholder'), 'empty claim uses empty_claim instead of generic_placeholder');
+
+const evidenceBoundResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_evidence_bound',
+  evidence: Array.from({ length: 12 }, (_, index) => policyEvidence({ id: `ev_bound_case_${index}` })),
+  steps: [
+    policyStep({ id: 'claim_bound_kept', evidenceIds: ['ev_bound_case_9'] }),
+    policyStep({ id: 'claim_bound_dropped', evidenceIds: ['ev_bound_case_10'] }),
+  ],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert(evidenceBoundResult.candidates[0].eligibility.preDuplicateEligible === true, 'evidence at the ten-record bound still counts');
+assert.deepEqual(evidenceBoundResult.candidates[1].eligibility.blockers, ['unsupported_claim'], 'evidence beyond the ten-record bound does not count');
+
+const duplicateCandidateEvidence = evaluateNominationEligibility({
+  version: 1,
+  candidateId: 'qc_duplicate_ids',
+  answerId: 'ans_policy_dup_ids',
+  sourceStepId: 'claim_dup_ids',
+  claimOrdinal: 1,
+  claimType: 'action',
+  text: 'Enable API access',
+  integrationType: 'Zapier',
+  evidenceIds: ['ev_dup_ids', 'ev_dup_ids', 'ev_dup_ids'],
+  approximateMapping: true,
+  nominationEligible: false,
+  reasons: ['hostile_top_level_reason'],
+  blockers: ['hostile_top_level_blocker'],
+  privacyCanary: 'hostile arbitrary caller field',
+  tenantSpecific: false,
+  genericPlaceholder: false,
+  answerRequiresEscalation: false,
+  eligibility: { preDuplicateEligible: true, reasons: ['bogus'], blockers: ['bogus'] },
+  evidenceSummary: { resolvedCount: 99 },
+}, policyContract({
+  answerId: 'ans_policy_dup_ids',
+  evidence: [policyEvidence({ id: 'ev_dup_ids' })],
+  steps: [],
+}));
+assert(duplicateCandidateEvidence.evidenceSummary.resolvedCount === 1, 'duplicate candidate evidence ids do not inflate counts');
+assert(duplicateCandidateEvidence.eligibility.preDuplicateEligible === true, 'caller-provided eligibility values are ignored and recomputed');
+assert(duplicateCandidateEvidence.nominationEligible === undefined, 'caller-provided top-level nominationEligible does not survive evaluated candidates');
+assert(duplicateCandidateEvidence.reasons === undefined, 'caller-provided top-level reasons do not survive evaluated candidates');
+assert(duplicateCandidateEvidence.blockers === undefined, 'caller-provided top-level blockers do not survive evaluated candidates');
+assert(duplicateCandidateEvidence.privacyCanary === undefined, 'arbitrary caller-provided top-level fields do not survive evaluated candidates');
+assert.deepEqual(duplicateCandidateEvidence.eligibility.reasons, [
+  'specific_integration',
+  'durable_claim_type',
+  'concrete_claim',
+  'non_tenant_specific',
+  'cohesive_qualifying_evidence',
+], 'caller-provided reasons are ignored');
+assert.deepEqual(duplicateCandidateEvidence.eligibility.blockers, [], 'caller-provided blockers are ignored');
+const hostileCallerSummary = summarizeNominationPolicy({
+  status: 'evaluated',
+  candidates: [duplicateCandidateEvidence],
+});
+assert(hostileCallerSummary.eligibleReasonCounts.hostile_top_level_reason === undefined, 'caller-provided top-level reasons do not affect summaries');
+assert(hostileCallerSummary.blockerCounts.hostile_top_level_blocker === undefined, 'caller-provided top-level blockers do not affect summaries');
+
+const duplicateEvidenceRecordsResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_dup_records',
+  evidence: [
+    policyEvidence({ id: 'ev_dup_record', sourceQuality: 'low', reuseValue: 'high' }),
+    policyEvidence({ id: 'ev_dup_record', sourceQuality: 'high', reuseValue: 'high' }),
+  ],
+  steps: [policyStep({ evidenceIds: ['ev_dup_record'] })],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(duplicateEvidenceRecordsResult.candidates[0].eligibility.blockers, ['weak_source_quality'], 'duplicate evidence records use first-valid-record-wins during policy evaluation');
+
+const mutationContract = policyContract({
+  answerId: 'ans_policy_mutation',
+  evidence: [policyEvidence({ id: 'ev_mutation' })],
+  steps: [policyStep({ id: 'claim_mutation', evidenceIds: ['ev_mutation'] })],
+});
+const mutationCandidate = {
+  version: 1,
+  candidateId: 'qc_mutation',
+  answerId: 'ans_policy_mutation',
+  sourceStepId: 'claim_mutation',
+  claimOrdinal: 1,
+  claimType: 'action',
+  text: 'Enable API access',
+  integrationType: 'Zapier',
+  evidenceIds: ['ev_mutation'],
+  approximateMapping: true,
+  tenantSpecific: false,
+  genericPlaceholder: false,
+  answerRequiresEscalation: false,
+  eligibility: { preDuplicateEligible: true, reasons: ['bogus'], blockers: ['bogus'] },
+  evidenceSummary: { resolvedCount: 77 },
+};
+const mutationContractBefore = JSON.stringify(mutationContract);
+const mutationCandidateBefore = JSON.stringify(mutationCandidate);
+const mutationCandidateResult = evaluateNominationEligibility(mutationCandidate, mutationContract);
+const mutationPolicyResult = evaluateContractNominationPolicy(mutationContract, {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+assert(JSON.stringify(mutationContract) === mutationContractBefore, 'contract is not mutated during policy evaluation');
+assert(JSON.stringify(mutationCandidate) === mutationCandidateBefore, 'candidate is not mutated during policy evaluation');
+assert(mutationCandidateResult !== mutationCandidate, 'policy evaluation returns a candidate copy instead of mutating the input candidate');
+assert(mutationPolicyResult.candidates[0] !== mutationCandidate, 'contract evaluation returns evaluated candidate copies');
+
+const aggregatePolicyContract = policyContract({
+  answerId: 'ans_policy_aggregate',
+  evidence: [
+    policyEvidence({ id: 'ev_agg_eligible' }),
+    policyEvidence({ id: 'ev_agg_stale', freshness: 'stale' }),
+    policyEvidence({ id: 'ev_agg_related', directness: 'related' }),
+    policyEvidence({ id: 'ev_agg_specialist', sensitivity: 'specialist_only' }),
+    policyEvidence({ id: 'ev_agg_quality_only', sourceQuality: 'high', reuseValue: 'low' }),
+    policyEvidence({ id: 'ev_agg_reuse_only', sourceQuality: 'low', reuseValue: 'high' }),
+  ],
+  steps: [
+    policyStep({ id: 'claim_agg_eligible', evidenceIds: ['ev_agg_eligible'] }),
+    policyStep({ id: 'claim_agg_stale', title: 'Verify reconnect', detail: '', tag: 'verify', evidenceIds: ['ev_agg_stale'] }),
+    policyStep({ id: 'claim_agg_related', title: 'Review the webhook subscription status', detail: '', tag: 'verify', evidenceIds: ['ev_agg_related'] }),
+    policyStep({ id: 'claim_agg_specialist', title: 'Inspect specialist-only trace', detail: '', tag: 'backend', evidenceIds: ['ev_agg_specialist'] }),
+    policyStep({ id: 'claim_agg_unrelated', title: 'Check the OAuth mapping in Settings', detail: '', tag: 'backend', evidenceIds: ['ev_agg_quality_only', 'ev_agg_reuse_only'] }),
+  ],
+});
+const aggregatePolicyResult = evaluateContractNominationPolicy(aggregatePolicyContract, {
+  now: new Date('2026-07-16T09:00:00.000Z'),
+});
+const aggregateSummary = aggregatePolicyResult.summary;
+assert(aggregateSummary.candidateCount === 5, 'summary candidate count matches the candidate population');
+assert(aggregateSummary.preDuplicateEligibleCount === 1, 'summary counts eligible candidates');
+assert(aggregateSummary.blockedCount === 4, 'summary counts blocked candidates');
+assert(aggregateSummary.preDuplicateEligibleCount + aggregateSummary.blockedCount === aggregateSummary.candidateCount, 'summary keeps eligible/blocked equality invariant');
+assert(Object.values(aggregateSummary.byClaimType).reduce((sum, count) => sum + count, 0) === aggregateSummary.candidateCount, 'summary by-claim-type counts add up to candidate count');
+assert(Object.values(aggregateSummary.supportCounts).every(count => Number.isInteger(count) && count >= 0 && count <= aggregateSummary.candidateCount), 'summary support counts stay bounded non-negative integers');
+assert.deepEqual(aggregateSummary.blockerCounts, {
+  stale_evidence: 1,
+  no_direct_evidence: 1,
+  no_safe_direct_evidence: 1,
+  specialist_only_evidence: 1,
+  no_cohesive_qualifying_evidence: 1,
+}, 'blocker counts come only from blocked candidates');
+assert.deepEqual(aggregateSummary.eligibleReasonCounts, {
+  specific_integration: 1,
+  durable_claim_type: 1,
+  concrete_claim: 1,
+  non_tenant_specific: 1,
+  cohesive_qualifying_evidence: 1,
+}, 'eligible reasons come only from eligible candidates');
+assert.deepEqual(aggregateSummary.supportCounts, {
+  resolvedCount: 5,
+  directCount: 4,
+  safeDirectCount: 3,
+  specialistOnlyCount: 1,
+  exclusivelySpecialistOnly: 1,
+  highOrMediumQualityCount: 3,
+  highOrMediumReuseCount: 3,
+  qualifyingEvidenceCount: 2,
+  freshQualifyingEvidenceCount: 1,
+  staleOtherwiseQualifyingEvidenceCount: 1,
+}, 'summary support counts count candidates satisfying each support condition');
+assert(aggregatePolicyResult.candidates.every(candidate => candidate.eligibility.preDuplicateEligible || candidate.eligibility.blockers.length >= 1), 'no blocked candidate is blockerless');
+assert(aggregatePolicyResult.candidates.filter(candidate => candidate.eligibility.preDuplicateEligible).length === aggregateSummary.preDuplicateEligibleCount, 'summary eligible count matches evaluated candidates');
+
+const zeroCandidateResult = evaluateContractNominationPolicy(policyContract({
+  answerId: 'ans_policy_zero',
+  evidence: [],
+  steps: [],
+}), { now: new Date('2026-07-16T09:00:00.000Z') });
+assert.deepEqual(zeroCandidateResult.summary, {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}, 'zero-candidate contract produces a canonical evaluated summary');
+
 // ── quality shadow storage/audit ─────────────────────────────────────────────
 console.log('\n🔹 quality shadow storage/audit');
 
@@ -3071,6 +3654,7 @@ assert.deepEqual(stepCoverageRecord.quality.stepCoverage, {
   directMappedStepCount: 1,
   unsupportedStepCount: 2,
 }, 'quality shadow store derives step coverage from valid evidence mappings');
+assert(stepCoverageRecord.quality.nominationPolicy === undefined, 'Task 1 does not persist nomination policy summary to shadow JSONL');
 assert(stepCoverageRecord.quality.stepCoverage.mappedStepCount + stepCoverageRecord.quality.stepCoverage.unsupportedStepCount === stepCoverageRecord.quality.stepCoverage.stepCount, 'step coverage invariant mapped + unsupported equals total');
 assert(stepCoverageRecord.quality.stepCoverage.directMappedStepCount <= stepCoverageRecord.quality.stepCoverage.mappedStepCount, 'step coverage invariant direct mapped is bounded by mapped');
 assert(!stepCoverageText.includes('Do not persist title'), 'step coverage persistence omits step titles');
@@ -3266,6 +3850,260 @@ await appendQualityShadowRecord({
 const recoveredShadowText = await readFile(recoveredShadowFile, 'utf-8');
 assert(recoveredShadowText.includes('ans_recovered'), 'quality shadow store recovers after failed append');
 
+const TASK3_POLICY_ELIGIBLE_REASONS = [
+  'specific_integration',
+  'cohesive_qualifying_evidence',
+  'durable_claim_type',
+  'non_tenant_specific',
+  'concrete_claim',
+];
+const TASK3_POLICY_SUPPORT_KEYS = [
+  'resolvedCount',
+  'directCount',
+  'safeDirectCount',
+  'specialistOnlyCount',
+  'exclusivelySpecialistOnly',
+  'highOrMediumQualityCount',
+  'highOrMediumReuseCount',
+  'qualifyingEvidenceCount',
+  'freshQualifyingEvidenceCount',
+  'unknownFreshnessQualifyingEvidenceCount',
+  'staleOtherwiseQualifyingEvidenceCount',
+];
+const CANONICAL_POLICY_FAILURE_SUMMARY = {
+  version: 1,
+  status: 'policy_failed',
+  evaluated: false,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+};
+const validPersistedNominationPolicy = {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 17,
+  preDuplicateEligibleCount: 7,
+  blockedCount: 10,
+  blockerCounts: Object.fromEntries([...POLICY_BLOCKERS].map(code => [code, 1])),
+  eligibleReasonCounts: Object.fromEntries(TASK3_POLICY_ELIGIBLE_REASONS.map(code => [code, 1])),
+  byClaimType: {
+    action: 4,
+    backend: 4,
+    verify: 3,
+    escalate: 3,
+    step: 3,
+  },
+  supportCounts: {
+    resolvedCount: 9,
+    directCount: 8,
+    safeDirectCount: 7,
+    specialistOnlyCount: 2,
+    exclusivelySpecialistOnly: 1,
+    highOrMediumQualityCount: 6,
+    highOrMediumReuseCount: 5,
+    qualifyingEvidenceCount: 4,
+    freshQualifyingEvidenceCount: 3,
+    unknownFreshnessQualifyingEvidenceCount: 2,
+    staleOtherwiseQualifyingEvidenceCount: 1,
+  },
+};
+
+const validNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-valid.jsonl');
+_setQualityShadowFileForTest(validNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:00.000Z',
+  answerId: 'ans_policy_valid',
+  queryPreview: 'do not persist raw nomination policy prose',
+  evidence: [{ id: 'ev_direct', source: 'kb', directness: 'direct' }],
+  quality: {
+    directAnswer: true,
+    reusableKnowledge: true,
+    nominationEligible: true,
+    approximateMapping: true,
+    reasons: ['shadow_mode'],
+    nominationPolicy: {
+      version: 999,
+      status: 'evaluated',
+      evaluated: true,
+      duplicateCheck: 'deferred',
+      candidateCount: 17,
+      preDuplicateEligibleCount: 7,
+      blockedCount: 10,
+      blockerCounts: {
+        ...validPersistedNominationPolicy.blockerCounts,
+        policy_failed: 99,
+        arbitrary_blocker: 1,
+      },
+      eligibleReasonCounts: {
+        ...validPersistedNominationPolicy.eligibleReasonCounts,
+        direct_evidence: 1,
+        safe_evidence: 1,
+        supported_source_quality: 1,
+        reusable_evidence: 1,
+        arbitrary_reason: 1,
+      },
+      byClaimType: {
+        ...validPersistedNominationPolicy.byClaimType,
+        unsupported: 9,
+      },
+      supportCounts: {
+        ...validPersistedNominationPolicy.supportCounts,
+        withResolvedEvidence: 17,
+      },
+      candidates: [{
+        candidateId: 'qc_private_1',
+        sourceStepId: 'claim_private_1',
+        claimOrdinal: 99,
+        text: 'Jane Customer tenant 123 should never persist',
+        integrationType: 'Jane Customer Integration',
+        evidenceIds: ['ev_direct'],
+      }],
+      candidateIds: ['qc_private_1'],
+      sourceStepIds: ['claim_private_1'],
+      evidenceMappings: [{ stepId: 'claim_private_1', evidenceId: 'ev_direct' }],
+      claimText: 'Jane Customer claim prose',
+      integrationName: 'Jane Customer Integration',
+      sourceTitle: 'Sensitive source title',
+      sourceSnippet: 'Sensitive source snippet',
+      sourceUrl: 'https://evil.test/private',
+      privacyCanary: 'Jane Customer jane.customer@example.com xoxb-secret tenant 123',
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:00.000Z'),
+});
+const validNominationPolicyText = await readFile(validNominationPolicyFile, 'utf-8');
+const validNominationPolicyRecord = JSON.parse(validNominationPolicyText.trim());
+assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'valid evaluated nomination policy persists in canonical form with approved keys only');
+assert(validNominationPolicyRecord.quality.nominationPolicy.duplicateCheck === 'deferred', 'nomination policy persists duplicateCheck deferred');
+assert(validNominationPolicyRecord.quality.nominationPolicy.blockerCounts.no_cohesive_qualifying_evidence === 1, 'nomination policy allowlists no_cohesive_qualifying_evidence');
+assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts, validPersistedNominationPolicy.eligibleReasonCounts, 'nomination policy persists actual Task 2 eligible reason names only');
+assert(!validNominationPolicyText.includes('qc_private_1'), 'nomination policy persistence omits candidate ids');
+assert(!validNominationPolicyText.includes('claim_private_1'), 'nomination policy persistence omits source step ids');
+assert(!validNominationPolicyText.includes('Jane Customer'), 'nomination policy persistence omits raw claim and integration prose');
+assert(!validNominationPolicyText.includes('jane.customer@example.com'), 'nomination policy persistence omits privacy canary email text');
+assert(!validNominationPolicyText.includes('xoxb-secret'), 'nomination policy persistence omits privacy canary token text');
+assert(!validNominationPolicyText.includes('policy_failed\":99'), 'nomination policy persistence omits disallowed blocker keys');
+assert(!validNominationPolicyText.includes('withResolvedEvidence'), 'nomination policy persistence omits non-canonical support aliases');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.direct_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason direct_evidence');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.safe_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason safe_evidence');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.supported_source_quality === undefined, 'nomination policy persistence omits stale alias eligible reason supported_source_quality');
+assert(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts.reusable_evidence === undefined, 'nomination policy persistence omits stale alias eligible reason reusable_evidence');
+
+const zeroCandidateNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-zero-candidate.jsonl');
+_setQualityShadowFileForTest(zeroCandidateNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:01.000Z',
+  answerId: 'ans_policy_zero_candidate',
+  quality: {
+    nominationPolicy: {
+      version: 1,
+      status: 'evaluated',
+      evaluated: true,
+      duplicateCheck: 'deferred',
+      candidateCount: 0,
+      preDuplicateEligibleCount: 0,
+      blockedCount: 0,
+      blockerCounts: {},
+      eligibleReasonCounts: {},
+      byClaimType: {},
+      supportCounts: {},
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:01.000Z'),
+});
+const zeroCandidateNominationPolicyRecord = JSON.parse((await readFile(zeroCandidateNominationPolicyFile, 'utf-8')).trim());
+assert.deepEqual(zeroCandidateNominationPolicyRecord.quality.nominationPolicy, {
+  version: 1,
+  status: 'evaluated',
+  evaluated: true,
+  duplicateCheck: 'deferred',
+  candidateCount: 0,
+  preDuplicateEligibleCount: 0,
+  blockedCount: 0,
+  blockerCounts: {},
+  eligibleReasonCounts: {},
+  byClaimType: {},
+  supportCounts: {},
+}, 'valid zero-candidate nomination policy remains evaluated');
+
+const absentNominationPolicyFile = join(qualityTempDir, 'quality-shadow-nomination-policy-absent.jsonl');
+_setQualityShadowFileForTest(absentNominationPolicyFile);
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:00:02.000Z',
+  answerId: 'ans_policy_absent',
+  quality: {
+    directAnswer: true,
+    reasons: ['shadow_mode'],
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:00:02.000Z'),
+});
+const absentNominationPolicyRecord = JSON.parse((await readFile(absentNominationPolicyFile, 'utf-8')).trim());
+assert(absentNominationPolicyRecord.quality.nominationPolicy === undefined, 'absent nomination policy summary remains omitted');
+
+for (const [label, nominationPolicy] of [
+  ['negative counts', { ...validPersistedNominationPolicy, candidateCount: -1 }],
+  ['fractional counts', { ...validPersistedNominationPolicy, blockedCount: 1.5 }],
+  ['string counts', { ...validPersistedNominationPolicy, preDuplicateEligibleCount: '7' }],
+  ['NaN counts', { ...validPersistedNominationPolicy, candidateCount: Number.NaN }],
+  ['infinite counts', { ...validPersistedNominationPolicy, blockedCount: Number.POSITIVE_INFINITY }],
+  ['eligible plus blocked mismatch', { ...validPersistedNominationPolicy, blockedCount: 9 }],
+  ['claim type sum mismatch', {
+    ...validPersistedNominationPolicy,
+    byClaimType: { ...validPersistedNominationPolicy.byClaimType, step: 2 },
+  }],
+  ['support count above candidate count', {
+    ...validPersistedNominationPolicy,
+    supportCounts: { ...validPersistedNominationPolicy.supportCounts, resolvedCount: 18 },
+  }],
+  ['blocker count above blocked count', {
+    ...validPersistedNominationPolicy,
+    blockerCounts: { ...validPersistedNominationPolicy.blockerCounts, empty_claim: 11 },
+  }],
+  ['eligible reason count above pre-duplicate eligible count', {
+    ...validPersistedNominationPolicy,
+    eligibleReasonCounts: { ...validPersistedNominationPolicy.eligibleReasonCounts, specific_integration: 8 },
+  }],
+  ['unknown status', { ...validPersistedNominationPolicy, status: 'unknown' }],
+  ['wrong evaluated value', { ...validPersistedNominationPolicy, evaluated: false }],
+  ['incorrect duplicateCheck', { ...validPersistedNominationPolicy, duplicateCheck: 'complete' }],
+  ['caller-controlled duplicateCheck object', { ...validPersistedNominationPolicy, duplicateCheck: { status: 'hostile' } }],
+  ['incoming policy_failed hostile counts', {
+    ...validPersistedNominationPolicy,
+    status: 'policy_failed',
+    evaluated: false,
+    duplicateCheck: 'deferred',
+    candidateCount: 99,
+    preDuplicateEligibleCount: 88,
+    blockedCount: 77,
+  }],
+]) {
+  const file = join(qualityTempDir, `quality-shadow-nomination-policy-${label.replaceAll(' ', '-').replaceAll('+', 'plus')}.jsonl`);
+  _setQualityShadowFileForTest(file);
+  await appendQualityShadowRecord({
+    createdAt: '2026-07-16T00:00:03.000Z',
+    answerId: `ans_policy_${label.replaceAll(' ', '_')}`,
+    quality: { nominationPolicy },
+  }, {
+    retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+    now: new Date('2026-07-16T00:00:03.000Z'),
+  });
+  const record = JSON.parse((await readFile(file, 'utf-8')).trim());
+  assert.deepEqual(record.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `malformed nomination policy ${label} canonicalizes to policy_failed`);
+}
+
 await appendQualityAuditEvent({
   type: 'contract_created',
   actor: { type: 'bot', userId: 'U123', name: 'Bot User' },
@@ -3327,11 +4165,15 @@ _setQualityAuditFileForTest(join(recorderTempDir, 'audit.jsonl'));
 
 const oldQualityLayerEnabled = process.env.QUALITY_LAYER_ENABLED;
 const oldQualityShadowMode = process.env.QUALITY_LAYER_SHADOW_MODE;
+const oldQualityNominationPolicyEnabled = process.env.QUALITY_NOMINATION_POLICY_ENABLED;
 const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const oldNewPipeline = process.env.NEW_PIPELINE;
+const readJsonl = async (file) => (await readFile(file, 'utf-8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 
 process.env.QUALITY_LAYER_ENABLED = 'false';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let layerDisabledEvaluatorCalls = 0;
 const disabledRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -3339,11 +4181,18 @@ const disabledRecord = await recordQualityShadow({
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
+  nominationPolicyEvaluator: async () => {
+    layerDisabledEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
 });
 assert(disabledRecord.status === 'disabled', 'recordQualityShadow skips when quality layer disabled');
+assert(layerDisabledEvaluatorCalls === 0, 'quality-layer-disabled recorder never invokes nomination policy evaluator');
 
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'false';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let notShadowEvaluatorCalls = 0;
 const notShadowModeRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -3351,11 +4200,97 @@ const notShadowModeRecord = await recordQualityShadow({
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
+  nominationPolicyEvaluator: async () => {
+    notShadowEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
 });
 assert(notShadowModeRecord.status === 'not_shadow_mode', 'recordQualityShadow skips when QUALITY_LAYER_SHADOW_MODE=false');
+assert(notShadowEvaluatorCalls === 0, 'non-shadow recorder never invokes nomination policy evaluator');
 
+const policyDisabledShadowFile = join(recorderTempDir, 'policy-disabled-shadow.jsonl');
+const policyDisabledAuditFile = join(recorderTempDir, 'policy-disabled-audit.jsonl');
+_setQualityShadowFileForTest(policyDisabledShadowFile);
+_setQualityAuditFileForTest(policyDisabledAuditFile);
 process.env.QUALITY_LAYER_ENABLED = 'true';
 process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'false';
+let policyDisabledEvaluatorCalls = 0;
+const policyDisabledRecord = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => {
+    policyDisabledEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
+});
+assert(policyDisabledRecord.status === 'recorded', 'recordQualityShadow records base contract when nomination policy flag is disabled');
+assert(policyDisabledRecord.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract with nomination policy disabled');
+assert(policyDisabledRecord.contract?.quality?.nominationPolicy === undefined, 'policy-disabled recorder omits nomination policy summary from returned contract');
+assert(policyDisabledEvaluatorCalls === 0, 'policy-disabled recorder never invokes nomination policy evaluator');
+const policyDisabledShadowRecord = (await readJsonl(policyDisabledShadowFile))[0];
+const policyDisabledAuditRecord = (await readJsonl(policyDisabledAuditFile))[0];
+assert(policyDisabledShadowRecord.quality.nominationPolicy === undefined, 'policy-disabled recorder omits nomination policy summary from shadow JSONL');
+
+for (const [label, shadowValue, expectedStatus] of [
+  ['unset', undefined, 'recorded'],
+  ['empty', '', 'recorded'],
+  ['false', 'false', 'not_shadow_mode'],
+  ['zero', '0', 'recorded'],
+  ['off', 'off', 'recorded'],
+  ['typo', 'definitely', 'recorded'],
+]) {
+  const shadowGateShadowFile = join(recorderTempDir, `policy-shadow-gate-${label}-shadow.jsonl`);
+  const shadowGateAuditFile = join(recorderTempDir, `policy-shadow-gate-${label}-audit.jsonl`);
+  _setQualityShadowFileForTest(shadowGateShadowFile);
+  _setQualityAuditFileForTest(shadowGateAuditFile);
+  process.env.QUALITY_LAYER_ENABLED = 'true';
+  if (shadowValue === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
+  else process.env.QUALITY_LAYER_SHADOW_MODE = shadowValue;
+  process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+
+  let shadowGateEvaluatorCalls = 0;
+  const shadowGateWarnings = [];
+  const shadowGateRecord = await recordQualityShadow({
+    answer: contractAnswer,
+    query: 'Zapier API access disabled',
+    role: 'csa',
+    channelId: 'C123',
+    threadTs: '1700000000.000',
+    logger: { warn: (message) => shadowGateWarnings.push(message) },
+    now: new Date('2026-07-09T00:00:00.000Z'),
+    nominationPolicyEvaluator: async () => {
+      shadowGateEvaluatorCalls++;
+      return { summary: validPersistedNominationPolicy };
+    },
+  });
+
+  assert(shadowGateRecord.status === expectedStatus, `QUALITY_LAYER_SHADOW_MODE ${label} preserves base quality-layer behavior`);
+  assert(shadowGateEvaluatorCalls === 0, `QUALITY_LAYER_SHADOW_MODE ${label} does not invoke nomination policy evaluator without explicit true`);
+  assert(!shadowGateWarnings.includes('[quality] nomination policy failed'), `QUALITY_LAYER_SHADOW_MODE ${label} emits no nomination policy warning`);
+
+  if (expectedStatus === 'recorded') {
+    const shadowGateShadowRecord = (await readJsonl(shadowGateShadowFile))[0];
+    const shadowGateAuditRecord = (await readJsonl(shadowGateAuditFile))[0];
+    assert(shadowGateRecord.contract?.quality?.nominationPolicy === undefined, `QUALITY_LAYER_SHADOW_MODE ${label} omits nomination policy from returned contract`);
+    assert(shadowGateShadowRecord.quality.nominationPolicy === undefined, `QUALITY_LAYER_SHADOW_MODE ${label} omits nomination policy from shadow JSONL`);
+    assert.deepEqual(Object.keys(shadowGateAuditRecord.metadata).sort(), Object.keys(policyDisabledAuditRecord.metadata).sort(), `QUALITY_LAYER_SHADOW_MODE ${label} preserves normal audit metadata`);
+  }
+}
+
+const policyEnabledShadowFile = join(recorderTempDir, 'policy-enabled-shadow.jsonl');
+const policyEnabledAuditFile = join(recorderTempDir, 'policy-enabled-audit.jsonl');
+_setQualityShadowFileForTest(policyEnabledShadowFile);
+_setQualityAuditFileForTest(policyEnabledAuditFile);
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let policyEnabledEvaluatorCalls = 0;
 const recorded = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
@@ -3364,13 +4299,163 @@ const recorded = await recordQualityShadow({
   threadTs: '1700000000.000',
   logger: console,
   now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async (contract) => {
+    policyEnabledEvaluatorCalls++;
+    assert(contract.answerId.startsWith('ans_'), 'nomination policy evaluator receives the built answer-evidence contract');
+    return {
+      summary: { ...validPersistedNominationPolicy },
+      candidates: [{
+        candidateId: 'qc_private_enabled',
+        sourceStepId: 'claim_private_enabled',
+        privacyCanary: 'qc_private_enabled Jane Customer jane.customer@example.com xoxb-secret',
+      }],
+    };
+  },
 });
 assert(recorded.status === 'recorded', 'recordQualityShadow records in shadow mode');
 assert(recorded.contract?.quality?.approximateMapping === true, 'recordQualityShadow returns approximate contract');
+assert(policyEnabledEvaluatorCalls === 1, 'all quality flags enabled invokes the nomination policy evaluator exactly once');
+assert.deepEqual(recorded.contract?.quality?.nominationPolicy, validPersistedNominationPolicy, 'successful nomination policy evaluation attaches only the summary to the returned contract');
+assert(recorded.contract?.quality?.nominationPolicy?.candidates === undefined, 'only policyResult.summary is attached to the returned contract');
+const policyEnabledShadowText = await readFile(policyEnabledShadowFile, 'utf-8');
+const policyEnabledShadowRecord = JSON.parse(policyEnabledShadowText.trim());
+const policyEnabledAuditRecord = (await readJsonl(policyEnabledAuditFile))[0];
+assert.deepEqual(policyEnabledShadowRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'successful nomination policy evaluation persists a canonical evaluated summary');
+assert(!policyEnabledShadowText.includes('qc_private_enabled'), 'successful nomination policy evaluation never persists candidate ids to shadow JSONL');
+assert(!policyEnabledShadowText.includes('claim_private_enabled'), 'successful nomination policy evaluation never persists source step ids to shadow JSONL');
+assert(!policyEnabledShadowText.includes('jane.customer@example.com'), 'successful nomination policy evaluation never persists privacy canaries to shadow JSONL');
+assert.deepEqual(Object.keys(policyDisabledAuditRecord.metadata).sort(), Object.keys(policyEnabledAuditRecord.metadata).sort(), 'audit event metadata keys remain unchanged with nomination policy enabled');
+assert(policyEnabledAuditRecord.metadata.nominationPolicy === undefined, 'audit event omits nomination policy fields when evaluation succeeds');
+
+const policyEnabledUpperShadowFile = join(recorderTempDir, 'policy-enabled-upper-shadow.jsonl');
+const policyEnabledUpperAuditFile = join(recorderTempDir, 'policy-enabled-upper-audit.jsonl');
+_setQualityShadowFileForTest(policyEnabledUpperShadowFile);
+_setQualityAuditFileForTest(policyEnabledUpperAuditFile);
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'TRUE';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
+let policyEnabledUpperEvaluatorCalls = 0;
+const recordedUpper = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: console,
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => {
+    policyEnabledUpperEvaluatorCalls++;
+    return { summary: validPersistedNominationPolicy };
+  },
+});
+assert(recordedUpper.status === 'recorded', 'QUALITY_LAYER_SHADOW_MODE=TRUE preserves shadow recording');
+assert(policyEnabledUpperEvaluatorCalls === 1, 'QUALITY_LAYER_SHADOW_MODE=TRUE may invoke nomination policy evaluator');
+
+for (const [label, nominationPolicyEvaluator] of [
+  ['sync throw', () => {
+    throw new Error('privacy canary sync throw jane.customer@example.com xoxb-secret tenant 123');
+  }],
+  ['rejected promise', async () => Promise.reject(new Error('privacy canary rejected promise jane.customer@example.com xoxb-secret tenant 123'))],
+  ['missing summary', async () => ({})],
+  ['non-object summary', async () => ({ summary: 'privacy canary summary jane.customer@example.com xoxb-secret tenant 123' })],
+]) {
+  const failureShadowFile = join(recorderTempDir, `policy-failure-${label.replaceAll(' ', '-')}-shadow.jsonl`);
+  const failureAuditFile = join(recorderTempDir, `policy-failure-${label.replaceAll(' ', '-')}-audit.jsonl`);
+  _setQualityShadowFileForTest(failureShadowFile);
+  _setQualityAuditFileForTest(failureAuditFile);
+  const policyWarnMessages = [];
+  const failureRecord = await recordQualityShadow({
+    answer: contractAnswer,
+    query: 'Zapier API access disabled',
+    role: 'csa',
+    channelId: 'C123',
+    threadTs: '1700000000.000',
+    logger: { warn: (message) => policyWarnMessages.push(message) },
+    now: new Date('2026-07-09T00:00:00.000Z'),
+    nominationPolicyEvaluator,
+  });
+  const failureShadowText = await readFile(failureShadowFile, 'utf-8');
+  const failureAuditText = await readFile(failureAuditFile, 'utf-8');
+  const failureShadowRecord = JSON.parse(failureShadowText.trim());
+  const failureAuditRecord = JSON.parse(failureAuditText.trim());
+  assert(failureRecord.status === 'recorded', `${label} nomination policy failure still returns recorded`);
+  assert(failureRecord.error === undefined, `${label} nomination policy failure does not return a raw error field`);
+  assert.deepEqual(failureRecord.contract?.quality?.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure returns canonical policy_failed summary`);
+  assert.deepEqual(failureShadowRecord.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure persists canonical policy_failed summary`);
+  assert.deepEqual(Object.keys(failureAuditRecord.metadata).sort(), Object.keys(policyDisabledAuditRecord.metadata).sort(), `${label} nomination policy failure leaves audit metadata keys unchanged`);
+  assert(failureShadowRecord.quality.stepCoverage.stepCount === contractAnswer.agent_steps.length, `${label} nomination policy failure still persists base step coverage`);
+  assert(failureShadowRecord.answerId === failureRecord.contract?.answerId, `${label} nomination policy failure still persists the base answer-evidence contract`);
+  assert(policyWarnMessages.length === 1, `${label} nomination policy failure emits exactly one warning`);
+  assert(policyWarnMessages[0] === '[quality] nomination policy failed', `${label} nomination policy failure emits the generic bounded warning`);
+  assert(!policyWarnMessages[0].includes('jane.customer@example.com') && !policyWarnMessages[0].includes('xoxb-secret') && !policyWarnMessages[0].includes('tenant 123'), `${label} nomination policy failure warning omits privacy canaries`);
+  assert(!failureShadowText.includes('jane.customer@example.com') && !failureShadowText.includes('xoxb-secret') && !failureShadowText.includes('tenant 123'), `${label} nomination policy failure shadow JSONL omits privacy canaries`);
+  assert(!failureAuditText.includes('jane.customer@example.com') && !failureAuditText.includes('xoxb-secret') && !failureAuditText.includes('tenant 123'), `${label} nomination policy failure audit JSONL omits privacy canaries`);
+  assert(JSON.stringify(failureRecord.contract).includes('jane.customer@example.com') === false, `${label} nomination policy failure returned contract omits privacy canaries`);
+}
+
+const firstMutationShadowFile = join(recorderTempDir, 'policy-failure-mutation-first-shadow.jsonl');
+const firstMutationAuditFile = join(recorderTempDir, 'policy-failure-mutation-first-audit.jsonl');
+_setQualityShadowFileForTest(firstMutationShadowFile);
+_setQualityAuditFileForTest(firstMutationAuditFile);
+const firstMutationWarnings = [];
+const firstMutationFailure = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => firstMutationWarnings.push(message) },
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: () => {
+    throw new Error('mutation canary first failure jane.customer@example.com xoxb-secret tenant 123');
+  },
+});
+firstMutationFailure.contract.quality.nominationPolicy.blockerCounts.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.byClaimType.mutation_canary = 1;
+firstMutationFailure.contract.quality.nominationPolicy.supportCounts.mutation_canary = 1;
+
+const secondMutationShadowFile = join(recorderTempDir, 'policy-failure-mutation-second-shadow.jsonl');
+const secondMutationAuditFile = join(recorderTempDir, 'policy-failure-mutation-second-audit.jsonl');
+_setQualityShadowFileForTest(secondMutationShadowFile);
+_setQualityAuditFileForTest(secondMutationAuditFile);
+const secondMutationWarnings = [];
+const secondMutationFailure = await recordQualityShadow({
+  answer: contractAnswer,
+  query: 'Zapier API access disabled',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  logger: { warn: (message) => secondMutationWarnings.push(message) },
+  now: new Date('2026-07-09T00:00:00.000Z'),
+  nominationPolicyEvaluator: async () => Promise.reject(new Error('mutation canary second failure jane.customer@example.com xoxb-secret tenant 123')),
+});
+const secondMutationShadowText = await readFile(secondMutationShadowFile, 'utf-8');
+const secondMutationAuditText = await readFile(secondMutationAuditFile, 'utf-8');
+const secondMutationShadowRecord = JSON.parse(secondMutationShadowText.trim());
+assert(firstMutationFailure.status === 'recorded', 'first mutation-isolation policy failure still returns recorded');
+assert(secondMutationFailure.status === 'recorded', 'second mutation-isolation policy failure still returns recorded');
+assert(firstMutationWarnings.length === 1, 'first mutation-isolation policy failure emits exactly one warning');
+assert(secondMutationWarnings.length === 1, 'second mutation-isolation policy failure emits exactly one warning');
+assert(firstMutationWarnings[0] === '[quality] nomination policy failed', 'first mutation-isolation policy failure emits generic bounded warning');
+assert(secondMutationWarnings[0] === '[quality] nomination policy failed', 'second mutation-isolation policy failure emits generic bounded warning');
+assert(firstMutationFailure.contract.quality.nominationPolicy !== secondMutationFailure.contract.quality.nominationPolicy, 'separate policy failures receive distinct summary objects');
+assert(firstMutationFailure.contract.quality.nominationPolicy.blockerCounts !== secondMutationFailure.contract.quality.nominationPolicy.blockerCounts, 'separate policy failures receive distinct blocker count maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts !== secondMutationFailure.contract.quality.nominationPolicy.eligibleReasonCounts, 'separate policy failures receive distinct eligible reason maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.byClaimType !== secondMutationFailure.contract.quality.nominationPolicy.byClaimType, 'separate policy failures receive distinct claim-type maps');
+assert(firstMutationFailure.contract.quality.nominationPolicy.supportCounts !== secondMutationFailure.contract.quality.nominationPolicy.supportCounts, 'separate policy failures receive distinct support-count maps');
+assert.deepEqual(secondMutationFailure.contract.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, 'mutating first failure summary does not alter later returned policy_failed summary');
+assert.deepEqual(secondMutationShadowRecord.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, 'mutating first failure summary does not alter later persisted policy_failed summary');
+assert(!secondMutationShadowText.includes('mutation_canary'), 'mutation canary does not enter later shadow JSONL');
+assert(!secondMutationAuditText.includes('mutation_canary'), 'mutation canary does not enter later audit JSONL');
 
 const invalidRecorderParent = join(recorderTempDir, 'not-a-directory');
 await writeFile(invalidRecorderParent, 'plain file');
 _setQualityShadowFileForTest(join(invalidRecorderParent, 'shadow.jsonl'));
+_setQualityAuditFileForTest(join(recorderTempDir, 'store-failure-audit.jsonl'));
+process.env.QUALITY_LAYER_ENABLED = 'true';
+process.env.QUALITY_LAYER_SHADOW_MODE = 'true';
+process.env.QUALITY_NOMINATION_POLICY_ENABLED = 'true';
 const warnMessages = [];
 const failedOpen = await recordQualityShadow({
   answer: contractAnswer,
@@ -3380,6 +4465,7 @@ const failedOpen = await recordQualityShadow({
   threadTs: '1700000000.000',
   logger: { warn: (message) => warnMessages.push(message) },
   now: new Date('2026-07-09T00:00:01.000Z'),
+  nominationPolicyEvaluator: async () => ({ summary: validPersistedNominationPolicy }),
 });
 assert(failedOpen.status === 'failed_open', 'recordQualityShadow fails open when storage write fails');
 assert(warnMessages.some((message) => message.includes('[quality] shadow record failed:')), 'recordQualityShadow logs bounded warning on failure');
@@ -3439,6 +4525,8 @@ if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABL
 else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
 if (oldQualityShadowMode === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
 else process.env.QUALITY_LAYER_SHADOW_MODE = oldQualityShadowMode;
+if (oldQualityNominationPolicyEnabled === undefined) delete process.env.QUALITY_NOMINATION_POLICY_ENABLED;
+else process.env.QUALITY_NOMINATION_POLICY_ENABLED = oldQualityNominationPolicyEnabled;
 
 await rm(recorderTempDir, { recursive: true, force: true });
 await rm(mentionShadowDir, { recursive: true, force: true });
