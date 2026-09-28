@@ -27,9 +27,3 @@ export function classifySourceRef(ref) {
 
   return next;
 }
-
-export function filterRefsForRole(refs = [], role = 'csa') {
-  const classified = refs.map(classifySourceRef);
-  if (role === 'specialist') return classified;
-  return classified.filter((ref) => ref.sensitive !== true);
-}
