@@ -1,13 +1,12 @@
 {
-  "version": 1,
-  "note": "Manual prompt-quality gate for the Answerer stage. Checks STRUCTURE and BOUNDS (required fields, value enums, sensible non-empty agent_steps for high-info cases, escalation for low-info cases) — not exact content (model variance makes string matches brittle). Uses real Sonnet 4.6, ~one query each, so this script costs more than the Interpreter/Evaluator gates (~$0.10/run). Not in CI — run manually before any NEW_PIPELINE flag change.",
+  "version": 2,
+  "note": "Manual prompt-quality gate for the Resolver stage. Checks STRUCTURE and BOUNDS (required fields, value enums, sensible non-empty steps for high-info cases, involvement for sparse cases) — not exact content (model variance makes string matches brittle). Uses real Sonnet 4.6. Not in CI — run manually.",
   "fixtures": [
     {
-      "id": "csa-high-info-zapier",
-      "description": "Strong search context for a known Zapier issue → expect non-empty steps, confidence high/medium, no escalation",
+      "id": "owner-high-info-zapier",
+      "description": "Strong search context for a known Zapier issue → expect non-empty steps, confidence high/medium, involvement.needed false",
       "input": {
         "cleanedQuestion": "Zapier integration stopped syncing leads after a tenant migration",
-        "role": "csa",
         "teamKnowledge": null,
         "feedbackContext": "",
         "searchResults": {
@@ -26,34 +25,34 @@
         }
       },
       "expected": {
-        "required_fields": ["issue_title", "integration_type", "confidence", "customer_message", "agent_steps", "escalate_decision"],
+        "required_fields": ["issue_title", "integration_type", "confidence", "diagnosis", "steps", "involvement", "slack_refs", "atlassian_refs", "kb_refs", "sources_used"],
+        "forbidden_fields": ["role", "escalate_decision", "channel_recommendation", "agent_steps", "findings_summary", "suggested_channel_post", "intro_message", "customer_message"],
         "confidence_in": ["high", "medium"],
-        "agent_steps_non_empty": true,
-        "escalate_should_be_false": true,
-        "customer_message_non_empty": true,
+        "steps_non_empty": true,
+        "involvement_needed": false,
         "integration_type_contains": "Zapier"
       }
     },
     {
-      "id": "csa-sparse-info-vague",
-      "description": "Sparse search context for a vague symptom → expect either a clarifying_question short-circuit (preferred) OR a full response with low confidence / escalation",
+      "id": "owner-sparse-info-vague",
+      "description": "Sparse search context for a vague symptom → expect low confidence or involvement.needed true",
       "input": {
         "cleanedQuestion": "Something is broken in our Angi integration but the agent doesn't know what",
-        "role": "csa",
         "teamKnowledge": null,
         "feedbackContext": "",
         "searchResults": { "kb": null, "confluence": null, "jira": null, "slack": null }
       },
       "expected": {
-        "clarifying_or_full_with_escalation": true
+        "required_fields": ["issue_title", "integration_type", "confidence", "diagnosis", "steps", "involvement", "slack_refs", "atlassian_refs", "kb_refs", "sources_used"],
+        "forbidden_fields": ["role", "escalate_decision", "channel_recommendation", "agent_steps", "findings_summary", "suggested_channel_post", "intro_message", "customer_message"],
+        "confidence_or_involvement": true
       }
     },
     {
-      "id": "specialist-role",
-      "description": "Specialist role with good context → verifies the role-based prompt branch produces a valid response shape",
+      "id": "owner-procore-webhooks",
+      "description": "Case-owner path with good Procore context → valid resolver shape (no specialist prompt)",
       "input": {
         "cleanedQuestion": "Procore integration intermittently failing webhook delivery to ServiceTitan",
-        "role": "specialist",
         "teamKnowledge": null,
         "feedbackContext": "",
         "searchResults": {
@@ -72,10 +71,11 @@
         }
       },
       "expected": {
-        "required_fields": ["issue_title", "integration_type", "confidence", "agent_steps"],
+        "required_fields": ["issue_title", "integration_type", "confidence", "diagnosis", "steps", "involvement", "slack_refs", "atlassian_refs", "kb_refs", "sources_used"],
+        "forbidden_fields": ["role", "escalate_decision", "channel_recommendation", "agent_steps", "findings_summary", "suggested_channel_post", "intro_message", "customer_message"],
         "confidence_in": ["high", "medium", "low"],
-        "integration_type_contains": "Procore",
-        "note": "Specialist response schema omits escalate_decision (line 239 of prompts/answerer.js — specialists own the resolution)"
+        "steps_non_empty": true,
+        "integration_type_contains": "Procore"
       }
     }
   ]

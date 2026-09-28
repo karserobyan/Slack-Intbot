@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { runAnswerer } from '../src/claude/answerer.js';
+import { runResolver } from '../src/claude/answerer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_PATH = join(__dirname, '..', 'test', 'fixtures', 'answerer-queries.json');
@@ -37,6 +37,16 @@ function verifyFixture(actual, expected) {
     }
   }
 
+  if (Array.isArray(expected.forbidden_fields)) {
+    for (const field of expected.forbidden_fields) {
+      results.push(check(
+        `lacks forbidden "${field}"`,
+        actual[field] === undefined,
+        `actual: ${field}=${JSON.stringify(actual[field])}`,
+      ));
+    }
+  }
+
   if (Array.isArray(expected.confidence_in)) {
     results.push(check(
       `confidence ∈ [${expected.confidence_in.join(', ')}]`,
@@ -45,27 +55,27 @@ function verifyFixture(actual, expected) {
     ));
   }
 
-  if (expected.agent_steps_non_empty) {
+  if (expected.steps_non_empty) {
     results.push(check(
-      'agent_steps is non-empty',
-      Array.isArray(actual.agent_steps) && actual.agent_steps.length > 0,
-      `actual agent_steps length: ${actual.agent_steps?.length ?? 'undefined'}`,
+      'steps is non-empty',
+      Array.isArray(actual.steps) && actual.steps.length > 0,
+      `actual steps length: ${actual.steps?.length ?? 'undefined'}`,
     ));
   }
 
-  if (expected.escalate_should_be_false) {
+  if (expected.involvement_needed === true) {
     results.push(check(
-      'escalate_decision.should_escalate === false',
-      actual.escalate_decision?.should_escalate === false,
-      `actual escalate_decision: ${JSON.stringify(actual.escalate_decision)}`,
+      'involvement.needed === true',
+      actual.involvement?.needed === true,
+      `actual involvement: ${JSON.stringify(actual.involvement)}`,
     ));
   }
 
-  if (expected.customer_message_non_empty) {
+  if (expected.involvement_needed === false) {
     results.push(check(
-      'customer_message is non-empty',
-      typeof actual.customer_message === 'string' && actual.customer_message.trim().length > 0,
-      `actual customer_message: ${JSON.stringify(actual.customer_message)}`,
+      'involvement.needed === false',
+      actual.involvement?.needed === false,
+      `actual involvement: ${JSON.stringify(actual.involvement)}`,
     ));
   }
 
@@ -79,24 +89,13 @@ function verifyFixture(actual, expected) {
     ));
   }
 
-  if (expected.confidence_or_escalation) {
+  if (expected.confidence_or_involvement) {
     const isLowConf = actual.confidence === 'low';
-    const shouldEscalate = actual.escalate_decision?.should_escalate === true;
+    const involvementNeeded = actual.involvement?.needed === true;
     results.push(check(
-      'confidence is low OR escalate_decision.should_escalate is true',
-      isLowConf || shouldEscalate,
-      `actual confidence: ${JSON.stringify(actual.confidence)}, escalate: ${JSON.stringify(actual.escalate_decision)}`,
-    ));
-  }
-
-  if (expected.clarifying_or_full_with_escalation) {
-    const isClarifying = typeof actual.clarifying_question === 'string' && actual.clarifying_question.trim().length > 0;
-    const isLowConfFull = actual.confidence === 'low';
-    const shouldEscalateFull = actual.escalate_decision?.should_escalate === true;
-    results.push(check(
-      'emitted clarifying_question OR full response with low confidence / escalation',
-      isClarifying || isLowConfFull || shouldEscalateFull,
-      `actual: clarifying_question=${JSON.stringify(actual.clarifying_question)}, confidence=${JSON.stringify(actual.confidence)}, escalate=${JSON.stringify(actual.escalate_decision)}`,
+      'confidence is low OR involvement.needed is true',
+      isLowConf || involvementNeeded,
+      `actual confidence: ${JSON.stringify(actual.confidence)}, involvement: ${JSON.stringify(actual.involvement)}`,
     ));
   }
 
@@ -112,7 +111,7 @@ async function main() {
   const raw = await readFile(FIXTURES_PATH, 'utf-8');
   const { fixtures } = JSON.parse(raw);
 
-  console.log(`${C.bold}Answerer golden-fixture run${C.reset}  ${C.dim}(${fixtures.length} scenarios against real Sonnet 4.6)${C.reset}\n`);
+  console.log(`${C.bold}Resolver golden-fixture run${C.reset}  ${C.dim}(${fixtures.length} scenarios against real Sonnet 4.6)${C.reset}\n`);
   console.log(`${C.dim}Note: Sonnet costs more than Haiku — this run is ~$0.05–0.20 in API credits.${C.reset}\n`);
 
   let totalPass = 0;
@@ -124,9 +123,9 @@ async function main() {
     const t0 = Date.now();
     let actual;
     try {
-      actual = await runAnswerer(fx.input);
+      actual = await runResolver(fx.input);
     } catch (err) {
-      console.log(`    ${C.red}✗ answerer threw: ${err.message}${C.reset}\n`);
+      console.log(`    ${C.red}✗ resolver threw: ${err.message}${C.reset}\n`);
       totalFail++;
       continue;
     }
@@ -139,16 +138,16 @@ async function main() {
     if (failed === 0) totalFixturesClean++;
 
     for (const r of results) console.log(r.line);
-    console.log(`    ${C.dim}${passed}/${results.length} checks · ${ms}ms · confidence=${actual.confidence} · steps=${actual.agent_steps?.length ?? 0}${C.reset}`);
+    console.log(`    ${C.dim}${passed}/${results.length} checks · ${ms}ms · confidence=${actual.confidence} · steps=${actual.steps?.length ?? 0}${C.reset}`);
     if (failed > 0) {
       console.log(`    ${C.yellow}actual key fields:${C.reset}`);
       const summary = {
         issue_title: actual.issue_title,
         integration_type: actual.integration_type,
         confidence: actual.confidence,
-        agent_steps_count: actual.agent_steps?.length,
-        escalate_decision: actual.escalate_decision,
-        customer_message: typeof actual.customer_message === 'string' ? actual.customer_message.slice(0, 200) : actual.customer_message,
+        steps_count: actual.steps?.length,
+        involvement: actual.involvement,
+        diagnosis: typeof actual.diagnosis === 'string' ? actual.diagnosis.slice(0, 200) : actual.diagnosis,
       };
       console.log(JSON.stringify(summary, null, 2).split('\n').map(l => '      ' + l).join('\n'));
     }
@@ -159,10 +158,10 @@ async function main() {
   console.log(`${'─'.repeat(60)}`);
   console.log(`${C.bold}${totalFixturesClean}/${fixtures.length} fixtures fully clean${C.reset}  ·  ${totalPass}/${total} assertions passed`);
   if (totalFail > 0) {
-    console.log(`${C.yellow}${totalFail} assertion(s) failed — review actual outputs above and decide whether the Answerer prompts need tightening before flipping NEW_PIPELINE=true.${C.reset}`);
+    console.log(`${C.yellow}${totalFail} assertion(s) failed — review actual outputs above and decide whether the Resolver prompts need tightening.${C.reset}`);
     process.exit(1);
   }
-  console.log(`${C.green}All fixtures pass — Answerer looks healthy.${C.reset}`);
+  console.log(`${C.green}All fixtures pass — Resolver looks healthy.${C.reset}`);
 }
 
 main().catch(err => { console.error(err); process.exit(2); });

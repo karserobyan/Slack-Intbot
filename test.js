@@ -23,7 +23,6 @@ import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
-import { parseChatResponse } from './src/claude/query.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
 import { handleFeedbackSubmission } from './src/slack/feedback-submission.js';
 import { searchKnowledgeBase } from './src/claude/kb-search.js';
@@ -52,11 +51,12 @@ import {
 } from './src/slack/knowledge-writer.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isNewPipelineEnabled } from './src/utils/feature-flags.js';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
-import { runAnswerer } from './src/claude/answerer.js';
-import { classifySourceRef, filterRefsForRole } from './src/slack/source-policy.js';
+import { runResolver, runReply } from './src/claude/answerer.js';
+import { classifySourceRef } from './src/slack/source-policy.js';
+import * as sourcePolicy from './src/slack/source-policy.js';
+import { missingResolverFields, retiredRoleFieldsIn, customerWasMentioned } from './src/claude/answer-schema.js';
 import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
 import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
 import {
@@ -145,22 +145,15 @@ const sampleJson = {
   integration_type: 'Zapier',
   is_accounting_topic: false,
   confidence: 'high',
-  customer_message: 'Hi [Name], I can see exactly what happened — your Zapier connection was reset during our recent migration on our end. I\'m re-enabling it right now, and you\'ll just need to reconnect Zapier after. Give me one moment.',
-  agent_steps: [
+  diagnosis: 'The Zapier integration is failing because API access has not been enabled on the ServiceTitan backend for this tenant.',
+  steps: [
     { num: 1, title: 'Check tenant Zapier config', detail: 'Go to Admin > Integrations > Zapier and verify API access is toggled on.', tag: 'action' },
     { num: 2, title: 'Enable API access on backend', detail: 'In the ST admin portal, find the tenant and enable Zapier API access under the Integrations tab.', tag: 'backend' },
     { num: 3, title: 'Verify connection', detail: 'Ask the customer to reconnect Zapier and confirm a test zap triggers successfully.', tag: 'verify' },
-    { num: 4, title: 'Escalate if still failing', detail: 'If the issue persists after enabling API access, escalate to the Integrations Engineering team via #integrations-ts-specialists.', tag: 'escalate' },
+    { num: 4, title: 'Escalate if still failing', detail: 'If the issue persists after enabling API access, escalate to Integrations Engineering via #ask-integrations.', tag: 'escalate' },
   ],
-  findings_summary: {
-    diagnosis: 'The Zapier integration is failing because API access has not been enabled on the ServiceTitan backend for this tenant.',
-    actions: [
-      'Enable Zapier API access via the ST backend admin panel',
-      'Have the customer re-authenticate their Zapier account',
-      'Verify the first trigger fires successfully after re-auth',
-    ],
-    guidance: 'If re-auth still fails, check whether the tenant is on a legacy Zapier plan that requires manual re-provisioning.',
-  },
+  involvement: { needed: false, who: null, reason: null, channel: null },
+  customer_message: 'Hi [Name], I can see exactly what happened — your Zapier connection was reset during our recent migration on our end. I\'m re-enabling it right now, and you\'ll just need to reconnect Zapier after. Give me one moment.',
   slack_refs: [
     { url: 'https://servicetitan.slack.com/archives/C123/p456', channel: '#ask-integrations', title: 'Zapier API access not working after tenant migration' },
   ],
@@ -172,7 +165,7 @@ const sampleJson = {
     { url: 'https://help.servicetitan.com/zapier-setup', title: 'Setting up Zapier with ServiceTitan', snippet: 'Enable API access in the ST admin portal before connecting Zapier.' },
   ],
   sources_used: ['slack', 'confluence', 'jira', 'kb'],
-};
+}};
 
 // Parse from raw JSON string
 const parsed = parseClaudeResponse(JSON.stringify(sampleJson));
@@ -193,52 +186,118 @@ let threwError = false;
 try { parseClaudeResponse('not json at all'); } catch { threwError = true; }
 assert(threwError, 'Throws on invalid JSON');
 
+// ── answer-schema helpers ─────────────────────────────────────────────────────
+console.log('\n🔹 answer-schema');
+
+const validResolver = {
+  issue_title: 'Zapier API Access Not Enabled',
+  integration_type: 'Zapier',
+  confidence: 'high',
+  diagnosis: 'API access is off for this tenant.',
+  steps: [
+    { num: 1, title: 'Enable API access', detail: 'Toggle Zapier API access on.', tag: 'backend' },
+  ],
+  involvement: { needed: false, who: null, reason: null, channel: null },
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+  sources_used: ['slack'],
+};
+assert(missingResolverFields(validResolver).length === 0, 'valid resolver has no missing fields');
+assert(retiredRoleFieldsIn(validResolver).length === 0, 'valid resolver has no retired role fields');
+
+const csaShaped = {
+  issue_title: 'Zapier API Access Not Enabled',
+  integration_type: 'Zapier',
+  confidence: 'high',
+  role: 'csa',
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
+  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle' },
+  agent_steps: [{ num: 1, title: 'Enable API', detail: 'Toggle on.', tag: 'backend' }],
+  findings_summary: { diagnosis: 'API access off', actions: [] },
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+  sources_used: ['slack'],
+};
+const retired = retiredRoleFieldsIn(csaShaped);
+assert(retired.includes('role'), 'old role fields fail: role');
+assert(retired.includes('escalate_decision'), 'old role fields fail: escalate_decision');
+assert(retired.includes('channel_recommendation'), 'old role fields fail: channel_recommendation');
+assert(retired.includes('agent_steps'), 'old role fields fail: agent_steps');
+assert(retired.includes('findings_summary'), 'old role fields fail: findings_summary');
+const missing = missingResolverFields(csaShaped);
+assert(missing.includes('diagnosis'), 'old role fields fail: missing diagnosis');
+assert(missing.includes('steps'), 'old role fields fail: missing steps');
+assert(missing.includes('involvement'), 'old role fields fail: missing involvement');
+
+assert(customerWasMentioned({ entities: { customer_mentioned: true } }) === true, 'customerWasMentioned true when entities.customer_mentioned === true');
+assert(customerWasMentioned({ entities: { customer_mentioned: false } }) === false, 'customerWasMentioned false when entities.customer_mentioned === false');
+assert(customerWasMentioned({ entities: {} }) === false, 'customerWasMentioned false when customer_mentioned absent');
+assert(customerWasMentioned(null) === false, 'customerWasMentioned false for null interpreter');
+
 // ── summarizeResultForHistory ────────────────────────────────────────────────
 console.log('\n🔹 summarizeResultForHistory');
 
-const resultWithEscalate = {
+const resultWithInvolvement = {
   customer_message: 'Hi Sarah, I can see exactly what happened — your Zapier connection was reset during our recent migration. I\'m re-enabling it right now.',
-  agent_steps: [
+  diagnosis: 'Zapier API access needs enabling on the backend.',
+  steps: [
     { num: 1, title: 'Enable Zapier API', detail: 'Go to Admin > Integrations > Zapier and toggle API access on.', tag: 'backend' },
     { num: 2, title: 'Verify connection', detail: 'Ask customer to reconnect Zapier.', tag: 'verify' },
   ],
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle this directly' },
-  findings_summary: {
-    diagnosis: 'Zapier API access needs enabling on the backend.',
-    actions: ['Enable Zapier API access', 'Ask customer to re-authenticate'],
-  },
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'high',
   sources_used: ['slack', 'confluence'],
 };
 
-const histSummary = summarizeResultForHistory(resultWithEscalate);
+const histSummary = summarizeResultForHistory(resultWithInvolvement);
 assert(typeof histSummary === 'string', 'summarizeResultForHistory returns string');
 assert(histSummary.includes('Hi Sarah'), 'summary includes customer_message');
 assert(histSummary.includes('Enable Zapier API'), 'summary includes step title');
 assert(histSummary.includes('backend'), 'summary includes step tag');
-assert(histSummary.includes('No escalation needed'), 'summary includes no-escalation text');
-assert(histSummary.includes('CSA can handle this directly'), 'summary includes escalation reason');
-assert(histSummary.includes('Zapier API access needs enabling'), 'summary includes findings_summary diagnosis');
+assert(histSummary.includes('Involvement: case owner finishes it'), 'summary includes involvement when needed false');
+assert(!histSummary.includes('CSA can handle'), 'summary does not print CSA can handle');
+assert(!histSummary.includes('No escalation needed'), 'summary does not print No escalation needed');
+assert(histSummary.includes('Zapier API access needs enabling'), 'summary includes diagnosis');
 assert(histSummary.includes('high'), 'summary includes confidence');
 assert(histSummary.includes('slack'), 'summary includes sources');
 assert(!histSummary.includes('{'), 'summary contains no raw JSON');
 assert(!histSummary.includes('"role"'), 'summary contains no JSON keys');
 
-// Specialist mode — no escalate_decision field
-const specialistResult = {
-  customer_message: 'Hi Mike, the API token was invalidated during the migration — I\'m re-issuing it now.',
+// Legacy CSA-only fields must not drive the summary
+const legacyOnlyResult = {
   agent_steps: [{ num: 1, title: 'Check backend config', detail: 'Access the ST admin portal.', tag: 'backend' }],
+  escalate_decision: { should_escalate: false, reason: 'CSA can handle this directly' },
+  findings_summary: { diagnosis: 'Hidden diagnosis from findings_summary' },
   confidence: 'medium',
   sources_used: ['jira'],
 };
-const specialistSummary = summarizeResultForHistory(specialistResult);
-assert(!specialistSummary.includes('Escalation:'), 'no escalation line in specialist summary');
-assert(specialistSummary.includes('Hi Mike'), 'specialist summary includes customer_message');
+const legacyOnlySummary = summarizeResultForHistory(legacyOnlyResult);
+assert(!legacyOnlySummary.includes('Check backend config'), 'legacy-only object does not include agent_steps titles');
+assert(!legacyOnlySummary.includes('Escalation:'), 'legacy-only object has no Escalation line');
+assert(!legacyOnlySummary.includes('CSA can handle'), 'legacy-only object does not print escalate_decision reason');
+assert(!legacyOnlySummary.includes('Hidden diagnosis'), 'legacy-only object does not read findings_summary.diagnosis');
+
+// Involvement needed
+const involvementNeededResult = {
+  customer_message: 'Hi Mike, looking into this.',
+  diagnosis: 'Needs engineering.',
+  steps: [{ num: 1, title: 'Post to engineering', detail: 'Share logs.', tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', reason: 'Backend toggle required', channel: '#ask-integrations' },
+  confidence: 'medium',
+  sources_used: ['jira'],
+};
+const involvementNeededSummary = summarizeResultForHistory(involvementNeededResult);
+assert(involvementNeededSummary.includes('Involvement: engineering'), 'involvement needed summary names who');
+assert(involvementNeededSummary.includes('#ask-integrations'), 'involvement needed summary includes channel');
 
 // Long step detail is truncated to 300 chars
 const longDetailResult = {
   customer_message: 'Hey Dave, quick heads up on this one.',
-  agent_steps: [{ num: 1, title: 'Long step', detail: 'X'.repeat(400), tag: 'action' }],
+  diagnosis: 'Long detail case.',
+  steps: [{ num: 1, title: 'Long step', detail: 'X'.repeat(400), tag: 'action' }],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'low',
   sources_used: [],
 };
@@ -253,7 +312,9 @@ assert(summarizeResultForHistory({ is_accounting_topic: true }) === '', 'account
 // No customer_email (low confidence suppression)
 const noEmailResult = {
   customer_message: 'Hey Lee, checking this now.',
-  agent_steps: [],
+  diagnosis: 'Unknown.',
+  steps: [],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'low',
   sources_used: ['slack'],
 };
@@ -263,7 +324,9 @@ assert(!noEmailSummary.includes('Customer email drafted'), 'no email line when c
 // clarifying_question included in summary when present
 const resultWithQuestion = {
   customer_message: 'Hey Sarah, I\'m looking into this right now.',
-  agent_steps: [{ num: 1, title: 'Enable API', detail: 'Toggle Zapier API access on.', tag: 'backend' }],
+  diagnosis: 'Need more detail.',
+  steps: [{ num: 1, title: 'Enable API', detail: 'Toggle Zapier API access on.', tag: 'backend' }],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'medium',
   sources_used: ['slack'],
   clarifying_question: 'Has Zapier API access already been enabled on the backend, or is that still to check?',
@@ -275,7 +338,9 @@ assert(questionSummary.includes('Has Zapier API access already been enabled'), '
 // clarifying_question absent when null
 const resultNoQuestion = {
   customer_message: 'Hey Mike, on it.',
-  agent_steps: [],
+  diagnosis: 'Done.',
+  steps: [],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'high',
   sources_used: ['confluence'],
   clarifying_question: null,
@@ -322,21 +387,17 @@ const sensitiveKb = classifySourceRef({ url: 'https://help.servicetitan.com/priv
 assert(sensitiveKb.sensitive === true, 'KB refs with sensitive titles stay sensitive');
 const spoofedKb = classifySourceRef({ url: 'https://evil.test/help.servicetitan.com/private', title: 'Customer incident runbook' });
 assert(spoofedKb.sensitive === true, 'substring-spoofed KB URL does not bypass sensitivity checks');
-const csaRefs = filterRefsForRole([backendSlack, publicKb], 'csa');
-assert(csaRefs.length === 1 && csaRefs[0].title === 'Public KB', 'CSA refs filter sensitive refs');
-const specialistRefs = filterRefsForRole([backendSlack, publicKb], 'specialist');
-assert(specialistRefs.length === 2, 'Specialists see sensitive refs');
+assert(sourcePolicy.filterRefsForRole === undefined, 'source-policy exports no filterRefsForRole');
 
 const dangerousResponseBlocks = buildResponseBlocks({
   ...sampleJson,
   confidence: 'low',
-  escalate_decision: { should_escalate: true, reason: DANGEROUS_TEXT },
-  channel_recommendation: { channel: DANGEROUS_TEXT, reason: DANGEROUS_TEXT },
-  agent_steps: [{ num: 1, title: 'Safe title', detail: 'Safe detail', tag: DANGEROUS_TEXT }],
+  involvement: { needed: true, who: 'engineering', reason: DANGEROUS_TEXT, channel: DANGEROUS_TEXT },
+  steps: [{ num: 1, title: 'Safe title', detail: 'Safe detail', tag: DANGEROUS_TEXT }],
   sources_used: [DANGEROUS_TEXT],
 });
 const dangerousResponseJson = JSON.stringify(dangerousResponseBlocks);
-assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous sources, routing text, and step tags');
+assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous involvement text and step tags');
 assert(dangerousResponseJson.includes(DANGEROUS_ESCAPED), 'response blocks keep escaped dangerous text visible');
 
 const responseBlocks = buildResponseBlocks(sampleJson);
@@ -345,32 +406,27 @@ assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response block
 assert(responseBlocks[0].type === 'header', 'First block is header');
 assert(responseBlocks.some(b => b.type === 'divider'), 'Contains dividers');
 assert(responseBlocks.some(b => b.type === 'actions'), 'Contains action buttons');
-assert(responseBlocks.some(b => b.type === 'context'), 'Contains confidence context block');
-const infoLine = responseBlocks.find(b => b.type === 'context');
-assert(infoLine !== undefined, 'Compact info line is a context block');
-assert(infoLine.elements[0].text.includes('High'), 'Info line: confidence label present (Specialist mode)');
-assert(infoLine.elements[0].text.includes('Sources:'), 'Info line: sources label present (Specialist mode)');
-assert(infoLine.elements[0].text.includes('🟢'), 'Info line: confidence icon present');
+assert(responseBlocks.some(b => b.type === 'context'), 'Contains context block');
 
-// CSA info line — escalate_decision present
-const csaHandleBlocks = buildResponseBlocks({
-  ...sampleJson,
-  confidence: 'high',
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle with single backend enable' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle with single backend enable' },
-});
-const csaInfoLine = csaHandleBlocks.find(b => b.type === 'context');
-assert(csaInfoLine.elements[0].text.includes('✅'), 'Info line: ✅ signal for CSA handle yourself');
-assert(csaInfoLine.elements[0].text.includes('Handle yourself'), 'Info line: handle yourself text');
-assert(csaInfoLine.elements[0].text.includes('CSA can handle'), 'Info line: routing reason present');
-
-// Check header contains issue title
+// Check header contains issue title and confidence icon
 const headerText = responseBlocks[0].text.text;
 assert(headerText.includes('Zapier API Access Not Enabled'), 'Header has issue title');
+assert(headerText.startsWith('🟢'), 'Header has high-confidence icon');
+
+// Diagnosis before steps heading; steps before customer draft
+const blockTexts = responseBlocks.map(b => b.text?.text ?? b.elements?.[0]?.text ?? '');
+const diagIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('*Diagnosis*'));
+const stepsHeadingIdx = blockTexts.findIndex(t => t === '*🔧 What you do*');
+const customerIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('Zapier connection was reset'));
+assert(diagIdx !== -1, 'Diagnosis section present');
+assert(stepsHeadingIdx !== -1, 'Steps section header renders as "🔧 What you do"');
+assert(customerIdx !== -1, 'Customer message block present');
+assert(diagIdx < stepsHeadingIdx, 'diagnosis section text before the steps heading');
+assert(stepsHeadingIdx < customerIdx, 'steps before the customer draft');
 
 // Check steps are present
 const stepBlocks = responseBlocks.filter(b => b.type === 'section' && /\*\d+\. /.test(b.text?.text ?? ''));
-assert(stepBlocks.length === 4, `All 4 agent steps rendered (found ${stepBlocks.length})`);
+assert(stepBlocks.length === 4, `All 4 steps rendered (found ${stepBlocks.length})`);
 
 // Check tags render
 assert(stepBlocks[0].text.text.includes('`action`'), 'Step 1 has action tag');
@@ -380,93 +436,39 @@ assert(stepBlocks[1].text.text.startsWith('🟠'), 'Backend step has orange circ
 assert(stepBlocks[2].text.text.startsWith('🟢'), 'Verify step has green circle');
 assert(stepBlocks[3].text.text.startsWith('🔴'), 'Escalate step has red circle');
 
-// Diagnosis no longer inline — moved to modal
-const noDiagBlock = responseBlocks.every(b => !b.text?.text?.includes('🔍 Root Cause'));
-assert(noDiagBlock, 'Diagnosis block is not inline in response (moved to modal)');
+// Diagnosis is inline as a section (not the old modal-only Root Cause label)
+const diagSection = responseBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
+assert(diagSection !== undefined, 'Diagnosis section is inline in response');
+assert(diagSection.text.text.includes('API access has not been enabled'), 'Diagnosis text present');
 
 // Customer message — label removed, just the message
 const talktackBlock = responseBlocks.find(b => b.text?.text?.includes('Zapier connection was reset'));
-assert(talktackBlock !== undefined, 'Customer message block present');
 assert(!talktackBlock.text.text.includes('Message the customer'), 'Customer message has no label text');
 assert(talktackBlock.text.text.startsWith('💬'), 'Customer message starts with 💬 emoji');
 
-// Steps header
-const stepsHeader = responseBlocks.find(b => b.text?.text === '*🔧 What you do*');
-assert(stepsHeader !== undefined, 'Steps section header renders as "🔧 What you do"');
+// Involvement: case owner finishes
+const ownerLine = responseBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('Case owner can finish'));
+assert(ownerLine !== undefined, 'Involvement: case owner finish line when needed false');
+assert(ownerLine.elements[0].text.includes('✅'), 'Involvement: ✅ signal when case owner finishes');
 
-// ── Routing signal scenarios ─────────────────────────────────────────────────
-
-// Handle yourself — no escalation, high confidence
-const handleYourselfBlocks = buildResponseBlocks({
-  ...sampleJson,
-  confidence: 'high',
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle this' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'CSA can handle this' },
-});
-const handleBlock = handleYourselfBlocks.find(b => b.type === 'context');
-assert(handleBlock !== undefined, 'Routing signal: handle yourself renders ✅');
-assert(handleBlock.elements[0].text.includes('✅'), 'Routing signal: handle yourself has ✅ signal');
-assert(handleBlock.elements[0].text.includes('Handle yourself'), 'Routing signal: handle yourself text correct');
-
-// Post in channel — should_escalate: true
+// Involvement needed — channel name + channel post button
 const escalateRoutingBlocks = buildResponseBlocks({
   ...sampleJson,
-  confidence: 'high',
-  escalate_decision: { should_escalate: true, reason: 'Needs backend access' },
-  channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility needed' },
-  suggested_channel_post: 'Anyone seen Zapier failing after migration for this tenant?',
+  involvement: { needed: true, who: 'engineering', reason: 'Needs backend access', channel: '#ask-integrations' },
 });
-const postBlock = escalateRoutingBlocks.find(b => b.type === 'context');
-assert(postBlock !== undefined, 'Routing signal: post in channel renders 📢');
-assert(postBlock.elements[0].text.includes('📢'), 'Routing signal: post in channel has 📢 signal');
-assert(postBlock.elements[0].text.includes('ask-integrations'), 'Routing signal: post in channel includes channel name');
+const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('📢'));
+assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
+assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
+assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
+const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(cpBtnNeeded !== undefined, 'Channel post button appears when involvement.needed');
+assert(cpBtnNeeded.value === 'Needs backend access', 'Channel post button value is involvement.reason');
 
-// Post to verify — low confidence
-const lowConfRoutingBlocks = buildResponseBlocks({
-  ...sampleJson,
-  confidence: 'low',
-  escalate_decision: { should_escalate: false, reason: 'Worth verifying with team' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Worth verifying with team' },
-  suggested_channel_post: 'Uncertain about this one — anyone confirm?',
-});
-const lowVerifyBlock = lowConfRoutingBlocks.find(b => b.type === 'context');
-assert(lowVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for low confidence');
-assert(lowVerifyBlock.elements[0].text.includes('🔎'), 'Routing signal: post to verify has 🔎 signal');
-assert(lowVerifyBlock.elements[0].text.includes('Post to verify'), 'Routing signal: post to verify text correct');
+// No channel post when involvement.needed false
+const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+assert(noCpOwner === undefined, 'Channel post button absent when involvement.needed false');
 
-// Post to verify — medium confidence
-const medConfRoutingBlocks = buildResponseBlocks({
-  ...sampleJson,
-  confidence: 'medium',
-  escalate_decision: { should_escalate: false, reason: 'Partial match only' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Partial match only' },
-});
-const medVerifyBlock = medConfRoutingBlocks.find(b => b.type === 'context');
-assert(medVerifyBlock !== undefined, 'Routing signal: post to verify renders 🔎 for medium confidence');
-assert(medVerifyBlock.elements[0].text.includes('🔎'), 'Routing signal: post to verify has 🔎 signal for medium');
-
-// No routing signal when escalate_decision absent (Specialist)
-const noRoutingBlocks = buildResponseBlocks({ ...sampleJson });
-const noRouting = noRoutingBlocks.find(b =>
-  ['✅', '📢', '🔎'].some(s => {
-    const elemText = b.elements?.[0]?.text;
-    return b.text?.text?.includes(s) || (typeof elemText === 'string' && elemText.includes(s));
-  })
-);
-assert(noRouting === undefined, 'Routing signal: absent when no escalate_decision (Specialist mode)');
-
-// should_escalate wins over low confidence (escalation more urgent)
-const escalatePlusLowBlocks = buildResponseBlocks({
-  ...sampleJson,
-  confidence: 'low',
-  escalate_decision: { should_escalate: true, reason: 'Escalation needed' },
-  channel_recommendation: { channel: 'ask-integrations', reason: 'Team needed' },
-});
-const escalatePlusLowBlock = escalatePlusLowBlocks.find(b => b.type === 'context');
-assert(escalatePlusLowBlock !== undefined, 'Routing signal: should_escalate wins over low confidence');
-assert(escalatePlusLowBlock.elements[0].text.includes('📢'), 'Routing signal: 📢 shown when should_escalate true');
-
-// ── Sensitivity filtering ────────────────────────────────────────────────────
+// ── Sensitivity: refs always shown, no specialist-only hint ──────────────────
 const sensitiveData = {
   ...sampleJson,
   slack_refs: [
@@ -478,91 +480,73 @@ const sensitiveData = {
     { type: 'confluence', url: 'https://wiki/public', title: 'Public Zapier guide' },
   ],
   kb_refs: [{ url: 'https://help.servicetitan.com/zapier', title: 'Zapier Setup', snippet: 'Enable API access...' }],
-  findings_summary: { diagnosis: 'Zapier API access not enabled.' },
 };
 
-// CSA: sensitive refs hidden, public refs visible, hint shown
-const csaSensBlocks = buildResponseBlocks(sensitiveData, { role: 'csa' });
-const csaChipBlock = csaSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
-assert(csaChipBlock !== undefined, 'sensitivity CSA: public Slack chip shown');
-assert(csaChipBlock.elements[0].text.includes('📄 Confluence'), 'sensitivity CSA: public Confluence chip shown');
-assert(csaChipBlock.elements[0].text.includes('_+2 specialist-only_'), 'sensitivity CSA: specialist-only hint shown');
-const csaSrcBtn = csaSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
-assert(csaSrcBtn !== undefined, 'sensitivity CSA: sources button present for visible refs');
-const csaSrcVal = JSON.parse(csaSrcBtn.value);
-assert(csaSrcVal.slack_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Slack ref');
-assert(csaSrcVal.atlassian_refs.length === 1, 'sensitivity CSA: sources button only contains non-sensitive Atlassian ref');
-assert(csaSrcVal.slack_refs[0].title === 'Public Zapier thread', 'sensitivity CSA: correct Slack ref in button');
+const sensBlocks = buildResponseBlocks(sensitiveData);
+const sensChipBlock = sensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
+assert(sensChipBlock !== undefined, 'sensitivity: Slack chip shown for sensitive payload');
+assert(sensChipBlock.elements[0].text.includes('📄 Confluence'), 'sensitivity: Confluence chip shown');
+assert(!sensChipBlock.elements[0].text.includes('specialist-only'), 'sensitivity: no specialist-only hint');
+const sensSrcBtn = sensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(sensSrcBtn !== undefined, 'sensitivity: sources button present');
+const sensSrcVal = JSON.parse(sensSrcBtn.value);
+assert(sensSrcVal.slack_refs.length === 2, 'sensitivity: sources button contains all Slack refs');
+assert(sensSrcVal.atlassian_refs.length === 2, 'sensitivity: sources button contains all Atlassian refs');
 
-// Specialist: all refs visible, no hint
-const specSensBlocks = buildResponseBlocks(sensitiveData, { role: 'specialist' });
-const specChipBlock = specSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
-assert(specChipBlock !== undefined, 'sensitivity Specialist: Slack chip shown');
-assert(!specChipBlock.elements[0].text.includes('specialist-only'), 'sensitivity Specialist: no specialist-only hint');
-const specSrcBtn = specSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
-const specSrcVal = JSON.parse(specSrcBtn.value);
-assert(specSrcVal.slack_refs.length === 2, 'sensitivity Specialist: sources button contains all Slack refs');
-assert(specSrcVal.atlassian_refs.length === 2, 'sensitivity Specialist: sources button contains all Atlassian refs');
+// Passing role does not hide refs
+const roleArgBlocks = buildResponseBlocks(sensitiveData, { role: 'csa' });
+const roleSrcBtn = roleArgBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+const roleSrcVal = JSON.parse(roleSrcBtn.value);
+assert(roleSrcVal.slack_refs.length === 2, 'passing role does not hide Slack refs');
+assert(roleSrcVal.atlassian_refs.length === 2, 'passing role does not hide Atlassian refs');
+assert(!JSON.stringify(roleArgBlocks).includes('specialist-only'), 'passing role does not add specialist-only hint');
 
-// No visible refs for CSA when all are sensitive — sources button absent
 const allSensitiveData = {
   ...sampleJson,
   slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#esc', title: 'Internal', sensitive: true }],
   atlassian_refs: [],
   kb_refs: [],
 };
-const csaAllSensBlocks = buildResponseBlocks(allSensitiveData, { role: 'csa' });
-const csaAllSensSrcBtn = csaAllSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
-assert(csaAllSensSrcBtn === undefined, 'sensitivity CSA: sources button absent when all refs are sensitive');
-const csaAllSensChip = csaAllSensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('specialist-only'));
-assert(csaAllSensChip !== undefined, 'sensitivity CSA: specialist-only hint still shown when all refs sensitive');
+const allSensBlocks = buildResponseBlocks(allSensitiveData);
+const allSensSrcBtn = allSensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(allSensSrcBtn !== undefined, 'sensitive-only refs still get a sources button');
+assert(!JSON.stringify(allSensBlocks).includes('specialist-only'), 'sensitive-only refs have no specialist-only hint');
 
 const codeSensitiveBlocks = buildResponseBlocks({
   issue_title: 'Sensitive Source',
   confidence: 'high',
+  diagnosis: 'Backend fix needed.',
+  steps: [],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   customer_message: 'Hi [Name], done.',
-  agent_steps: [],
   slack_refs: [
     { url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#backend-tools', title: 'Backend fix' },
   ],
   atlassian_refs: [],
   kb_refs: [],
   sources_used: ['slack'],
-}, { role: 'csa' });
+});
 const codeSensitiveText = JSON.stringify(codeSensitiveBlocks);
-assert(codeSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only refs');
-assert(!codeSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only refs');
+assert(!codeSensitiveText.includes('specialist-only'), 'backend Slack refs have no specialist-only hint');
+assert(codeSensitiveText.includes('Diagnosis + Sources'), 'backend Slack refs still expose sources button');
 
 const kbSensitiveBlocks = buildResponseBlocks({
   issue_title: 'Sensitive KB Source',
   confidence: 'high',
+  diagnosis: 'KB note.',
+  steps: [],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   customer_message: 'Hi [Name], done.',
-  agent_steps: [],
   slack_refs: [],
   atlassian_refs: [],
   kb_refs: [
     { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
   ],
   sources_used: ['kb'],
-}, { role: 'csa' });
+});
 const kbSensitiveText = JSON.stringify(kbSensitiveBlocks);
-assert(kbSensitiveText.includes('specialist-only'), 'CSA response indicates hidden specialist-only KB refs');
-assert(!kbSensitiveText.includes('Diagnosis + Sources'), 'CSA response does not expose sources button for sensitive-only KB refs');
-
-const kbSensitiveSpecialistBlocks = buildResponseBlocks({
-  issue_title: 'Sensitive KB Source',
-  confidence: 'high',
-  customer_message: 'Hi [Name], done.',
-  agent_steps: [],
-  slack_refs: [],
-  atlassian_refs: [],
-  kb_refs: [
-    { url: 'https://help.servicetitan.com/private', title: 'Sensitive KB', sensitive: true },
-  ],
-  sources_used: ['kb'],
-}, { role: 'specialist' });
-const kbSensitiveSpecialistText = JSON.stringify(kbSensitiveSpecialistBlocks);
-assert(kbSensitiveSpecialistText.includes('Diagnosis + Sources'), 'Specialist response still exposes sensitive KB refs');
+assert(!kbSensitiveText.includes('specialist-only'), 'sensitive KB refs have no specialist-only hint');
+assert(kbSensitiveText.includes('Diagnosis + Sources'), 'sensitive KB refs still expose sources button');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
@@ -591,17 +575,13 @@ assert(fuSection !== undefined, 'buildFollowUpBlocks has section block');
 assert(fuSection.text.text === 'Try re-enabling the Zapier connection and reconnecting.', 'section block contains reply text');
 assert(fuSection.text.type === 'mrkdwn', 'section block uses mrkdwn for markdown rendering');
 
-// Show Specialist Detail button only when _showSpecialistValue is present
-const csaBlocksWithSpecBtn = buildResponseBlocks({
+// show_specialist_detail never appears, even with planted _showSpecialistValue
+const plantedSpecBlocks = buildResponseBlocks({
   ...sampleJson,
   _showSpecialistValue: JSON.stringify({ threadTs: '123', channelId: 'C123', query: 'test' }),
 });
-const specialistBtn = csaBlocksWithSpecBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
-assert(specialistBtn !== undefined, 'Show Specialist Detail button present when _showSpecialistValue set');
-
-const noSpecialistBtn = buildResponseBlocks({ ...sampleJson });
-const noBtn = noSpecialistBtn.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
-assert(noBtn === undefined, 'Show Specialist Detail button absent when _showSpecialistValue not set');
+const specialistBtn = plantedSpecBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'show_specialist_detail');
+assert(specialistBtn === undefined, 'no show_specialist_detail even if payload has _showSpecialistValue');
 
 // confidence badge rendering
 const highConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'high' });
@@ -615,18 +595,6 @@ assert(medHeader?.text?.text?.startsWith('🟡'), 'Medium confidence shows 🟡 
 const lowConfBlocks = buildResponseBlocks({ ...sampleJson, confidence: 'low' });
 const lowHeader = lowConfBlocks.find(b => b.type === 'header');
 assert(lowHeader?.text?.text?.startsWith('🔴'), 'Low confidence shows 🔴 in header');
-
-// Confidence context block — shows level, sources, and guidance note
-const highConfContext = highConfBlocks.find(b => b.type === 'context');
-assert(highConfContext !== undefined, 'High confidence: context block present');
-assert(highConfContext.elements[0].text.includes('🟢'), 'High confidence: green icon in context');
-assert(highConfContext.elements[0].text.includes('High'), 'High confidence: label in context');
-assert(highConfContext.elements[0].text.includes('slack'), 'Confidence context includes sources');
-
-const lowConfContext = lowConfBlocks.find(b => b.type === 'context');
-assert(lowConfContext !== undefined, 'Low confidence: context block present');
-assert(lowConfContext.elements[0].text.includes('🔴'), 'Low confidence: red icon in context');
-assert(lowConfContext.elements[0].text.includes('Low'), 'Low confidence: label in context');
 
 // No quoted email body anywhere
 const noQuotedEmail = highConfBlocks.every(b => !b.text?.text?.startsWith('> '));
@@ -735,13 +703,13 @@ assert(finalBlocks.length <= 50, 'Final response within Slack block limit');
 // ── 6. Edge Cases ────────────────────────────────────────────────────────────
 console.log('\n🔹 Edge Cases');
 
-// Empty agent_steps
-const emptySteps = buildResponseBlocks({ ...sampleJson, agent_steps: [] });
-assert(emptySteps.length > 0, 'Handles empty agent_steps without crashing');
+// Empty steps
+const emptySteps = buildResponseBlocks({ ...sampleJson, steps: [] });
+assert(emptySteps.length > 0, 'Handles empty steps without crashing');
 
-// Missing findings_summary
-const noSummary = buildResponseBlocks({ ...sampleJson, findings_summary: undefined });
-assert(noSummary.length > 0, 'Handles missing findings_summary without crashing');
+// Missing diagnosis
+const noSummary = buildResponseBlocks({ ...sampleJson, diagnosis: undefined });
+assert(noSummary.length > 0, 'Handles missing diagnosis without crashing');
 
 // Missing refs
 const noRefs = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [] });
@@ -817,27 +785,16 @@ assert(hCap.length === 20, `Max 20 messages enforced (got ${hCap?.length})`);
 pruneConversations();
 assert(getHistory('ts-001') !== null, 'pruneConversations keeps fresh entries');
 
-// ── 9. Role Detection ────────────────────────────────────────────────────────
-console.log('\n🔹 Role Detection');
+// ── 9. Case-owner contract (no role detection) ────────────────────────────────
+console.log('\n🔹 Case-owner contract');
 
-// Helper — mirrors the detection logic in mention.js
-function detectRole(title) {
-  if (!title) return 'csa';
-  if (/Customer Support Advocate/i.test(title)) return 'csa';
-  if (/Specialist/i.test(title) && /Integrat/i.test(title)) return 'specialist';
-  return 'csa';
-}
-
-assert(detectRole('Customer Support Advocate I') === 'csa', 'CSA I detected');
-assert(detectRole('Customer Support Advocate II') === 'csa', 'CSA II detected');
-assert(detectRole('Senior Customer Support Advocate') === 'csa', 'Senior CSA detected');
-assert(detectRole('Associate Integrations Specialist') === 'specialist', 'Associate Specialist detected');
-assert(detectRole('Integrations Specialist') === 'specialist', 'Integrations Specialist detected');
-assert(detectRole('Specialist, Integrations') === 'specialist', 'Specialist, Integrations detected');
-assert(detectRole('Senior Specialist Integrations') === 'specialist', 'Senior Specialist detected');
-assert(detectRole('Account Manager') === 'csa', 'Unknown role defaults to CSA');
-assert(detectRole(null) === 'csa', 'Null title defaults to CSA');
-assert(detectRole('') === 'csa', 'Empty title defaults to CSA');
+assert(sourcePolicy.filterRefsForRole === undefined, 'source-policy has no filterRefsForRole');
+const requestCtx = withRequestContext(
+  { issue_title: 'Zapier', confidence: 'high' },
+  { query: 'q', threadTs: 'T1', channelId: 'C1' },
+);
+assert(requestCtx._showSpecialistValue === undefined, 'withRequestContext does not set _showSpecialistValue');
+assert(requestCtx._originalQuery === 'q', 'withRequestContext still sets _originalQuery');
 
 // ── Feedback Moderation ───────────────────────────────────────────────────
 console.log('\n🔹 Feedback Moderation');
@@ -1073,7 +1030,10 @@ assert(helpDetailBlocks.length > 0, 'buildHelpDetailBlocks returns non-empty arr
 assert(helpDetailBlocks[0].type === 'header', 'buildHelpDetailBlocks first block is header');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('confidence')), 'detail blocks explain confidence levels');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'detail blocks explain feedback');
-assert(helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks explain specialist button');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('Diagnosis')), 'detail blocks mention diagnosis');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('draft reply') || b.text?.text?.includes('customer draft') || b.text?.text?.toLowerCase().includes('draft')), 'detail blocks mention a customer draft');
+assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks do not mention Specialist Detail');
+assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialists only')), 'detail blocks do not mention Specialists only');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
 assert(helpDetailBlocks.some(b => b.type === 'context'), 'detail blocks have context footer');
 
@@ -1158,7 +1118,7 @@ assert(sourcesBtn?.value?.length <= 2000, 'Sources button value within 2000 char
 assert(sourcesBtn?.text?.text === '🔍 Diagnosis + Sources', 'Sources button text updated');
 const parsedSrcBtnValue = JSON.parse(sourcesBtn.value);
 assert('diagnosis' in parsedSrcBtnValue, 'Sources button value contains diagnosis field');
-assert(parsedSrcBtnValue.diagnosis !== null, 'Sources button value has non-null diagnosis when findings_summary present');
+assert(parsedSrcBtnValue.diagnosis !== null, 'Sources button value has non-null diagnosis when diagnosis present');
 
 // Sources button hidden when all ref arrays are empty
 const noRefsBlocks = buildResponseBlocks({
@@ -1174,7 +1134,9 @@ assert(noSourcesBtn === undefined, 'Sources button hidden when all ref arrays em
 // Sources button hidden when ref fields are absent (legacy responses)
 const legacyNoRefsBlocks = buildResponseBlocks({
   issue_title: 'Test',
-  agent_steps: [],
+  steps: [],
+  diagnosis: 'x',
+  involvement: { needed: false, who: null, reason: null, channel: null },
   confidence: 'high',
   sources_used: [],
 });
@@ -1619,57 +1581,6 @@ await rm(nominationEscapeKb, { force: true });
 _setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json'));
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 
-// ── 16. parseChatResponse ─────────────────────────────────────────────────────
-console.log('\n🔹 parseChatResponse');
-
-// Valid diagnosing JSON
-const diagnosingJson = '{"state":"diagnosing","acknowledgement":"Got it — that rules out auth.","question":"Has the customer tried reconnecting Zapier from scratch?"}';
-const parsedDiag = parseChatResponse(diagnosingJson);
-assert(parsedDiag.state === 'diagnosing', 'parseChatResponse: diagnosing state parsed');
-assert(parsedDiag.acknowledgement === 'Got it — that rules out auth.', 'parseChatResponse: acknowledgement parsed');
-assert(parsedDiag.question === 'Has the customer tried reconnecting Zapier from scratch?', 'parseChatResponse: question parsed');
-
-// Valid resolved JSON (no escalation)
-const resolvedJson = '{"state":"resolved","title":"Stale Zapier Auth Token","diagnosis":"Enabling API access invalidates existing tokens.","steps":[{"tag":"action","text":"Disconnect Zapier."},{"tag":"verify","text":"Confirm sync resumes."}],"escalate":false,"escalation_path":null,"suggested_channel_post":null,"refs":[{"source":"confluence","title":"Zapier Setup Guide"}]}';
-const parsedResolved = parseChatResponse(resolvedJson);
-assert(parsedResolved.state === 'resolved', 'parseChatResponse: resolved state parsed');
-assert(parsedResolved.title === 'Stale Zapier Auth Token', 'parseChatResponse: title parsed');
-assert(parsedResolved.diagnosis === 'Enabling API access invalidates existing tokens.', 'parseChatResponse: diagnosis parsed');
-assert(Array.isArray(parsedResolved.steps), 'parseChatResponse: steps is array');
-assert(parsedResolved.steps.length === 2, 'parseChatResponse: correct step count');
-assert(parsedResolved.escalate === false, 'parseChatResponse: escalate false');
-assert(Array.isArray(parsedResolved.refs), 'parseChatResponse: refs is array');
-
-// Valid resolved JSON with escalation
-const escalateJson = '{"state":"resolved","title":"Enterprise Tier Required","diagnosis":"Backend config needed.","steps":[{"tag":"escalate","text":"Escalate via Live Assist."}],"escalate":true,"escalation_path":"Live Assist → Integrations Specialist","suggested_channel_post":"Customer needs escalation — please assist.","refs":[]}';
-const parsedEscalate = parseChatResponse(escalateJson);
-assert(parsedEscalate.escalate === true, 'parseChatResponse: escalate true');
-assert(parsedEscalate.escalation_path === 'Live Assist → Integrations Specialist', 'parseChatResponse: escalation_path parsed');
-assert(parsedEscalate.suggested_channel_post === 'Customer needs escalation — please assist.', 'parseChatResponse: suggested_channel_post parsed');
-
-// JSON wrapped in markdown fences
-const fencedJson = '```json\n{"state":"diagnosing","acknowledgement":"OK.","question":"Is sync still failing?"}\n```';
-const parsedFenced = parseChatResponse(fencedJson);
-assert(parsedFenced.state === 'diagnosing', 'parseChatResponse: strips markdown fences');
-assert(parsedFenced.question === 'Is sync still failing?', 'parseChatResponse: question parsed from fenced JSON');
-
-// Plain text fallback
-const parsedFallback = parseChatResponse('This is plain text, not JSON.');
-assert(parsedFallback.state === 'diagnosing', 'parseChatResponse: plain text → diagnosing state');
-assert(parsedFallback.acknowledgement === '', 'parseChatResponse: plain text → empty acknowledgement');
-assert(parsedFallback.question === 'This is plain text, not JSON.', 'parseChatResponse: plain text → question field holds raw text');
-
-// Invalid JSON object (valid JSON but wrong schema)
-const parsedWrongSchema = parseChatResponse('{"foo":"bar"}');
-assert(parsedWrongSchema.state === 'diagnosing', 'parseChatResponse: wrong-schema JSON → fallback to diagnosing');
-
-// JSON embedded in surrounding prose (Claude adds preamble/postamble after tool use)
-const proseWrapped = 'Here is my analysis:\n{"state":"diagnosing","acknowledgement":"Got it.","question":"Has the webhook been reconfigured?"}\nLet me know if you need more.';
-const parsedProse = parseChatResponse(proseWrapped);
-assert(parsedProse.state === 'diagnosing', 'parseChatResponse: extracts JSON from surrounding prose');
-assert(parsedProse.acknowledgement === 'Got it.', 'parseChatResponse: acknowledgement correct from prose-wrapped JSON');
-assert(parsedProse.question === 'Has the webhook been reconfigured?', 'parseChatResponse: question correct from prose-wrapped JSON');
-
 // ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
 console.log('\n🔹 buildFollowUpBlocks — label param');
 
@@ -1808,23 +1719,21 @@ assert(cpContext.elements[0].text.includes('Select all and copy'), 'instructions
 // ── 20. buildResponseBlocks — diagnosis + chips + channel post button ──────────
 console.log('\n🔹 buildResponseBlocks — new fields');
 
-// Diagnosis line present when findings_summary.diagnosis is set
+// Diagnosis section present when diagnosis is set
 const withDiagBlocks = buildResponseBlocks({
   ...sampleJson,
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle' },
 });
-const diagBlock = withDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
-assert(diagBlock !== undefined, 'diagnosis context block present when findings_summary.diagnosis set');
-assert(diagBlock.elements[0].text.includes('Zapier integration is failing'), 'diagnosis text is from findings_summary.diagnosis');
-assert(diagBlock.elements[0].text.includes('_'), 'diagnosis text is italicised with markdown');
+const diagBlock = withDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
+assert(diagBlock !== undefined, 'diagnosis section present when diagnosis set');
+assert(diagBlock.text.text.includes('Zapier integration is failing'), 'diagnosis text is from diagnosis field');
 
-// Diagnosis line absent when findings_summary is missing
-const noDiagBlocks = buildResponseBlocks({ ...sampleJson, findings_summary: undefined, escalate_decision: { should_escalate: false, reason: 'x' } });
-const noDiagBlock2 = noDiagBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('🔍'));
-assert(noDiagBlock2 === undefined, 'no diagnosis block when findings_summary missing');
+// Diagnosis section absent when diagnosis is missing
+const noDiagBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined });
+const noDiagBlock2 = noDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
+assert(noDiagBlock2 === undefined, 'no diagnosis block when diagnosis missing');
 
 // Source chips: Confluence chip when atlassian_refs has confluence entry
-const chipsBlocks = buildResponseBlocks({ ...sampleJson, escalate_decision: { should_escalate: false, reason: 'x' } });
+const chipsBlocks = buildResponseBlocks({ ...sampleJson });
 const chipsBlock = chipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence'));
 assert(chipsBlock !== undefined, 'Confluence chip present when atlassian_refs has confluence');
 assert(chipsBlock.elements[0].text.includes('📄 Jira'), 'Jira chip present when atlassian_refs has jira');
@@ -1832,47 +1741,33 @@ assert(chipsBlock.elements[0].text.includes('💬 Slack'), 'Slack chip present w
 assert(chipsBlock.elements[0].text.includes('📖 KB'), 'KB chip present when kb_refs non-empty');
 
 // No chips when all ref arrays are empty
-const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [], escalate_decision: { should_escalate: false, reason: 'x' } });
+const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence') || b.elements[0].text?.includes('📄 Jira') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
 assert(noChipsBlock === undefined, 'no chips context block when all ref arrays empty');
 
-// Channel post button present when should_escalate:true and suggested_channel_post set
+// Channel post button present when involvement.needed
 const channelPostBlocks = buildResponseBlocks({
   ...sampleJson,
-  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
-  channel_recommendation: { channel: 'ask-integrations', reason: 'Team visibility' },
-  suggested_channel_post: 'Anyone seen this Zapier issue?',
+  involvement: { needed: true, who: 'engineering', reason: 'Anyone seen this Zapier issue?', channel: '#ask-integrations' },
 });
 const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
 const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(cpBtn !== undefined, 'copy_channel_post button present when should_escalate and suggested_channel_post set');
-assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is suggested_channel_post');
+assert(cpBtn !== undefined, 'copy_channel_post button present when involvement.needed');
+assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is involvement.reason');
 
-// Channel post button absent when should_escalate:false
+// Channel post button absent when involvement.needed false
 const noCpBlocks = buildResponseBlocks({
   ...sampleJson,
-  escalate_decision: { should_escalate: false, reason: 'CSA handles' },
-  suggested_channel_post: 'This should not appear.',
+  involvement: { needed: false, who: null, reason: 'This should not appear.', channel: null },
 });
 const noCpActionsBlock = noCpBlocks.find(b => b.type === 'actions');
 const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(noCpBtn === undefined, 'copy_channel_post button absent when should_escalate: false');
+assert(noCpBtn === undefined, 'copy_channel_post button absent when involvement.needed false');
 
-// Channel post button absent when suggested_channel_post missing
-const noCpNoTextBlocks = buildResponseBlocks({
-  ...sampleJson,
-  escalate_decision: { should_escalate: true, reason: 'x' },
-  suggested_channel_post: undefined,
-});
-const noCpNoTextBtn = noCpNoTextBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(noCpNoTextBtn === undefined, 'copy_channel_post button absent when suggested_channel_post missing');
-
-// new_chat button still last when isDm + escalation + channel post
+// new_chat button still last when isDm + involvement needed + channel post
 const fullDmBlocks = buildResponseBlocks({
   ...sampleJson,
-  escalate_decision: { should_escalate: true, reason: 'Needs backend' },
-  channel_recommendation: { channel: 'ask-integrations', reason: 'x' },
-  suggested_channel_post: 'Post this.',
+  involvement: { needed: true, who: 'engineering', reason: 'Post this.', channel: '#ask-integrations' },
 }, { isDm: true });
 const fullDmActions = fullDmBlocks.find(b => b.type === 'actions');
 assert(fullDmActions.elements.at(-1).action_id === 'new_chat', 'new_chat button is last even with channel post + isDm');
@@ -1979,32 +1874,6 @@ assert(multiText.includes('–') && multiText.includes('Jira'),       'multi: ji
 assert(!multiText.includes('Slack'), 'multi: slack no longer in section');
 assert(progMulti[1].elements[0].text.toLowerCase().includes('writing'),
   'multi: writing surfaces in context (overrides slack)');
-
-// ── feature-flags ─────────────────────────────────────────────────────────────
-console.log('\n🔹 feature-flags');
-
-delete process.env.NEW_PIPELINE;
-assert(isNewPipelineEnabled() === true, 'unset NEW_PIPELINE → true (default ON post-Phase-2)');
-
-process.env.NEW_PIPELINE = 'false';
-assert(isNewPipelineEnabled() === false, '"false" → false (kill-switch back to legacy)');
-
-process.env.NEW_PIPELINE = 'FALSE';
-assert(isNewPipelineEnabled() === false, '"FALSE" (case-insensitive) → false');
-
-process.env.NEW_PIPELINE = 'true';
-assert(isNewPipelineEnabled() === true, '"true" → true');
-
-process.env.NEW_PIPELINE = 'TRUE';
-assert(isNewPipelineEnabled() === true, '"TRUE" → true');
-
-process.env.NEW_PIPELINE = '1';
-assert(isNewPipelineEnabled() === true, '"1" → true (anything not "false" enables)');
-
-process.env.NEW_PIPELINE = 'fals';
-assert(isNewPipelineEnabled() === true, 'typo "fals" → true (strict disable protects from accidental rollback)');
-
-delete process.env.NEW_PIPELINE;
 
 // ── slack search-client ───────────────────────────────────────────────────────
 console.log('\n🔹 slack search-client');
@@ -2156,11 +2025,25 @@ delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.SLACK_USER_TOKEN;
 
-// ── answerer ──────────────────────────────────────────────────────────────────
+// ── answerer (resolver + reply) ───────────────────────────────────────────────
 console.log('\n🔹 answerer');
 
 const origFetchAns = globalThis.fetch;
 let lastAnthropicBody;
+const RESOLVER_MOCK = {
+  issue_title: 'Test',
+  integration_type: 'Zapier',
+  confidence: 'high',
+  diagnosis: 'API access is off.',
+  steps: [{ num: 1, title: 'Enable access', detail: 'Toggle on.', tag: 'backend' }],
+  involvement: { needed: false, who: null, reason: null, channel: null },
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+  sources_used: ['slack'],
+  escalate_decision: { should_escalate: false, reason: 'planted' },
+  customer_message: 'planted customer message',
+};
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
   if (u.includes('anthropic.com')) {
@@ -2170,7 +2053,7 @@ globalThis.fetch = async (url, opts) => {
       type: 'message',
       role: 'assistant',
       model: 'claude-sonnet-4-6',
-      content: [{ type: 'text', text: '{"issue_title":"Test","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}' }],
+      content: [{ type: 'text', text: JSON.stringify(RESOLVER_MOCK) }],
       stop_reason: 'end_turn',
       usage: { input_tokens: 100, output_tokens: 100 },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -2179,7 +2062,7 @@ globalThis.fetch = async (url, opts) => {
 };
 process.env.ANTHROPIC_API_KEY = 'test-key';
 
-const ansResult = await runAnswerer({
+const ansResult = await runResolver({
   cleanedQuestion: 'Zapier not syncing',
   searchResults: {
     kb: null,
@@ -2187,15 +2070,20 @@ const ansResult = await runAnswerer({
     jira: null,
     slack: { text: 'S content', refs: [], priority: 'high' },
   },
-  role: 'csa',
   teamKnowledge: 'TK content',
   feedbackContext: '\n\nIMPORTANT — Past corrections: X',
 });
 
-assert(ansResult !== null, 'answerer returns parsed JSON');
+assert(ansResult !== null, 'resolver returns parsed JSON');
 assert(ansResult.issue_title === 'Test', 'parses issue_title');
 assert(ansResult.integration_type === 'Zapier', 'parses integration_type');
-assert(lastAnthropicBody.system.includes('CSA') || lastAnthropicBody.system.includes('Customer Support') || lastAnthropicBody.system.length > 1000, 'uses non-empty CSA system prompt for csa role');
+assert(ansResult.escalate_decision === undefined, 'resolver strips planted escalate_decision');
+assert(ansResult.customer_message === undefined, 'resolver strips planted customer_message');
+assert(!lastAnthropicBody.system.includes('Customer Support Advocate'), 'system prompt has no Customer Support Advocate');
+assert(!lastAnthropicBody.system.includes('CSA mode'), 'system prompt has no CSA mode');
+assert(!lastAnthropicBody.system.includes('Specialist mode'), 'system prompt has no Specialist mode');
+assert(lastAnthropicBody.system.includes('diagnosis'), 'system prompt includes diagnosis');
+assert(lastAnthropicBody.system.includes('involvement'), 'system prompt includes involvement');
 assert(lastAnthropicBody.messages[0].content.includes('Issue: Zapier not syncing'), 'user content starts with cleaned question');
 assert(lastAnthropicBody.messages[0].content.includes('TK content'), 'user content includes team knowledge');
 assert(lastAnthropicBody.messages[0].content.includes('[TEAM KNOWLEDGE]'), 'user content has TEAM KNOWLEDGE delimiter');
@@ -2206,39 +2094,55 @@ assert(lastAnthropicBody.messages[0].content.includes('[SLACK RESULTS]'), 'user 
 assert(!lastAnthropicBody.messages[0].content.includes('[KB RESULTS]'), 'kb absent → no KB delimiter');
 assert(!lastAnthropicBody.messages[0].content.includes('[JIRA RESULTS]'), 'jira absent → no JIRA delimiter');
 assert(lastAnthropicBody.messages[0].content.includes('IMPORTANT — Past corrections'), 'user content includes feedback');
-assert(!('mcp_servers' in lastAnthropicBody), 'no mcp_servers in answerer call (Slack moved to Web API)');
-assert(!('betas' in lastAnthropicBody), 'no betas: ["mcp-client-..."] in answerer call');
+assert(!('mcp_servers' in lastAnthropicBody), 'no mcp_servers in resolver call (Slack moved to Web API)');
+assert(!('betas' in lastAnthropicBody), 'no betas: ["mcp-client-..."] in resolver call');
 
-// Specialist role uses specialist prompt
-await runAnswerer({
-  cleanedQuestion: 'q',
+// Two runResolver calls do not change the prompt based on a role
+const firstSystem = lastAnthropicBody.system;
+await runResolver({
+  cleanedQuestion: 'q2',
   searchResults: { kb: null, confluence: null, jira: null, slack: null },
-  role: 'specialist',
   teamKnowledge: null,
   feedbackContext: '',
 });
-assert(lastAnthropicBody.system.includes('Specialist') || lastAnthropicBody.system.includes('specialist'), 'uses Specialist prompt for specialist role');
-
-// agentName must NOT leak into system prompt (caused third-person customer_message bug)
-await runAnswerer({
-  cleanedQuestion: 'q',
-  searchResults: { kb: null, confluence: null, jira: null, slack: null },
-  role: 'csa',
-  teamKnowledge: null,
-  feedbackContext: '',
-  agentName: 'Sarah',
-});
-assert(!lastAnthropicBody.system.includes('Sarah'), 'system prompt does NOT include agent name (prevents third-person customer_message)');
+assert(lastAnthropicBody.system === firstSystem, 'runResolver prompt is stable across calls (no role argument)');
 
 // Empty feedback context doesn't add anything
-await runAnswerer({
+await runResolver({
   cleanedQuestion: 'q',
   searchResults: { kb: null, confluence: null, jira: null, slack: null },
-  role: 'csa',
   teamKnowledge: null,
   feedbackContext: '',
 });
 assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback adds nothing');
+
+// runReply returns only { customer_message }
+globalThis.fetch = async (url, opts) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) {
+    lastAnthropicBody = JSON.parse(opts.body);
+    return new Response(JSON.stringify({
+      content: [{ type: 'text', text: '{"customer_message":"Hi there, we are fixing this.","extra":"drop"}' }],
+      stop_reason: 'end_turn',
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return origFetchAns(url, opts);
+};
+const replyResult = await runReply({
+  cleanedQuestion: 'Zapier not syncing',
+  resolver: { issue_title: 'Test', diagnosis: 'API off', steps: [], involvement: { needed: false } },
+  searchResults: {
+    kb: null,
+    confluence: { text: 'C content', refs: [], priority: 'high' },
+    jira: null,
+    slack: { text: 'S content', refs: [], priority: 'high' },
+  },
+});
+assert(Object.keys(replyResult).length === 1 && replyResult.customer_message === 'Hi there, we are fixing this.', 'runReply returns only { customer_message }');
+assert(lastAnthropicBody.system.includes('customer_message'), 'reply system prompt required key is customer_message');
+assert(lastAnthropicBody.messages[0].content.includes('[RESOLVER]'), 'reply user content includes [RESOLVER]');
+assert(lastAnthropicBody.messages[0].content.includes('[CONFLUENCE RESULTS]'), 'reply user content includes research blocks');
+assert(lastAnthropicBody.messages[0].content.includes('[SLACK RESULTS]'), 'reply user content includes slack research');
 
 globalThis.fetch = origFetchAns;
 delete process.env.ANTHROPIC_API_KEY;
@@ -2391,27 +2295,18 @@ const bakedResult = {
   issue_title: 'Zapier broke',
   integration_type: 'Zapier',
   _originalQuery: 'original asker query',
-  _showSpecialistValue: JSON.stringify({ threadTs: 'T_OLD', channelId: 'C_OLD', query: 'old' }),
   _cleanedQuestion: 'zapier broke',
 };
 
 const stripped = stripTransient(bakedResult);
 assert(stripped._originalQuery === undefined, 'stripTransient drops _originalQuery');
-assert(stripped._showSpecialistValue === undefined, 'stripTransient drops _showSpecialistValue');
 assert(stripped._cleanedQuestion === undefined, 'stripTransient drops _cleanedQuestion');
 assert(stripped.issue_title === 'Zapier broke', 'stripTransient keeps real fields');
 assert(bakedResult._originalQuery === 'original asker query', 'stripTransient does not mutate the input');
 
-// A CSA in a NEW thread must get a button pointing at THEIR thread, not the cached one
-const csaView = withRequestContext(bakedResult, { query: 'new query', threadTs: 'T_NEW', channelId: 'C_NEW', role: 'csa' });
-const csaVal = JSON.parse(csaView._showSpecialistValue);
-assert(csaVal.threadTs === 'T_NEW' && csaVal.channelId === 'C_NEW', 'withRequestContext rebinds specialist button to current thread/channel');
-assert(csaView._originalQuery === 'new query', 'withRequestContext sets _originalQuery to current query');
-assert(bakedResult._showSpecialistValue.includes('T_OLD'), 'withRequestContext does not mutate the cached input');
-
-// A specialist must NOT receive the "Show Specialist Detail" affordance
-const specialistView = withRequestContext(bakedResult, { query: 'q', threadTs: 'T2', channelId: 'C2', role: 'specialist' });
-assert(specialistView._showSpecialistValue === undefined, 'withRequestContext withholds specialist button from specialists');
+const ownerView = withRequestContext(bakedResult, { query: 'new query', threadTs: 'T_NEW', channelId: 'C_NEW' });
+assert(ownerView._originalQuery === 'new query', 'withRequestContext sets _originalQuery to current query');
+assert(ownerView._showSpecialistValue === undefined, 'withRequestContext does not set _showSpecialistValue');
 
 // ── Block Kit clamping (invalid_blocks / stuck-thinking guard) ────────────────
 console.log('\n🔹 Block Kit clamping');
@@ -2433,14 +2328,15 @@ const overflowResult = {
   issue_title: HUGE,
   confidence: 'high',
   customer_message: HUGE,
-  findings_summary: { diagnosis: HUGE },
-  agent_steps: [
+  diagnosis: HUGE,
+  steps: [
     { num: 1, title: HUGE, detail: HUGE, tag: 'action' },
     { num: 2, title: 'ok', detail: HUGE, tag: 'verify' },
   ],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   sources_used: ['kb'],
 };
-const overflowBlocks = buildResponseBlocks(overflowResult, { role: 'csa' });
+const overflowBlocks = buildResponseBlocks(overflowResult);
 assertWithinSlackLimits(overflowBlocks, 'buildResponseBlocks');
 assert(overflowBlocks.some(b => b.type === 'header'), 'overflow response still produces a header');
 
@@ -2465,8 +2361,10 @@ const normalBlocks = buildResponseBlocks({
   issue_title: 'Zapier API access',
   confidence: 'high',
   customer_message: 'Short message.',
-  agent_steps: [{ num: 1, title: 'Do it', detail: 'Details here.', tag: 'action' }],
-}, { role: 'csa' });
+  diagnosis: 'Short diagnosis.',
+  steps: [{ num: 1, title: 'Do it', detail: 'Details here.', tag: 'action' }],
+  involvement: { needed: false, who: null, reason: null, channel: null },
+});
 assert(JSON.stringify(normalBlocks).includes('Zapier API access'), 'normal title not truncated');
 assert(!JSON.stringify(normalBlocks).includes('…'), 'normal content has no ellipsis');
 
@@ -2503,22 +2401,37 @@ sequenceResponses.push(
   anthropicMock('{"cleaned_question":"vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which one?","search_plan":null}'),
 );
 globalThis.fetch = passThroughFetch;
-const lowConfResult = await runPipeline({ rawQuery: 'vague', role: 'csa' });
+const lowConfResult = await runPipeline({ rawQuery: 'vague' });
 assert(lowConfResult.clarifying_question === 'Which one?', 'low-confidence shortcut returns clarifying_question');
 assert(stepCounter === 1, 'only Interpreter was called');
 
-// Test B: sufficient:true → skips refinement
+// Test B: sufficient:true → skips refinement; customer_mentioned false → no reply stage
 stepCounter = 0;
 sequenceResponses.length = 0;
 sequenceResponses.push(
   anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
-  anthropicMock('{"issue_title":"T","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","confidence":"high","diagnosis":"API off","steps":[{"num":1,"title":"Enable","detail":"Toggle","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"],"customer_message":"should be stripped","escalate_decision":{"should_escalate":false,"reason":"x"}}'),
 );
 globalThis.fetch = passThroughFetch;
-const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
-assert(okPipeResult.issue_title === 'T', 'Answerer ran');
-assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (no refinement)');
+const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke' });
+assert(okPipeResult.issue_title === 'T', 'Resolver ran');
+assert(okPipeResult.customer_message === undefined, 'customer_mentioned false → no customer_message even if resolver mock planted one');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Resolver (no reply) for slack-only plan');
+
+// Test B2: customer_mentioned true → fourth reply call
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":true,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","confidence":"high","diagnosis":"API off","steps":[{"num":1,"title":"Enable","detail":"Toggle","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"],"customer_message":"should be stripped","escalate_decision":{"should_escalate":false,"reason":"x"}}'),
+  anthropicMock('{"customer_message":"Hi there, the Zapier API access toggle is off."}'),
+);
+globalThis.fetch = passThroughFetch;
+const replyPipeResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' });
+assert(replyPipeResult.customer_message === 'Hi there, the Zapier API access toggle is off.', 'customer_mentioned true uses reply customer_message');
+assert(stepCounter === 4, 'Interpreter + Evaluator + Resolver + Reply when customer mentioned');
 
 // Test C: sufficient:false → exactly one refinement
 stepCounter = 0;
@@ -2526,27 +2439,26 @@ sequenceResponses.length = 0;
 sequenceResponses.push(
   anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
   anthropicMock('{"sufficient":false,"rationale":"miss","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"q2"}]}}'),
-  anthropicMock('{"issue_title":"T2","integration_type":"Zapier","is_accounting_topic":false,"confidence":"medium","customer_message":"","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  anthropicMock('{"issue_title":"T2","integration_type":"Zapier","confidence":"medium","diagnosis":"d","steps":[{"num":1,"title":"Enable","detail":"Toggle","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 );
 globalThis.fetch = passThroughFetch;
-const refinedResult = await runPipeline({ rawQuery: 'Zapier broke', role: 'csa' });
-assert(refinedResult.issue_title === 'T2', 'Answerer ran after refinement');
-assert(stepCounter === 3, 'Interpreter + Evaluator + Answerer (refinement triggers a second SEARCH, not a second Evaluator)');
+const refinedResult = await runPipeline({ rawQuery: 'Zapier broke' });
+assert(refinedResult.issue_title === 'T2', 'Resolver ran after refinement');
+assert(stepCounter === 3, 'Interpreter + Evaluator + Resolver (refinement triggers a second SEARCH, not a second Evaluator)');
 
 // Test D: low confidence BUT clarification capped (thread follow-up) → answers
-// best-effort instead of re-asking. Guards against the clarification loop.
 stepCounter = 0;
 sequenceResponses.length = 0;
 sequenceResponses.push(
   anthropicMock('{"cleaned_question":"still vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which one?","search_plan":null}'),
   anthropicMock('{"sufficient":true,"rationale":"ok","refined_plan":null}'),
-  anthropicMock('{"issue_title":"Best effort","integration_type":"General","is_accounting_topic":false,"confidence":"low","customer_message":"","escalate_decision":{"should_escalate":true,"reason":"thin"},"channel_recommendation":{"channel":"ask-integrations","reason":""},"agent_steps":[],"findings_summary":{"diagnosis":"","actions":[]},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":[]}'),
+  anthropicMock('{"issue_title":"Best effort","integration_type":"General","confidence":"low","diagnosis":"thin","steps":[{"num":1,"title":"Escalate","detail":"Ask team","tag":"escalate"}],"involvement":{"needed":true,"who":"engineering","reason":"thin","channel":"#ask-integrations"},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":[]}'),
 );
 globalThis.fetch = passThroughFetch;
-const cappedResult = await runPipeline({ rawQuery: 'still vague', role: 'csa', allowClarify: false });
+const cappedResult = await runPipeline({ rawQuery: 'still vague', allowClarify: false });
 assert(!cappedResult.clarifying_question, 'allowClarify:false does NOT return a clarifying question on low confidence (no re-ask loop)');
 assert(cappedResult.issue_title === 'Best effort', 'clarification-capped low-confidence query still gets a best-effort answer');
-assert(stepCounter === 3, 'capped path runs Interpreter + Evaluator + Answerer instead of shortcutting to clarify');
+assert(stepCounter === 3, 'capped path runs Interpreter + Evaluator + Resolver instead of shortcutting to clarify');
 
 // Test E: low confidence with clarification allowed (initial turn) still asks once
 stepCounter = 0;
@@ -2555,12 +2467,11 @@ sequenceResponses.push(
   anthropicMock('{"cleaned_question":"vague","intent":"unclear","entities":{"integration":null,"error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":null},"question_confidence":"low","clarifying_question":"Which integration?","search_plan":null}'),
 );
 globalThis.fetch = passThroughFetch;
-const firstAskResult = await runPipeline({ rawQuery: 'vague', role: 'csa', allowClarify: true });
+const firstAskResult = await runPipeline({ rawQuery: 'vague', allowClarify: true });
 assert(firstAskResult.clarifying_question === 'Which integration?', 'allowClarify:true (initial turn) still asks exactly one clarifying question');
 assert(stepCounter === 1, 'clarify shortcut still short-circuits before search when allowed');
 
-// Test F: even if the ANSWERER emits a clarifying-question-only response, a capped
-// follow-up must not re-ask — the pipeline strips it and coerces to best-effort.
+// Test F: clarifying-only resolver on capped follow-up → coerce to escalate-style best effort
 stepCounter = 0;
 sequenceResponses.length = 0;
 sequenceResponses.push(
@@ -2569,9 +2480,11 @@ sequenceResponses.push(
   anthropicMock('{"clarifying_question":"Is it the API or the webhook?"}'),
 );
 globalThis.fetch = passThroughFetch;
-const answererClarifyCapped = await runPipeline({ rawQuery: 'follow up', role: 'csa', allowClarify: false });
-assert(!answererClarifyCapped.clarifying_question, 'answerer clarifying-only is stripped when clarification is capped (no loop via the answerer stage)');
-assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'capped answerer-clarify coerces to an escalate-style best-effort result');
+const answererClarifyCapped = await runPipeline({ rawQuery: 'follow up', allowClarify: false });
+assert(!answererClarifyCapped.clarifying_question, 'resolver clarifying-only is stripped when clarification is capped');
+assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'capped clarifying-only coerces issue_title');
+assert(answererClarifyCapped.involvement?.needed === true, 'capped clarifying-only sets involvement.needed true');
+assert(answererClarifyCapped.involvement?.who === 'engineering', 'capped clarifying-only sets involvement.who to engineering');
 
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
@@ -2603,11 +2516,12 @@ const sampleResult = {
   issue_title: 'Zapier API access',
   confidence: 'high',
   customer_message: 'Hi customer, here is the fix.',
-  findings_summary: { diagnosis: 'API access disabled at backend.' },
-  agent_steps: [
+  diagnosis: 'API access disabled at backend.',
+  steps: [
     { num: 1, title: 'Enable API access', detail: 'Toggle in admin settings.', tag: 'action' },
     { num: 2, title: 'Verify token', detail: 'Reissue if needed.', tag: 'verify' },
   ],
+  involvement: { needed: false, who: null, reason: null, channel: null },
   sources_used: ['slack', 'kb'],
 };
 const aaBlocks = buildAutoAnswerBlocks({
@@ -2902,13 +2816,12 @@ const contractAnswer = {
   integration_type: 'Zapier',
   confidence: 'high',
   customer_message: 'Hi [Name], Zapier API access is disabled and we are enabling it.',
-  escalate_decision: { should_escalate: false, reason: 'CSA can handle this.' },
-  channel_recommendation: { channel: 'ks-integration', reason: 'Known setup issue.' },
-  findings_summary: { diagnosis: 'Zapier API access is disabled.', actions: ['Enable access'] },
-  agent_steps: [
+  diagnosis: 'Zapier API access is disabled.',
+  steps: [
     { num: 1, title: 'Enable API access', detail: 'Enable Zapier API access for the tenant.', tag: 'backend' },
     { num: 2, title: 'Verify reconnect', detail: 'Ask the customer to reconnect Zapier.', tag: 'verify' },
   ],
+  involvement: { needed: false, who: null, reason: 'Known setup issue.', channel: null },
   slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access fix' }],
   atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/x', title: 'Zapier API access setup' }],
   kb_refs: [{ url: 'https://help.servicetitan.com/docs/zapier', title: 'Zapier API access help', snippet: 'Enable access.' }],
@@ -2932,7 +2845,10 @@ assert(contract.queryHash.startsWith('sha256:'), 'contract stores query hash');
 assert(contract.queryPreview === 'Zapier API access disabled', 'contract stores short sanitized query preview');
 assert(contract.issueTitle === 'Zapier API Access', 'contract maps issue title');
 assert(contract.integrationType === 'Zapier', 'contract maps integration type');
-assert(contract.sections.steps.length === 2, 'contract maps each agent step');
+assert(contract.sections.steps.length === 2, 'contract maps each step');
+assert(contract.role === 'owner', 'contract.role is always owner');
+assert(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'csa', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }).role === 'owner', 'contract.role is owner even when caller passes role: csa');
+assert(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'specialist', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }).role === 'owner', 'contract.role is owner even when caller passes role: specialist');
 assert(contract.sections.steps[0].id.startsWith('claim_'), 'contract creates claim ids');
 assert(contract.evidence.length === 3, 'contract maps all refs to evidence');
 assert(contract.evidence.every(e => e.snippet === undefined), 'contract does not store raw snippet field');
@@ -2941,7 +2857,7 @@ assert(contract.sections.diagnosis.evidenceIds.length > 0, 'diagnosis gets appro
 assert(contract.sections.customerMessage.evidenceIds.every(id => contract.evidence.find(e => e.id === id)?.sensitivity === 'safe'), 'customer message maps only safe evidence ids');
 
 const sparseContract = buildAnswerEvidenceContract({
-  answer: { issue_title: 'Unknown issue', agent_steps: [] },
+  answer: { issue_title: 'Unknown issue', steps: [] },
   query: '',
   role: 'csa',
   channelId: 'C123',
@@ -2950,6 +2866,21 @@ const sparseContract = buildAnswerEvidenceContract({
 });
 assert(isValidAnswerEvidenceContract(sparseContract), 'sparse answer still produces valid contract');
 assert(sparseContract.evidence.length === 0, 'sparse answer has empty evidence');
+
+const legacyOnlyContract = buildAnswerEvidenceContract({
+  answer: {
+    issue_title: 'Legacy only',
+    agent_steps: [{ num: 1, title: 'Old step', detail: 'From agent_steps', tag: 'action' }],
+    findings_summary: { diagnosis: 'Hidden findings diagnosis' },
+  },
+  query: 'legacy',
+  role: 'csa',
+  channelId: 'C123',
+  threadTs: '1700000000.000',
+  now: new Date('2026-07-09T00:00:00.000Z'),
+});
+assert(legacyOnlyContract.sections.steps.length === 0, 'answer with only agent_steps produces empty steps');
+assert(legacyOnlyContract.sections.diagnosis.text === '', 'answer with only findings_summary.diagnosis produces empty diagnosis text');
 
 // ── quality shared normalization and nomination policy skeleton ──────────────
 console.log('\n🔹 quality shared normalization and nomination policy skeleton');
@@ -4167,7 +4098,6 @@ const oldQualityLayerEnabled = process.env.QUALITY_LAYER_ENABLED;
 const oldQualityShadowMode = process.env.QUALITY_LAYER_SHADOW_MODE;
 const oldQualityNominationPolicyEnabled = process.env.QUALITY_NOMINATION_POLICY_ENABLED;
 const oldAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
-const oldNewPipeline = process.env.NEW_PIPELINE;
 const readJsonl = async (file) => (await readFile(file, 'utf-8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 
 process.env.QUALITY_LAYER_ENABLED = 'false';
@@ -4383,7 +4313,7 @@ for (const [label, nominationPolicyEvaluator] of [
   assert.deepEqual(failureRecord.contract?.quality?.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure returns canonical policy_failed summary`);
   assert.deepEqual(failureShadowRecord.quality.nominationPolicy, CANONICAL_POLICY_FAILURE_SUMMARY, `${label} nomination policy failure persists canonical policy_failed summary`);
   assert.deepEqual(Object.keys(failureAuditRecord.metadata).sort(), Object.keys(policyDisabledAuditRecord.metadata).sort(), `${label} nomination policy failure leaves audit metadata keys unchanged`);
-  assert(failureShadowRecord.quality.stepCoverage.stepCount === contractAnswer.agent_steps.length, `${label} nomination policy failure still persists base step coverage`);
+  assert(failureShadowRecord.quality.stepCoverage.stepCount === contractAnswer.steps.length, `${label} nomination policy failure still persists base step coverage`);
   assert(failureShadowRecord.answerId === failureRecord.contract?.answerId, `${label} nomination policy failure still persists the base answer-evidence contract`);
   assert(policyWarnMessages.length === 1, `${label} nomination policy failure emits exactly one warning`);
   assert(policyWarnMessages[0] === '[quality] nomination policy failed', `${label} nomination policy failure emits the generic bounded warning`);
@@ -4475,7 +4405,6 @@ const mentionShadowParent = join(mentionShadowDir, 'not-a-directory');
 await writeFile(mentionShadowParent, 'plain file');
 _setQualityShadowFileForTest(join(mentionShadowParent, 'shadow.jsonl'));
 _setQualityAuditFileForTest(join(mentionShadowDir, 'audit.jsonl'));
-process.env.NEW_PIPELINE = 'true';
 process.env.ANTHROPIC_API_KEY = 'test';
 
 const origFetchMention = globalThis.fetch;
@@ -4483,7 +4412,7 @@ let mentionStepCounter = 0;
 const mentionResponses = [
   anthropicMock('{"cleaned_question":"zapier api access disabled","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"api access disabled"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier api access disabled"}],"rationale":"r"}}'),
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
-  anthropicMock('{"issue_title":"Zapier API Access","integration_type":"Zapier","is_accounting_topic":false,"confidence":"high","customer_message":"Hi.","escalate_decision":{"should_escalate":false,"reason":""},"channel_recommendation":{"channel":"","reason":""},"agent_steps":[{"num":1,"title":"Enable API access","detail":"Enable Zapier API access for the tenant.","tag":"backend"}],"findings_summary":{"diagnosis":"Zapier API access is disabled.","actions":["Enable access"]},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C1/p1","channel":"#ask-integrations","title":"Zapier API access fix"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  anthropicMock('{"issue_title":"Zapier API Access","integration_type":"Zapier","confidence":"high","diagnosis":"Zapier API access is disabled.","steps":[{"num":1,"title":"Enable API access","detail":"Enable Zapier API access for the tenant.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C1/p1","channel":"#ask-integrations","title":"Zapier API access fix"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 ];
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
@@ -4519,8 +4448,6 @@ assert(mentionChatPosts.some((payload) => payload.text === 'Checking…'), 'ment
 globalThis.fetch = origFetchMention;
 if (oldAnthropicApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = oldAnthropicApiKey;
-if (oldNewPipeline === undefined) delete process.env.NEW_PIPELINE;
-else process.env.NEW_PIPELINE = oldNewPipeline;
 if (oldQualityLayerEnabled === undefined) delete process.env.QUALITY_LAYER_ENABLED;
 else process.env.QUALITY_LAYER_ENABLED = oldQualityLayerEnabled;
 if (oldQualityShadowMode === undefined) delete process.env.QUALITY_LAYER_SHADOW_MODE;
