@@ -1,5 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ANSWERER_PROMPT_CSA, ANSWERER_PROMPT_SPECIALIST, parseClaudeResponse } from './prompts/answerer.js';
+import { RESOLVER_PROMPT } from './prompts/resolver.js';
+import { REPLY_PROMPT } from './prompts/reply.js';
+import { parseClaudeResponse } from './prompts.js';
+import { RETIRED_ROLE_FIELDS, NON_MODEL_FIELDS } from './answer-schema.js';
 
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
@@ -25,39 +28,18 @@ function getAnthropicClient() {
   return anthropic;
 }
 
-/**
- * Final stage of the pipeline. Calls Claude Sonnet with pre-fetched search
- * results and team context. No MCP — search happened upstream.
- *
- * @param {object} args
- * @param {string} args.cleanedQuestion
- * @param {object} args.searchResults - { kb, confluence, jira, slack }, each {text,refs,priority}|null
- * @param {'csa'|'specialist'} args.role
- * @param {string|null} args.teamKnowledge
- * @param {string} args.feedbackContext
- * @param {string|null} [args.agentName]
- * @returns {Promise<object>} Parsed JSON response. Throws on Anthropic failure or parse failure.
- */
-export async function runAnswerer({
-  cleanedQuestion,
-  searchResults,
-  role,
-  teamKnowledge,
-  feedbackContext,
-  agentName = null,
-  signal: externalSignal,
-}) {
-  const basePrompt = role === 'specialist' ? ANSWERER_PROMPT_SPECIALIST : ANSWERER_PROMPT_CSA;
-  const systemPrompt = basePrompt;
+function appendResearchBlocks(userContent, searchResults, { teamKnowledge, feedbackContext } = {}) {
+  let content = userContent;
+  if (teamKnowledge) content += `\n\n[TEAM KNOWLEDGE]\n${teamKnowledge}\n[/TEAM KNOWLEDGE]`;
+  if (searchResults.kb?.text)         content += `\n\n[KB RESULTS]\n${searchResults.kb.text}\n[/KB RESULTS]`;
+  if (searchResults.confluence?.text) content += `\n\n[CONFLUENCE RESULTS]\n${searchResults.confluence.text}\n[/CONFLUENCE RESULTS]`;
+  if (searchResults.jira?.text)       content += `\n\n[JIRA RESULTS]\n${searchResults.jira.text}\n[/JIRA RESULTS]`;
+  if (searchResults.slack?.text)      content += `\n\n[SLACK RESULTS]\n${searchResults.slack.text}\n[/SLACK RESULTS]`;
+  if (feedbackContext)                content += feedbackContext;
+  return content;
+}
 
-  let userContent = `Issue: ${cleanedQuestion}`;
-  if (teamKnowledge) userContent += `\n\n[TEAM KNOWLEDGE]\n${teamKnowledge}\n[/TEAM KNOWLEDGE]`;
-  if (searchResults.kb?.text)         userContent += `\n\n[KB RESULTS]\n${searchResults.kb.text}\n[/KB RESULTS]`;
-  if (searchResults.confluence?.text) userContent += `\n\n[CONFLUENCE RESULTS]\n${searchResults.confluence.text}\n[/CONFLUENCE RESULTS]`;
-  if (searchResults.jira?.text)       userContent += `\n\n[JIRA RESULTS]\n${searchResults.jira.text}\n[/JIRA RESULTS]`;
-  if (searchResults.slack?.text)      userContent += `\n\n[SLACK RESULTS]\n${searchResults.slack.text}\n[/SLACK RESULTS]`;
-  if (feedbackContext)                userContent += feedbackContext;
-
+async function callClaude({ systemPrompt, userContent, signal: externalSignal, stageLabel }) {
   const localController = new AbortController();
   const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
   const signal = externalSignal
@@ -83,15 +65,89 @@ export async function runAnswerer({
     } catch (parseErr) {
       // Malformed/truncated LLM JSON is common and usually recovers on a re-roll.
       // Tag it so runPipeline retries once instead of failing the whole request.
-      console.error('[answerer] parse failed — head of model output:', JSON.stringify(fullText.slice(0, 200)));
-      throw Object.assign(new Error(`Could not parse Answerer response: ${parseErr.message}`), { parseFailure: true });
+      console.error(`[${stageLabel}] parse failed — head of model output:`, JSON.stringify(fullText.slice(0, 200)));
+      throw Object.assign(new Error(`Could not parse ${stageLabel} response: ${parseErr.message}`), { parseFailure: true });
     }
     if (!parsed) {
-      console.error('[answerer] parse returned no content — head of model output:', JSON.stringify(fullText.slice(0, 200)));
-      throw Object.assign(new Error('Answerer returned no parseable content.'), { parseFailure: true });
+      console.error(`[${stageLabel}] parse returned no content — head of model output:`, JSON.stringify(fullText.slice(0, 200)));
+      throw Object.assign(new Error(`${stageLabel} returned no parseable content.`), { parseFailure: true });
     }
     return parsed;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function stripRetiredFields(parsed) {
+  for (const field of RETIRED_ROLE_FIELDS) {
+    delete parsed[field];
+  }
+  for (const field of NON_MODEL_FIELDS) {
+    delete parsed[field];
+  }
+  return parsed;
+}
+
+/**
+ * Resolver stage. Produces diagnosis + steps + involvement for the case owner.
+ * No role, no agentName. Research is already in the context blocks.
+ *
+ * @param {object} args
+ * @param {string} args.cleanedQuestion
+ * @param {object} args.searchResults - { kb, confluence, jira, slack }, each {text,refs,priority}|null
+ * @param {string|null} args.teamKnowledge
+ * @param {string} args.feedbackContext
+ * @param {AbortSignal} [args.signal]
+ * @returns {Promise<object>} Parsed resolver JSON with retired/non-model fields stripped.
+ */
+export async function runResolver({
+  cleanedQuestion,
+  searchResults,
+  teamKnowledge,
+  feedbackContext,
+  signal: externalSignal,
+}) {
+  const userContent = appendResearchBlocks(
+    `Issue: ${cleanedQuestion}`,
+    searchResults,
+    { teamKnowledge, feedbackContext },
+  );
+
+  const parsed = await callClaude({
+    systemPrompt: RESOLVER_PROMPT,
+    userContent,
+    signal: externalSignal,
+    stageLabel: 'resolver',
+  });
+
+  return stripRetiredFields(parsed);
+}
+
+/**
+ * Reply stage. Writes customer_message only from the resolver result + research.
+ *
+ * @param {object} args
+ * @param {string} args.cleanedQuestion
+ * @param {object} args.resolver - Parsed resolver result
+ * @param {object} args.searchResults
+ * @param {AbortSignal} [args.signal]
+ * @returns {Promise<{ customer_message: string }>}
+ */
+export async function runReply({
+  cleanedQuestion,
+  resolver,
+  searchResults,
+  signal: externalSignal,
+}) {
+  let userContent = `Issue: ${cleanedQuestion}\n\n[RESOLVER]\n${JSON.stringify(resolver)}\n[/RESOLVER]`;
+  userContent = appendResearchBlocks(userContent, searchResults);
+
+  const parsed = await callClaude({
+    systemPrompt: REPLY_PROMPT,
+    userContent,
+    signal: externalSignal,
+    stageLabel: 'reply',
+  });
+
+  return { customer_message: parsed.customer_message };
 }
