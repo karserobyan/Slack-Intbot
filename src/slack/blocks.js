@@ -433,15 +433,21 @@ export function buildHelpBlocks() {
 }
 
 /**
- * Builds the Specialist-only full reference, sent as an ephemeral in channels
- * or appended to the thread in DMs.
+ * Full reference for the case owner. Same audience as the short help card.
  * @returns {Array} Slack blocks array
  */
 export function buildHelpDetailBlocks() {
   return [
     {
       type: 'header',
-      text: { type: 'plain_text', text: '📖 Full Reference — Specialists', emoji: true },
+      text: { type: 'plain_text', text: '📖 Full Reference', emoji: true },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*What the card shows*\nDiagnosis and steps come first. If the question named a customer, a draft reply sits underneath. Sources are listed for every answer. When another team has to be involved, the card names engineering, a partner, or the leads channel.',
+      },
     },
     {
       type: 'section',
@@ -454,21 +460,14 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Wrong Answer feedback*\nClick 👎 Wrong Answer → describe the correct answer → goes to pending review in the feedback channel → if approved, the correction is injected into future Claude prompts for the same query type.',
+        text: '*Wrong Answer feedback*\nClick 👎 Wrong Answer → describe the correct answer → goes to pending review in the feedback channel → if approved, the correction is injected into future prompts for the same query type.',
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Show Specialist Detail button*\nAppears on CSA responses. Clicking it triggers a second Claude call in Specialist mode and posts the full technical response in the same thread — useful when a CSA wants more depth without re-asking.',
-      },
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: '*Thread continuation*\nAfter my first response, any follow-up in the same thread enters guided diagnostic mode — I ask yes/no questions to narrow down the root cause, then deliver a final answer.',
+        text: '*Thread continuation*\nAfter the first response, a follow-up in the same thread stays on the case. The bot answers or escalates. It does not ask a second clarifying question.',
       },
     },
     {
@@ -480,7 +479,7 @@ export function buildHelpDetailBlocks() {
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_This reference is visible to Specialists only_' }],
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot · Case owner reference_' }],
     },
   ];
 }
