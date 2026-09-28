@@ -165,7 +165,7 @@ const sampleJson = {
     { url: 'https://help.servicetitan.com/zapier-setup', title: 'Setting up Zapier with ServiceTitan', snippet: 'Enable API access in the ST admin portal before connecting Zapier.' },
   ],
   sources_used: ['slack', 'confluence', 'jira', 'kb'],
-}};
+};
 
 // Parse from raw JSON string
 const parsed = parseClaudeResponse(JSON.stringify(sampleJson));
@@ -390,14 +390,19 @@ assert(spoofedKb.sensitive === true, 'substring-spoofed KB URL does not bypass s
 assert(sourcePolicy.filterRefsForRole === undefined, 'source-policy exports no filterRefsForRole');
 
 const dangerousResponseBlocks = buildResponseBlocks({
-  ...sampleJson,
+  issue_title: 'Safe title',
   confidence: 'low',
-  involvement: { needed: true, who: 'engineering', reason: DANGEROUS_TEXT, channel: DANGEROUS_TEXT },
-  steps: [{ num: 1, title: 'Safe title', detail: 'Safe detail', tag: DANGEROUS_TEXT }],
+  diagnosis: 'Safe diagnosis',
+  involvement: { needed: true, who: DANGEROUS_TEXT, reason: 'Needs a teammate', channel: DANGEROUS_TEXT },
+  steps: [{ num: 1, title: 'Safe title', detail: DANGEROUS_TEXT, tag: DANGEROUS_TEXT }],
+  customer_message: DANGEROUS_TEXT,
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
   sources_used: [DANGEROUS_TEXT],
 });
 const dangerousResponseJson = JSON.stringify(dangerousResponseBlocks);
-assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous involvement text and step tags');
+assert(!dangerousResponseJson.includes(DANGEROUS_TEXT), 'response blocks escape dangerous involvement, customer message, and step text');
 assert(dangerousResponseJson.includes(DANGEROUS_ESCAPED), 'response blocks keep escaped dangerous text visible');
 
 const responseBlocks = buildResponseBlocks(sampleJson);
