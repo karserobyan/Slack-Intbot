@@ -2,7 +2,7 @@
 
 _Last surveyed: 2026-05-19_
 
-An internal Slack bot for ServiceTitan integrations support agents. It answers customer-integration questions by searching and synthesizing knowledge from Slack history, Confluence, Jira, the public Knowledge Base (help.servicetitan.com), and a team-curated knowledge file. Responses are structured Block Kit messages with escalation signals, troubleshooting steps, customer-ready text, and sourced references.
+An internal Slack bot for ServiceTitan integrations support people who own the case. It answers customer-integration questions by running an always-on pipeline (Intake → Research → Resolver → optional Reply) over Slack history, Confluence, Jira, the public Knowledge Base (help.servicetitan.com), and a team-curated knowledge file. Responses are structured Block Kit messages with diagnosis, troubleshooting steps, involvement guidance, optional customer-ready text, and sourced references.
 
 ## Quick facts
 
@@ -19,7 +19,7 @@ An internal Slack bot for ServiceTitan integrations support agents. It answers c
 
 ### Mention handler — channel mentions
 - **Trigger:** Agent types `@IntegrationsBot <question>` in a channel
-- **Files:** `src/handlers/mention.js:439-459` (event registration) → `handleQuery()` at `src/handlers/mention.js:49`
+- **Files:** `src/handlers/mention.js` (event registration) → `handleQuery()`
 - **External services:** None at entry; downstream calls happen inside `handleQuery`
 - **State:** Adds to per-thread conversation history (4hr TTL, max 20 messages)
 
@@ -32,7 +32,7 @@ An internal Slack bot for ServiceTitan integrations support agents. It answers c
   - `start_chat_thread` button → seeded thread prompt
 - **Top-level messages** start a new conversation; thread replies are follow-ups. Both call the shared `handleQuery()`.
 
-Both entry points funnel into a deterministic **16-step flow** (see §13).
+Both entry points funnel into the shared query flow (see §13).
 
 ---
 
@@ -41,7 +41,7 @@ Both entry points funnel into a deterministic **16-step flow** (see §13).
 ### Accounting integration redirect
 - **What it does:** Detects accounting topics and points agents to `#ask-partner-enabled-accounting-integrations` without calling Claude
 - **Trigger:** Query matches the keyword regex (QuickBooks, NetSuite, Xero, "accounts payable", "GL accounts", etc.)
-- **How:** Step 3 calls `isAccountingTopic(query)`; step 12 double-checks Claude's response for `is_accounting_topic: true` as a safety net
+- **How:** Keyword check via `isAccountingTopic(query)` before the pipeline runs
 - **Files:** `src/utils/accounting-filter.js`, `src/slack/blocks.js:buildAccountingRedirectBlocks()`
 - **State:** None
 
@@ -52,9 +52,8 @@ Both entry points funnel into a deterministic **16-step flow** (see §13).
 
 ### Empty query & help
 - **Empty query:** Bot posts a greeting with example questions (channel only; silent in DMs)
-- **`help` command:** CSAs get a short help card; Specialists get an extended reference (ephemeral in channels, visible in DMs)
-- **Role detection:** Reads Slack profile title; "Specialist" + "Integrat" → specialist, else CSA
-- **Files:** `src/handlers/mention.js:52-115`, `src/slack/blocks.js:buildHelpBlocks()`, `buildHelpDetailBlocks()`
+- **`help` command:** Posts a help card (ephemeral in channels, visible in DMs). One audience — no CSA vs Specialist split.
+- **Files:** `src/handlers/mention.js`, `src/slack/blocks.js:buildHelpBlocks()`
 
 ---
 
@@ -64,7 +63,7 @@ Both entry points funnel into a deterministic **16-step flow** (see §13).
 - **What it does:** Stores Claude responses keyed by normalized query (lowercased, whitespace-collapsed). Identical queries within the TTL return instantly without calling Claude
 - **TTL:** 1 hour (`CACHE_TTL_MS`)
 - **Max entries:** 50; oldest evicted on overflow
-- **Files:** `src/slack/cache.js`, lookup at `src/handlers/mention.js:215`
+- **Files:** `src/slack/cache.js`, lookup in `src/handlers/mention.js`
 - **Invalidation:** Cleared when feedback corrections are approved (so stale answers don't replay)
 
 ---
@@ -74,82 +73,79 @@ Both entry points funnel into a deterministic **16-step flow** (see §13).
 ### Thread-level conversation memory
 - **What it does:** Tracks up to 20 messages per thread so agents can ask diagnostic follow-ups without repeating context
 - **TTL:** 4 hours; resets on each append
-- **Files:** `src/slack/conversation.js` (store), `src/handlers/mention.js:118-212` (follow-up branch), `src/claude/query.js:182-249` (`queryChat`)
-- **Behavior switch:** When `hasHistory(threadTs)` is true, the handler routes to `queryChat()` (state-machine: `diagnosing` or `resolved`) instead of the full `queryWithContext()`. This is how multi-turn diagnostics work — bot asks "Is API access enabled?", agent says "No", bot follows up.
+- **Files:** `src/slack/conversation.js` (store), `src/handlers/mention.js` (follow-up branch)
+- **Behavior:** Follow-ups re-enter `runPipeline` with thread history (`allowClarify=false` so the bot answers best-effort instead of re-asking).
 
 ### Streaming progress display
-- **What it does:** Updates the "Checking…" placeholder with rolling status: which sources are searching, result counts, "Now: writing answer…" when Claude starts emitting
-- **Files:** `src/slack/blocks.js:buildProgressBlocks()`, progress emission in `src/claude/query.js`
+- **What it does:** Updates the "Checking…" placeholder with rolling status: which pipeline stage is running, result counts, "Now: writing answer…" when Resolver/Reply start emitting
+- **Files:** `src/slack/blocks.js:buildProgressBlocks()`, progress emission in `src/claude/pipeline.js`
 - **External:** Multiple `chat.update` calls (rate-limited to ~1s cadence)
 
 ---
 
 ## 5. Question understanding & source selection
 
-### Multi-source knowledge fetch
-- **What it does:** Pre-fetches three sources in parallel before the Claude call, then optionally lets Claude search Slack live during inference via MCP
+### Pipeline Research stage
+- **What it does:** Intake builds a search plan; Research runs each source in parallel, then an evaluator may refine the plan once
 - **Sources:**
-  - **KB (Anthropic `web_search`, scoped to `help.servicetitan.com`)** — `src/claude/kb-search.js`, 15s timeout
-  - **Confluence (REST)** — `src/claude/atlassian-search.js`, text-search, limit 5, 8s timeout
-  - **Jira (REST)** — `src/claude/atlassian-search.js`, JQL search, limit 5, 8s timeout
+  - **KB (Anthropic `web_search`, scoped to `help.servicetitan.com`)** — `src/claude/kb-search.js`
+  - **Confluence (REST)** — `src/claude/atlassian-search.js`
+  - **Jira (REST)** — `src/claude/atlassian-search.js`
   - **Team knowledge** — `data/knowledge.md` via `src/slack/knowledge.js` (5-min cache)
-  - **Slack MCP** — Live, during Claude inference (optional; requires `SLACK_USER_TOKEN`)
-- **How they're combined:** Results are injected into the user message as `[KB RESULTS]`, `[CONFLUENCE RESULTS]`, `[JIRA RESULTS]`, `[TEAM KNOWLEDGE]`, and optional `[FEEDBACK CORRECTIONS]` blocks
-- **External services:** Anthropic API (used for both Claude inference and `web_search` for KB), Confluence REST, Jira REST, Slack MCP
+  - **Slack** — via search executor / optional Slack MCP (`SLACK_USER_TOKEN`)
+- **How they're combined:** Gathered results plus team knowledge and past corrections are passed into Resolver (and Reply when a customer was mentioned)
+- **External services:** Anthropic API (Claude + `web_search` for KB), Confluence REST, Jira REST, Slack search/MCP
 
-### Role-based prompts (CSA vs. Specialist)
-- **CSA prompt** (`prompts.js:SYSTEM_PROMPT_CSA`, ~200 lines):
-  - Escalation-first; simpler troubleshooting steps
-  - Filters out refs marked `sensitive: true` from the response
-  - Hard rules: never invent, ground every claim in search results
-- **Specialist prompt** (`prompts.js:SYSTEM_PROMPT_SPECIALIST`, ~200 lines):
-  - Full technical depth; shows all refs
-  - No "should I escalate?" decision (specialists already own the case)
-  - Same hard rules
+### One audience
+- No CSA vs Specialist prompt split. Everyone who owns the case gets the same Resolver card.
+- Involvement (when needed) points to engineering (`#ask-integrations`), a partner, or leads (`#ask-leads-integration`) — not an Integrations Specialist.
 
 ---
 
 ## 6. Full-response Claude pipeline
 
-### `queryWithContext()` — the main inference path
-- **Files:** `src/claude/query.js:51-157`
-- **Steps:**
-  1. Pick system prompt (CSA or Specialist)
-  2. Build user message with all pre-fetched context blocks
-  3. Stream Claude with MCP servers attached (Slack only, if token present)
-  4. Collect full text output
-  5. `parseClaudeResponse()` strips markdown fences and extracts the JSON object
-  6. Attach KB refs, auto-save new KB articles to `knowledge.md`
-- **Timeout:** 90s (`CLAUDE_TIMEOUT_MS`)
-- **Max tokens:** 4096 output
+### `runPipeline()` — the live inference path
+- **Files:** `src/claude/pipeline.js`
+- **Stages:**
+  1. **Intake (Interpreter)** — understand the question; may emit a clarifying question
+  2. **Research** — execute search plan; evaluator may refine once
+  3. **Resolver** (`runResolver` in `answerer.js`) — diagnosis, steps, involvement, refs
+  4. **Reply** (`runReply` in `answerer.js`) — only when Intake set `entities.customer_mentioned`; adds `customer_message`
+- **Hard cap:** 60s for the whole pipeline
+- **Per-call timeout:** `CLAUDE_TIMEOUT_MS` (default 90s) still applies to individual Anthropic calls within the cap
 
-### Response JSON schema (CSA / Specialist)
+### Response JSON schema (Resolver + optional Reply)
 
 ```json
 {
-  "issue_title": "string, max 6 words",
+  "issue_title": "string",
   "integration_type": "Zapier | Angi | RwG | ServiceChannel | Thumbtack | Procore | Chat-to-Text | General",
-  "is_accounting_topic": false,
   "confidence": "high | medium | low",
-  "customer_message": "string, paste-ready",
-  "escalate_decision": { "should_escalate": false, "reason": "string" },
-  "channel_recommendation": { "channel": "#channel-name", "reason": "string" },
-  "agent_steps": [
+  "diagnosis": "string (one sentence)",
+  "steps": [
     { "num": 1, "title": "string", "detail": "string", "tag": "action|backend|verify|escalate" }
   ],
-  "findings_summary": { "diagnosis": "string (one sentence)", "actions": ["string"] },
-  "slack_refs":     [ { "url": "...", "channel": "...", "title": "...", "sensitive": true } ],
-  "atlassian_refs": [ { "type": "confluence|jira", "url": "...", "title": "...", "sensitive": true } ],
+  "involvement": {
+    "needed": false,
+    "who": null,
+    "reason": "string",
+    "channel": null
+  },
+  "slack_refs":     [ { "url": "...", "channel": "...", "title": "..." } ],
+  "atlassian_refs": [ { "type": "confluence|jira", "url": "...", "title": "..." } ],
   "kb_refs":        [ { "url": "...", "title": "...", "snippet": "..." } ],
-  "sources_used": ["slack","confluence","jira","kb"]
+  "sources_used": ["slack","confluence","jira","kb"],
+  "customer_message": "string, paste-ready — only when a customer was mentioned"
 }
 ```
 
-When the bot is uncertain, it returns a simpler fallback:
+When Intake confidence is low and clarification is still allowed, the pipeline returns:
 
 ```json
 { "clarifying_question": "yes/no question for the agent" }
 ```
+
+Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is not a model field.
 
 ---
 
@@ -159,11 +155,11 @@ When the bot is uncertain, it returns a simpler fallback:
 - **Files:** `src/slack/blocks.js:buildResponseBlocks()`
 - **Pieces of the response card:**
   1. Header with issue title and confidence icon
-  2. Compact info line: escalation signal + channel recommendation
-  3. Diagnosis context (if available)
-  4. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate)
+  2. Diagnosis
+  3. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate)
+  4. Involvement (who / channel / reason) when another team is needed
   5. Source chips showing which source types contributed (📄 Confluence / Jira, 💬 Slack, 📖 KB)
-  6. Action buttons: **Wrong Answer**, **Sources**, **Copy Message**, (CSA only) **Show Specialist Detail**
+  6. Action buttons: **Wrong Answer**, **Sources**, **Copy Message** (when `customer_message` is present)
   7. Nomination suggestion if the response qualifies for the knowledge base
 
 ### Wrong-answer feedback flow
@@ -174,21 +170,17 @@ When the bot is uncertain, it returns a simpler fallback:
   3. Review card posted to `FEEDBACK_REVIEW_CHANNEL_ID` with Approve / Reject buttons
   4. **Approve** → moves to `data/feedback.json`, DMs the agent, **invalidates the response cache**, future similar queries inject the correction
   5. **Reject** → record deleted, agent DM'd
-- **Files:** `src/slack/feedback.js`, `src/slack/blocks.js:buildFeedbackModal()`, `src/index.js:212-336`, injection at `src/handlers/mention.js:254-273`
+- **Files:** `src/slack/feedback.js`, `src/slack/blocks.js:buildFeedbackModal()`, `src/index.js`, injection in `src/handlers/mention.js`
 - **Caps:** 500 active / 200 pending
 
 ### Knowledge nomination system
 - **Trigger:** Bot self-nominates a response if it meets criteria (has refs, no escalation, has steps, took >30s, not a clarifying question)
 - **Flow:**
-  1. Step 16 of `handleQuery` (`mention.js:408-433`) posts a nomination card to `FEEDBACK_CHANNEL`
+  1. `handleQuery` posts a nomination card to the feedback review channel
   2. **Approve** → `appendBotResponse()` writes to `data/knowledge.md` under the integration section; knowledge cache cleared
   3. **Reject** → discarded
-- **Files:** `src/slack/nominations.js`, `src/slack/knowledge-writer.js`, handlers at `src/index.js:338-374`
-
-### Specialist detail view
-- **Trigger:** CSA clicks "Show Specialist Detail" on a response
-- **Flow:** Re-runs `queryWithContext(query, { role: 'specialist' })` and posts the result in-thread. All refs shown (no sensitivity filter)
-- **Files:** Handler at `src/index.js:144-209`; button value set up at `src/handlers/mention.js:250`
+- **Files:** `src/slack/nominations.js`, `src/slack/knowledge-writer.js`, handlers in `src/index.js`
+- **Steward:** Wrong-answer corrections and knowledge.md nominations stay human-approved.
 
 ---
 
@@ -207,9 +199,9 @@ When the bot is uncertain, it returns a simpler fallback:
 - **Writes are serialized** via a Promise queue so concurrent writes don't race
 
 ### KB auto-save
-- **What it does:** When Claude's answer cites a `help.servicetitan.com` article, the bot appends it to `knowledge.md` if not already present (dedupe by URL)
-- **Trigger:** Automatic at end of `queryWithContext`
-- **Files:** `src/slack/knowledge-writer.js:appendKbArticle()`, hook in `src/claude/query.js`
+- **What it does:** When Research returns `help.servicetitan.com` articles, the bot appends them to `knowledge.md` if not already present (dedupe by URL)
+- **Trigger:** Automatic at end of `runPipeline`
+- **Files:** `src/slack/knowledge-writer.js:appendKbArticle()`, hook in `src/claude/pipeline.js`
 
 ---
 
@@ -217,15 +209,14 @@ When the bot is uncertain, it returns a simpler fallback:
 
 ### Health-check endpoint
 - **What:** `GET /health` (HTTP mode only) returns uptime, cache stats, source availability
-- **Files:** `src/index.js:388-399`
+- **Files:** `src/index.js`
 
 ### Periodic pruning
 - **What:** Every 15 minutes — remove expired cache entries and expired thread histories
-- **Files:** `src/index.js:376-385`, `src/slack/cache.js:pruneExpired()`, `src/slack/conversation.js:pruneConversations()`
+- **Files:** `src/index.js`, `src/slack/cache.js:pruneExpired()`, `src/slack/conversation.js:pruneConversations()`
 
 ### Startup validation
 - Required env vars present (`SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`)
-- `users:read` scope works (so role detection won't fail)
 - Feedback review channel configured and bot is a member
 - Slack MCP and Atlassian REST credentials check
 - Re-posts any pending feedback entries that got stuck across a restart
@@ -242,12 +233,12 @@ When the bot is uncertain, it returns a simpler fallback:
 ## 10. CLI simulator & tests
 
 ### `cli.js`
-- **What:** Interactive REPL for testing without Slack. Calls the full pipeline, prints color-coded output
+- **What:** Interactive REPL for testing without Slack. Calls `runPipeline({ rawQuery })`, prints color-coded diagnosis, steps, involvement, and optional customer message
 - **Commands:** plain text (submit query), `/wrong` (file feedback), `/feedback` (list recent), `quit`
 - **Run:** `ANTHROPIC_API_KEY=... node cli.js`
 
 ### `test.js`
-- **What:** Plain `assert()` test suite, no framework. 419 assertions across cache, conversation, feedback, knowledge writer, accounting filter, parsers, all Block Kit builders, modals, progress blocks
+- **What:** Plain `assert()` test suite, no framework. Assertions across cache, conversation, feedback, knowledge writer, accounting filter, parsers, all Block Kit builders, modals, progress blocks
 - **Run:** `node test.js` — must pass 0 failures before any PR
 - **Convention from `CLAUDE.md`:** All tests must pass before a PR is opened
 
@@ -276,37 +267,36 @@ All three live in `data/` and are **gitignored**.
 - `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`
 
 ### Recommended
-- `SLACK_USER_TOKEN` — enables Slack MCP search (else Claude has no live Slack tool)
+- `SLACK_USER_TOKEN` — enables Slack MCP search (else Research has no live Slack tool)
 - `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` — Confluence + Jira REST (Basic Auth)
 - `FEEDBACK_REVIEW_CHANNEL_ID` — moderation queue channel
 
 ### Optional
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
-- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `NEW_PIPELINE`, `PORT`, `LOG_LEVEL`
+- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
 
 ---
 
-## 13. The 16-step query flow
+## 13. The query flow
 
-When a `@mention` or DM arrives, both entry points call `handleQuery()` in `src/handlers/mention.js:49`. The flow is deterministic and early-exits at the first fast path:
+When a `@mention` or DM arrives, both entry points call `handleQuery()` in `src/handlers/mention.js`. The flow is deterministic and early-exits at the first fast path:
 
 1. Strip `<@U…>` bot mention from text
 2. Empty query → greeting + return
 3. Rate limit check (5/min/user) → "slow down" + return if exceeded
 4. Accounting keyword check → fast redirect + return
 5. `help` command → help card + return
-6. **Thread has history** → follow-up branch (`queryChat` state machine), return
-7. Cache hit → return cached
-8. Role detection + post "Checking…" placeholder (parallel)
-9. Inject sanitized feedback corrections
-10. **Full Claude query** (`queryWithContext`) — pre-fetch KB/Confluence/Jira, stream Claude with Slack MCP, parse JSON
-11. Attach metadata, conditionally cache
-12. Accounting double-check on Claude's response (safety net)
-13. Clarifying-question early-return (if Claude couldn't answer confidently)
-14. Deliver final response card
-15. Seed conversation history (for follow-ups)
-16. Nominate response for the knowledge base if it qualifies
+6. Cache hit → return cached
+7. Post "Checking…" placeholder
+8. **`runPipeline({ rawQuery })`** — Intake → Research (search + evaluator, one refine) → Resolver → Reply only when `entities.customer_mentioned` (60s hard cap)
+9. Attach metadata, conditionally cache
+10. Clarifying-question early-return (if Intake couldn't answer confidently)
+11. Deliver final response card
+12. Seed conversation history (for follow-ups)
+13. Nominate response for the knowledge base if it qualifies (human-approved Steward)
+
+Thread follow-ups re-enter the same pipeline with history and `allowClarify=false`.
 
 ---
 
@@ -322,23 +312,20 @@ User query
 Cache hit? ── serve cached, return
    │
    ▼
-Thread has history? ── queryChat (state machine), return
-   │
-   ▼
-Full query:
-   ├─ Pre-fetch in parallel: KB, Confluence, Jira  (8s timeout each)
-   ├─ Inject: data/knowledge.md, past corrections, search results
-   ├─ Claude Sonnet 4.6 (+ optional Slack MCP) → JSON
-   ├─ Parse, attach KB refs, auto-save KB articles
-   └─ Conditionally cache the result
+runPipeline (60s hard cap):
+   ├─ Intake (Interpreter) — search plan / clarifying question
+   ├─ Research — parallel search + evaluator (one refine)
+   ├─ Resolver — diagnosis, steps, involvement, refs
+   └─ Reply — customer_message only if customer_mentioned
    │
    ▼
 Render Block Kit response
    ├─ Header + confidence
-   ├─ Escalation signal + channel recommendation
+   ├─ Diagnosis
    ├─ Color-coded steps
+   ├─ Involvement (who / channel / reason)
    ├─ Source chips
-   └─ Buttons: Wrong Answer, Sources, Copy Message, Show Specialist Detail
+   └─ Buttons: Wrong Answer, Sources, Copy Message
    │
    ▼
 Post to Slack → seed thread history → nominate to KB if eligible
@@ -348,18 +335,12 @@ Post to Slack → seed thread history → nominate to KB if eligible
 
 ## 15. MCP architecture
 
-- **Slack MCP:** Optional. With `SLACK_USER_TOKEN` set, Claude can call Slack search tools during inference (used both inside `queryChat` and as one of the search sources in the NEW_PIPELINE search executor)
+- **Slack MCP:** Optional. With `SLACK_USER_TOKEN` set, Slack search tools are available to the Research stage search executor
 - **Atlassian:** REST Basic Auth (migrated from MCP in PR #11). Confluence + Jira are searched directly via REST in `src/claude/atlassian-search.js`
 - **KB:** Anthropic `web_search_20250305` scoped to `help.servicetitan.com` (see `src/claude/kb-search.js`). No MCP, no separate API key
 
 ---
 
-## 16. Sensitivity & ref filtering
-
-Some references are marked `"sensitive": true` (internal escalation channels, Jira tickets with PII, engineering-only docs). CSAs see only non-sensitive refs; Specialists see everything. This is enforced inside `buildResponseBlocks()` based on the detected role.
-
----
-
 ## Summary in one paragraph
 
-IntegrationsBot is a Slack-native, Node ESM, single-process bot. Channel mentions and DMs converge on a single 16-step handler that walks fast paths (empty / help / accounting / rate limit / cache / thread follow-up) before doing the heavy work: parallel pre-fetch from Confluence + Jira (REST) + KB (Anthropic `web_search` scoped to `help.servicetitan.com`) + the local `data/knowledge.md`, an injected past-corrections block, then a single Claude Sonnet 4.6 call (with optional Slack MCP) that returns a structured JSON response. The response is rendered as a Block Kit card with confidence, escalation signal, color-coded steps, source chips, and action buttons (Wrong Answer, Sources, Copy Message, Show Specialist Detail). A feedback-and-nomination loop curates `data/knowledge.md` over time. The bot also supports a four-stage NEW_PIPELINE (Interpreter → Search → Evaluator → Answerer) gated by an env flag.
+IntegrationsBot is a Slack-native, Node ESM, single-process bot for integrations support people who own the case. Channel mentions and DMs converge on a shared handler that walks fast paths (empty / help / accounting keyword redirect / rate limit / cache) before running the always-on pipeline: Intake → Research (search + evaluator, one refine) → Resolver → Reply only when a customer was mentioned, under a 60s hard cap. The response is a Block Kit card with diagnosis, color-coded steps, involvement (engineering / partner / leads), optional customer message, source chips, and Steward actions (Wrong Answer, knowledge nominations — human-approved). There is no NEW_PIPELINE flag and no legacy single-call path.
