@@ -1,6 +1,5 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
-import { classifySourceRef, filterRefsForRole } from './source-policy.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -25,10 +24,6 @@ const HEADER_MAX = 140;   // headroom under 150
 function clamp(str, max = SECTION_MAX) {
   const s = String(str ?? '');
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
-
-function joinEscaped(values = []) {
-  return values.map((value) => escapeMrkdwn(value)).join(', ');
 }
 
 function renderEscapedCode(value) {
@@ -70,25 +65,13 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
+export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
   const slackRefs     = data.slack_refs     ?? [];
   const atlassianRefs = data.atlassian_refs ?? [];
   const kbRefs        = data.kb_refs        ?? [];
-
-  const isSpecialist = role === 'specialist';
-  const classifiedSlack = slackRefs.map(classifySourceRef);
-  const classifiedAtlassian = atlassianRefs.map(classifySourceRef);
-  const classifiedKb = kbRefs.map(classifySourceRef);
-  const visibleSlack = filterRefsForRole(classifiedSlack, role);
-  const visibleAtlassian = filterRefsForRole(classifiedAtlassian, role);
-  const visibleKb = filterRefsForRole(classifiedKb, role);
-  const hiddenCount =
-    (classifiedSlack.length - visibleSlack.length) +
-    (classifiedAtlassian.length - visibleAtlassian.length) +
-    (classifiedKb.length - visibleKb.length);
 
   // 1. Header
   blocks.push({
@@ -97,60 +80,16 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
   });
   blocks.push({ type: 'divider' });
 
-  // 2. Compact info line
-  const sourcesText = joinEscaped(data.sources_used ?? []) || 'none';
-  let infoText;
-  if (data.escalate_decision) {
-    const ed = data.escalate_decision;
-    const channel = data.channel_recommendation?.channel ?? 'ask-integrations';
-    const reason = (data.channel_recommendation?.reason ?? ed.reason ?? '').slice(0, 120);
-    const safeChannel = escapeMrkdwn(channel);
-    const safeReason = escapeMrkdwn(reason);
-    if (ed.should_escalate) {
-      infoText = `📢 Post in #${safeChannel} · ${conf.icon} ${conf.label} · ${safeReason}`;
-    } else if (data.confidence === 'low' || data.confidence === 'medium') {
-      infoText = `🔎 Post to verify · ${conf.icon} ${conf.label} · ${safeReason}`;
-    } else {
-      infoText = `✅ Handle yourself · ${conf.icon} ${conf.label} · ${safeReason}`;
-    }
-  } else {
-    infoText = `${conf.icon} ${conf.label} confidence · Sources: ${sourcesText}`;
-  }
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: infoText }],
-  });
-
-  if (data.findings_summary?.diagnosis) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `🔍 _${escapeMrkdwn(data.findings_summary.diagnosis)}_` }],
-    });
-  }
-
-  const chips = [];
-  if (visibleAtlassian.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
-  if (visibleAtlassian.some(r => r.type === 'jira'))       chips.push('📄 Jira');
-  if (visibleSlack.length > 0)                             chips.push('💬 Slack');
-  if (visibleKb.length > 0)                                chips.push('📖 KB');
-  if (hiddenCount > 0)                                     chips.push(`_+${hiddenCount} specialist-only_`);
-  if (chips.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
-    });
-  }
-
-  // 3. Customer message
-  if (data.customer_message) {
+  // 2. Diagnosis
+  if (data.diagnosis) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `💬 _"${clamp(escapeMrkdwn(data.customer_message))}"_` },
+      text: { type: 'mrkdwn', text: clamp(`*Diagnosis*\n${escapeMrkdwn(data.diagnosis)}`) },
     });
   }
 
-  // 4. Steps header + steps
-  const steps = (data.agent_steps ?? []).slice(0, 20);
+  // 3. Steps
+  const steps = (data.steps ?? []).slice(0, 20);
   if (steps.length > 0) {
     blocks.push({
       type: 'section',
@@ -170,7 +109,45 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     }
   }
 
-  // 5. Action buttons
+  // 4. Involvement
+  const involvement = data.involvement;
+  if (involvement?.needed) {
+    const who = escapeMrkdwn(involvement.who ?? 'another team');
+    const channel = escapeMrkdwn(involvement.channel ?? '');
+    const channelPart = channel ? ` in ${channel}` : '';
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📢 Needs ${who}${channelPart}` }],
+    });
+  } else if (involvement && involvement.needed === false) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '✅ Case owner can finish this' }],
+    });
+  }
+
+  // 5. Customer draft
+  if (typeof data.customer_message === 'string' && data.customer_message.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `💬 _"${clamp(escapeMrkdwn(data.customer_message))}"_` },
+    });
+  }
+
+  // 6. Source chips
+  const chips = [];
+  if (atlassianRefs.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
+  if (atlassianRefs.some(r => r.type === 'jira'))       chips.push('📄 Jira');
+  if (slackRefs.length > 0)                             chips.push('💬 Slack');
+  if (kbRefs.length > 0)                                chips.push('📖 KB');
+  if (chips.length > 0) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
+    });
+  }
+
+  // 7. Action buttons
   const actionElements = [
     {
       type: 'button',
@@ -185,36 +162,27 @@ export function buildResponseBlocks(data, { isDm = false, role = 'csa' } = {}) {
     },
   ];
 
-  const totalVisibleRefs = visibleSlack.length + visibleAtlassian.length + visibleKb.length;
-  if (totalVisibleRefs > 0) {
+  const totalRefs = slackRefs.length + atlassianRefs.length + kbRefs.length;
+  if (totalRefs > 0) {
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
-        visibleSlack,
-        visibleAtlassian,
-        visibleKb,
-        data.findings_summary?.diagnosis ?? null,
+        slackRefs,
+        atlassianRefs,
+        kbRefs,
+        data.diagnosis ?? null,
       ),
     });
   }
 
-  if (data._showSpecialistValue) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '🔍 Show Specialist Detail', emoji: true },
-      action_id: 'show_specialist_detail',
-      value: data._showSpecialistValue,
-    });
-  }
-
-  if (data.escalate_decision?.should_escalate && data.suggested_channel_post) {
+  if (involvement?.needed) {
     actionElements.push({
       type: 'button',
       text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
       action_id: 'copy_channel_post',
-      value: (data.suggested_channel_post ?? '').slice(0, 2000),
+      value: String(involvement.reason ?? '').slice(0, 2000),
     });
   }
 
@@ -672,8 +640,8 @@ export function buildChatResolutionBlocks(data) {
 
 /**
  * Compact block-kit for the auto-answer drafts channel.
- * Layout: link to original + author → question → diagnosis → draft email →
- * numbered steps → footer (confidence + sources). Stays well under Slack's
+ * Layout: link to original + author → question → diagnosis → numbered steps →
+ * draft email → footer (confidence + sources). Stays well under Slack's
  * 50-block limit even with the maximum 8 steps.
  */
 export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUserId, query, result }) {
@@ -696,22 +664,14 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
   });
 
-  if (result.findings_summary?.diagnosis) {
+  if (result.diagnosis) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*Diagnosis:* ${escapeMrkdwn(result.findings_summary.diagnosis)}`) },
+      text: { type: 'mrkdwn', text: clamp(`*Diagnosis:* ${escapeMrkdwn(result.diagnosis)}`) },
     });
   }
 
-  if (result.customer_message) {
-    blocks.push({ type: 'divider' });
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*📧 Draft email*\n${escapeMrkdwn(result.customer_message)}`) },
-    });
-  }
-
-  const steps = Array.isArray(result.agent_steps) ? result.agent_steps.slice(0, 8) : [];
+  const steps = Array.isArray(result.steps) ? result.steps.slice(0, 8) : [];
   if (steps.length > 0) {
     blocks.push({ type: 'divider' });
     blocks.push({
@@ -728,6 +688,14 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
         text: { type: 'mrkdwn', text: clamp(`${circle} ${title}${detail}`) },
       });
     }
+  }
+
+  if (typeof result.customer_message === 'string' && result.customer_message.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: clamp(`*📧 Draft email*\n${escapeMrkdwn(result.customer_message)}`) },
+    });
   }
 
   const sourceChips = (result.sources_used ?? []).map((source) => renderEscapedCode(source)).join('  ·  ');
