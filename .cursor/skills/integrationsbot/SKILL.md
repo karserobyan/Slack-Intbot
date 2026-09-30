@@ -24,7 +24,7 @@ Zero failures before a PR. `npm test` is the same command.
 1. **Intake** — `runInterpreter` (Haiku). May return a clarifying question only when `allowClarify` is true and `question_confidence` is `low`.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search.
 3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement.
-4. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. A Reply throw fails the request.
+4. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, involvement engineering / `#ask-integrations`.
 
