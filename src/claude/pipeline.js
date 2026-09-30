@@ -167,15 +167,21 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     if (customerWasMentioned(interp)) {
       onProgress?.({ phase: 'stage', stage: 'reply' });
       const tReply = Date.now();
-      const reply = await runReply({
-        cleanedQuestion: interp.cleaned_question,
-        resolver: answer,
-        searchResults,
-        signal,
-      });
-      timings.reply = Date.now() - tReply;
-      if (typeof reply?.customer_message === 'string' && reply.customer_message.trim()) {
-        answer.customer_message = reply.customer_message;
+      try {
+        const reply = await runReply({
+          cleanedQuestion: interp.cleaned_question,
+          resolver: answer,
+          searchResults,
+          signal,
+        });
+        timings.reply = Date.now() - tReply;
+        if (typeof reply?.customer_message === 'string' && reply.customer_message.trim()) {
+          answer.customer_message = reply.customer_message;
+        }
+      } catch (err) {
+        timings.reply = Date.now() - tReply;
+        if (signal.aborted) throw err;
+        console.warn('[pipeline] Reply failed, returning resolver answer without a customer draft:', err.message);
       }
     }
 
