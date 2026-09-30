@@ -77,6 +77,12 @@ There is one audience. Quality shadow records do not store a role. Sources that 
 
 A new answer field lands in the schema, the prompt, the pipeline, the card, and tests in the same change. A new stage shares the pipeline abort signal and the 60s cap.
 
+## Parked
+
+Audit logs are parked. Do not build them unless the user asks again.
+
+`docs/superpowers/specs/2026-04-23-kibana-audit-log-design.md` is the old writeup. It is not the plan. It puts a routing button in front of every new mention and calls `query.js`, which is gone. If this is resumed, Intake gets an `audit` intent, that path calls Elasticsearch MCP, and troubleshooting stays on Resolver and Reply. Reserved env names, unread by the bot: `ES_MCP_URL` (`https://es-aux-mcp.st.dev/mcp`) and `ES_MCP_TOKEN` (unset).
+
 ## Style
 
 No comments unless the WHY is non-obvious. No error handling for cases that cannot happen. No CommonJS.
