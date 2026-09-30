@@ -61,6 +61,8 @@ Escape user and model text with `escapeMrkdwn`. Stay well under Slack's 50-block
 
 Mention handler is `src/handlers/mention.js`. It does not read Slack titles or detect a role. Help is `buildHelpBlocks` for everyone. Steward (wrong answer and `knowledge.md`) stays human-approved.
 
+There is one audience. Quality shadow records do not store a role. Sources that used to be marked `specialist_only` are `internal`: they still show on the card, and they do not become customer-facing knowledge by themselves. Old shadow rows that still say `specialist_only` are read as `internal`.
+
 ## Where to edit
 
 | Change | File |

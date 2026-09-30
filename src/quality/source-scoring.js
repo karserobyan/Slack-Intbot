@@ -57,13 +57,15 @@ function hostnameFromUrl(value) {
 }
 
 function inferSensitivity(value) {
-  if (value.sensitivity === 'specialist_only' || value.sensitive === true) return 'specialist_only';
+  const raw = String(value.sensitivity ?? '').trim().toLowerCase();
+  // Older shadow rows used specialist_only for this same internal label.
+  if (raw === 'internal' || raw === 'specialist_only' || value.sensitive === true) return 'internal';
   const classified = classifySourceRef({
     type: value.type ?? value.source,
     title: value.title,
     channel: value.channel,
   });
-  return classified.sensitive === true ? 'specialist_only' : 'safe';
+  return classified.sensitive === true ? 'internal' : 'safe';
 }
 
 export function refToEvidence(ref, { source, query, integrationType, issueTitle }, index = 0) {

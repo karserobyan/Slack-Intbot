@@ -24,7 +24,7 @@ export const POLICY_BLOCKERS = new Set([
   'no_direct_evidence',
   'no_safe_direct_evidence',
   'non_durable_claim_type',
-  'specialist_only_evidence',
+  'internal_evidence',
   'generic_placeholder',
   'stale_evidence',
   'tenant_specific_claim',
@@ -38,8 +38,8 @@ const SUPPORT_COUNT_KEYS = [
   'resolvedCount',
   'directCount',
   'safeDirectCount',
-  'specialistOnlyCount',
-  'exclusivelySpecialistOnly',
+  'internalCount',
+  'exclusivelyInternal',
   'highOrMediumQualityCount',
   'highOrMediumReuseCount',
   'qualifyingEvidenceCount',
@@ -63,8 +63,8 @@ export function emptyEvidenceSummary() {
     resolvedCount: 0,
     directCount: 0,
     safeDirectCount: 0,
-    specialistOnlyCount: 0,
-    exclusivelySpecialistOnly: false,
+    internalCount: 0,
+    exclusivelyInternal: false,
     highOrMediumQualityCount: 0,
     highOrMediumReuseCount: 0,
     qualifyingEvidenceCount: 0,
@@ -110,7 +110,7 @@ function resolveCandidateEvidence(candidate, evidenceById) {
 function evidenceSummaryForResolvedEvidence(resolvedEvidence) {
   const directEvidence = resolvedEvidence.filter(evidence => evidence.directness === 'direct');
   const safeDirectEvidence = directEvidence.filter(evidence => evidence.sensitivity === 'safe');
-  const specialistOnlyEvidence = resolvedEvidence.filter(evidence => evidence.sensitivity === 'specialist_only');
+  const internalEvidence = resolvedEvidence.filter(evidence => evidence.sensitivity === 'internal');
   const highOrMediumQualityEvidence = safeDirectEvidence.filter(evidence => HIGH_OR_MEDIUM_VALUES.has(evidence.sourceQuality));
   const highOrMediumReuseEvidence = safeDirectEvidence.filter(evidence => HIGH_OR_MEDIUM_VALUES.has(evidence.reuseValue));
   const qualifyingEvidence = safeDirectEvidence.filter(evidence =>
@@ -124,8 +124,8 @@ function evidenceSummaryForResolvedEvidence(resolvedEvidence) {
     resolvedCount: resolvedEvidence.length,
     directCount: directEvidence.length,
     safeDirectCount: safeDirectEvidence.length,
-    specialistOnlyCount: specialistOnlyEvidence.length,
-    exclusivelySpecialistOnly: resolvedEvidence.length > 0 && specialistOnlyEvidence.length === resolvedEvidence.length,
+    internalCount: internalEvidence.length,
+    exclusivelyInternal: resolvedEvidence.length > 0 && internalEvidence.length === resolvedEvidence.length,
     highOrMediumQualityCount: highOrMediumQualityEvidence.length,
     highOrMediumReuseCount: highOrMediumReuseEvidence.length,
     qualifyingEvidenceCount: qualifyingEvidence.length,
@@ -135,23 +135,23 @@ function evidenceSummaryForResolvedEvidence(resolvedEvidence) {
   };
 }
 
-function specialistOnlyDependency(resolvedEvidence, evidenceSummary) {
-  if (evidenceSummary.safeDirectCount > 0 || evidenceSummary.specialistOnlyCount === 0) return false;
-  if (evidenceSummary.exclusivelySpecialistOnly) return true;
+function internalEvidenceDependency(resolvedEvidence, evidenceSummary) {
+  if (evidenceSummary.safeDirectCount > 0 || evidenceSummary.internalCount === 0) return false;
+  if (evidenceSummary.exclusivelyInternal) return true;
   const directEvidence = resolvedEvidence.filter(evidence => evidence.directness === 'direct');
-  return directEvidence.length > 0 && directEvidence.every(evidence => evidence.sensitivity === 'specialist_only');
+  return directEvidence.length > 0 && directEvidence.every(evidence => evidence.sensitivity === 'internal');
 }
 
 function evaluateEvidenceBlockers(resolvedEvidence, evidenceSummary) {
   if (evidenceSummary.resolvedCount === 0) return ['unsupported_claim'];
   if (evidenceSummary.directCount === 0) {
     const blockers = ['no_direct_evidence'];
-    if (specialistOnlyDependency(resolvedEvidence, evidenceSummary)) blockers.push('specialist_only_evidence');
+    if (internalEvidenceDependency(resolvedEvidence, evidenceSummary)) blockers.push('internal_evidence');
     return blockers;
   }
   if (evidenceSummary.safeDirectCount === 0) {
     const blockers = ['no_safe_direct_evidence'];
-    if (specialistOnlyDependency(resolvedEvidence, evidenceSummary)) blockers.push('specialist_only_evidence');
+    if (internalEvidenceDependency(resolvedEvidence, evidenceSummary)) blockers.push('internal_evidence');
     return blockers;
   }
 
@@ -301,8 +301,8 @@ export function summarizeNominationPolicy(policyResult) {
     if (evidenceSummary.resolvedCount > 0) incrementCount(supportCounts, 'resolvedCount');
     if (evidenceSummary.directCount > 0) incrementCount(supportCounts, 'directCount');
     if (evidenceSummary.safeDirectCount > 0) incrementCount(supportCounts, 'safeDirectCount');
-    if (evidenceSummary.specialistOnlyCount > 0) incrementCount(supportCounts, 'specialistOnlyCount');
-    if (evidenceSummary.exclusivelySpecialistOnly === true) incrementCount(supportCounts, 'exclusivelySpecialistOnly');
+    if (evidenceSummary.internalCount > 0) incrementCount(supportCounts, 'internalCount');
+    if (evidenceSummary.exclusivelyInternal === true) incrementCount(supportCounts, 'exclusivelyInternal');
     if (evidenceSummary.highOrMediumQualityCount > 0) incrementCount(supportCounts, 'highOrMediumQualityCount');
     if (evidenceSummary.highOrMediumReuseCount > 0) incrementCount(supportCounts, 'highOrMediumReuseCount');
     if (evidenceSummary.qualifyingEvidenceCount > 0) incrementCount(supportCounts, 'qualifyingEvidenceCount');
