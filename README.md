@@ -1,6 +1,6 @@
 # IntegrationsBot — ServiceTitan Integrations Support
 
-Internal Slack bot for ServiceTitan integrations support agents. Given a customer issue, the bot searches Slack history, Confluence, Jira, and the ServiceTitan KB — then returns a structured response: escalation decision, step-by-step troubleshooting, a ready-to-paste customer message, and referenced sources.
+Internal Slack bot for ServiceTitan integrations support people who own the case. Given a customer issue, the bot runs a fixed pipeline — Intake → Research → Resolver → (optional) Reply — searching Slack history, Confluence, Jira, and the ServiceTitan KB, then returns a structured response: diagnosis, step-by-step troubleshooting, involvement guidance when another team is needed, optional customer message, and referenced sources.
 
 ---
 
@@ -8,14 +8,23 @@ Internal Slack bot for ServiceTitan integrations support agents. Given a custome
 
 1. An agent mentions `@IntegrationsBot <question>` in a channel, or DMs the bot directly
 2. The bot posts a "searching…" placeholder immediately
-3. A single Claude API call (with both MCP servers active simultaneously) searches all knowledge sources in parallel
+3. The always-on pipeline runs (60s hard cap):
+   - **Intake (Interpreter)** — understands the question and builds a search plan
+   - **Research** — searches sources in parallel; an evaluator may refine the plan once
+   - **Resolver** — produces diagnosis, steps, and involvement
+   - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:
-   - **Escalation signal** — should the CSA handle it or route to a specialist?
-   - **💬 Customer message** — ready-to-paste message for the customer ticket
-   - **🔧 Agent steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
+   - **Diagnosis** — one-sentence finding
+   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
+   - **Involvement** — whether engineering (`#ask-integrations`), a partner, or leads (`#ask-leads-integration`) should be brought in (not an Integrations Specialist)
+   - **💬 Customer message** — present only when a customer was mentioned
    - **📎 Sources** — Slack threads, Confluence pages, Jira tickets, and KB articles referenced
 
-Accounting integration topics (QuickBooks, Sage Intacct, NetSuite, Xero, etc.) are automatically redirected to `#ask-partner-enabled-accounting-integrations`.
+One audience: integrations support people who own the case. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
+
+Accounting integration topics (QuickBooks, Sage Intacct, NetSuite, Xero, etc.) are a keyword check and redirect to `#ask-partner-enabled-accounting-integrations`.
+
+Wrong-answer feedback and knowledge.md nominations stay human-approved (Steward).
 
 ---
 
@@ -101,25 +110,12 @@ npm start
 | `MODERATOR_USER_IDS` | Required for review actions | Comma-separated Slack user IDs allowed to approve/reject feedback and knowledge nominations. If unset, review actions fail closed. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
 | `ANTHROPIC_MODEL` | Optional | Claude model override (default: `claude-sonnet-4-6`) |
-| `CLAUDE_TIMEOUT_MS` | Optional | API timeout in ms (default: `90000`) |
+| `CLAUDE_TIMEOUT_MS` | Optional | Per-call API timeout in ms (default: `90000`). The pipeline itself hard-caps at 60s. |
 | `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
 | `RATE_LIMIT_WINDOW_MS` | Optional | Rate limit window in ms (default: `60000` = 1 min) |
 | `PORT` | Optional | HTTP port when not using Socket Mode (default: `3000`) |
 | `LOG_LEVEL` | Optional | `info` or `debug` |
-
----
-
-## New pipeline rollout
-
-The bot runs a four-stage query pipeline (Interpreter → Search → Evaluator → Refine → Answerer) controlled by the `NEW_PIPELINE` feature flag. **Default is ON** as of the Phase-2 flip.
-
-- `NEW_PIPELINE=true` (default) — `handleQuery` routes to `src/claude/pipeline.js`, which understands the question first (Haiku Interpreter), then searches each source with a targeted plan, evaluates the results, optionally refines once, and only then calls Sonnet for the final answer.
-- `NEW_PIPELINE=false` — rolls back to the legacy `queryWithContext` / `queryChat` single-call path. Strict comparison: only the literal string `false` (case-insensitive) disables; typos do not roll back.
-
-Both initial channel mentions and DM follow-ups respect the flag. Rollback is a single env-var change — no code redeploy required. The legacy path remains in place during Phase 2 stabilization; it will be removed in Phase 3 after the new pipeline is stable for ≥1 week.
-
-See `docs/superpowers/specs/2026-05-19-query-understanding-redesign.md` for the full design.
 
 ---
 
@@ -132,14 +128,14 @@ src/
 │   ├── mention.js               # @mention handler + shared handleQuery()
 │   └── dm.js                    # Direct message handler
 ├── claude/
-│   ├── query.js                 # queryWithContext, queryChat (legacy single-call path)
-│   ├── pipeline.js              # 4-stage NEW_PIPELINE orchestrator (gated by NEW_PIPELINE env)
-│   ├── interpreter.js           # Stage 1 — Haiku question understanding + search plan
-│   ├── search-executor.js       # Stage 2 — runs each source in parallel
-│   ├── evaluator.js             # Stage 3 — sufficient? refine plan once if not
-│   ├── answerer.js              # Stage 4 — Sonnet final answer from gathered context
-│   ├── prompts.js               # CSA / Specialist / Chat system prompts + parsers
-│   ├── prompts/                 # Per-stage NEW_PIPELINE prompts (interpreter, evaluator, answerer)
+│   ├── answer-schema.js         # Shared Resolver / Reply field contract
+│   ├── pipeline.js              # Intake → Research → Resolver → Reply orchestrator (60s cap)
+│   ├── interpreter.js           # Intake — question understanding + search plan
+│   ├── search-executor.js       # Research — runs each source in parallel
+│   ├── evaluator.js             # Research — sufficient? refine plan once if not
+│   ├── answerer.js              # Exports runResolver and runReply
+│   ├── prompts.js               # Shared parsers (parseClaudeResponse, summarizeResultForHistory)
+│   ├── prompts/                 # Per-stage prompts (interpreter, evaluator, resolver, reply)
 │   ├── kb-search.js             # KB lookup via Anthropic web_search (help.servicetitan.com)
 │   └── atlassian-search.js      # Confluence + Jira REST search
 ├── slack/
@@ -154,7 +150,6 @@ src/
 │   └── search-client.js         # Slack search.messages helper (uses SLACK_USER_TOKEN)
 └── utils/
     ├── accounting-filter.js     # Keyword-based accounting topic detection
-    ├── feature-flags.js         # isNewPipelineEnabled()
     └── rate-limiter.js          # Per-user rate limiter
 scripts/
 ├── run-interpreter-fixtures.js  # Pre-flight gate — 10 golden interpreter fixtures
@@ -170,24 +165,15 @@ scripts/
 
 ## Response Structure
 
-Claude returns a structured JSON object:
+Resolver returns a structured JSON object. Reply adds `customer_message` only when Intake marked a customer as mentioned:
 
 ```json
 {
   "issue_title": "Zapier API Access Not Enabled",
   "integration_type": "Zapier",
-  "is_accounting_topic": false,
   "confidence": "high",
-  "customer_message": "Hey [Name], I can see the issue — Zapier API access hasn't been enabled for your tenant yet. Getting that sorted now.",
-  "escalate_decision": {
-    "should_escalate": false,
-    "reason": "CSA can resolve with a single backend enable — no specialist needed"
-  },
-  "channel_recommendation": {
-    "channel": "ks-integration",
-    "reason": "Known fix, 1-step resolution, high confidence"
-  },
-  "agent_steps": [
+  "diagnosis": "Zapier cannot authenticate because API access was never enabled on this tenant.",
+  "steps": [
     {
       "num": 1,
       "title": "Enable Zapier API access on the tenant",
@@ -201,9 +187,11 @@ Claude returns a structured JSON object:
       "tag": "verify"
     }
   ],
-  "findings_summary": {
-    "diagnosis": "Zapier cannot authenticate because API access was never enabled on this tenant.",
-    "actions": ["Enable Zapier API access", "Re-authenticate in Zapier"]
+  "involvement": {
+    "needed": false,
+    "who": null,
+    "reason": "Case owner can enable API access and verify.",
+    "channel": null
   },
   "slack_refs": [
     { "url": "https://servicetitan.slack.com/archives/...", "channel": "#ask-integrations", "title": "Zapier API access enable steps" }
@@ -214,9 +202,12 @@ Claude returns a structured JSON object:
   "kb_refs": [
     { "url": "https://help.servicetitan.com/...", "title": "Connecting Zapier to ServiceTitan", "snippet": "API access must be enabled before Zapier can authenticate." }
   ],
-  "sources_used": ["slack", "confluence", "kb"]
+  "sources_used": ["slack", "confluence", "kb"],
+  "customer_message": "Hey [Name], I can see the issue — Zapier API access hasn't been enabled for your tenant yet. Getting that sorted now."
 }
 ```
+
+When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`, and `channel` is `#ask-integrations`, `#ask-leads-integration`, or a partner channel.
 
 ---
 

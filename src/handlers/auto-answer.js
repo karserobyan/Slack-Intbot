@@ -59,7 +59,7 @@ export async function handleAutoAnswer({ event, client, logger }) {
 
   let result;
   try {
-    result = await runPipeline({ rawQuery: query, role: 'csa' });
+    result = await runPipeline({ rawQuery: query });
   } catch (err) {
     logger?.error?.(`[auto-answer] pipeline failed for ts=${event.ts}: ${err.message}`);
     await client.chat.postMessage({

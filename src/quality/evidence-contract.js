@@ -45,14 +45,14 @@ export function buildAnswerEvidenceContract({
     kb_refs: answer?.kb_refs ?? [],
   }, context);
 
-  const diagnosisText = sanitizePreview(answer?.findings_summary?.diagnosis ?? '', 300);
+  const diagnosisText = sanitizePreview(answer?.diagnosis ?? '', 300);
   const diagnosisEvidenceIds = evidenceIdsForText(`${issueTitle} ${diagnosisText}`, evidence);
   const customerText = sanitizePreview(answer?.customer_message ?? '', 300);
   const customerEvidenceIds = evidenceIdsForText(`${issueTitle} ${customerText}`, evidence, { safeOnly: true });
-  const escalationReason = sanitizePreview(answer?.escalate_decision?.reason ?? '', 220);
+  const escalationReason = sanitizePreview(answer?.involvement?.reason ?? '', 220);
   const escalationEvidenceIds = evidenceIdsForText(`${issueTitle} ${escalationReason}`, evidence);
 
-  const steps = (answer?.agent_steps ?? []).map((step, index) => {
+  const steps = (answer?.steps ?? []).map((step, index) => {
     const text = `${step.title ?? ''} ${step.detail ?? ''}`;
     const evidenceIds = evidenceIdsForText(text, evidence);
     const tag = ['action', 'backend', 'verify', 'escalate'].includes(step.tag) ? step.tag : 'step';
@@ -79,7 +79,7 @@ export function buildAnswerEvidenceContract({
     mode: 'shadow',
     queryHash: hashValue(query ?? ''),
     queryPreview: sanitizePreview(query ?? '', 120),
-    role: role === 'specialist' ? 'specialist' : 'csa',
+    role: 'owner',
     channelId: sanitizePreview(channelId ?? '', 80),
     threadTs: sanitizePreview(threadTs ?? '', 80),
     issueTitle,
@@ -98,12 +98,12 @@ export function buildAnswerEvidenceContract({
         trust: trustFromEvidence(customerEvidenceIds, evidence),
       },
       escalation: {
-        shouldEscalate: answer?.escalate_decision?.should_escalate === true,
+        shouldEscalate: answer?.involvement?.needed === true,
         reason: escalationReason,
-        escalationPath: sanitizePreview(answer?.escalate_decision?.escalation_path ?? '', 120) || null,
+        escalationPath: sanitizePreview(answer?.involvement?.who ?? '', 120) || null,
         channelRecommendation: {
-          channel: sanitizePreview(answer?.channel_recommendation?.channel ?? '', 80),
-          reason: sanitizePreview(answer?.channel_recommendation?.reason ?? '', 160),
+          channel: sanitizePreview(answer?.involvement?.channel ?? '', 80),
+          reason: escalationReason,
         },
         evidenceIds: escalationEvidenceIds,
         trust: trustFromEvidence(escalationEvidenceIds, evidence),

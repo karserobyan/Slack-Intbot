@@ -10,9 +10,9 @@
 import 'dotenv/config';
 import { createInterface } from 'node:readline';
 import { isAccountingTopic, ACCOUNTING_REDIRECT_CHANNEL } from './src/utils/accounting-filter.js';
-import { queryWithContext } from './src/claude/query.js';
+import { runPipeline } from './src/claude/pipeline.js';
 import { getCached, setCached, cacheStats } from './src/slack/cache.js';
-import { saveFeedback, getRelevantFeedback, getAllFeedback } from './src/slack/feedback.js';
+import { saveFeedback, getAllFeedback } from './src/slack/feedback.js';
 
 // ── ANSI colors ──────────────────────────────────────────────────────────────
 const BOLD = '\x1b[1m';
@@ -50,52 +50,64 @@ function printSection(title) {
 }
 
 function formatResponse(data) {
-  // Header
   printHeader(`🔌 ${data.issue_title}`);
-  console.log(`${DIM}Integration:${RESET} ${MAGENTA}${data.integration_type}${RESET}    ${DIM}Sources:${RESET} ${(data.sources_used ?? []).join(', ')}`);
+  console.log(`${DIM}Integration:${RESET} ${MAGENTA}${data.integration_type}${RESET}    ${DIM}Confidence:${RESET} ${data.confidence ?? '—'}    ${DIM}Sources:${RESET} ${(data.sources_used ?? []).join(', ')}`);
 
-  // Section 1 — Agent Troubleshooting
-  printSection('🔧 Agent Troubleshooting (internal only)');
-  const steps = data.agent_steps ?? [];
+  if (data.diagnosis) {
+    printSection('💡 Diagnosis');
+    console.log(`\n  ${BOLD}${data.diagnosis}${RESET}`);
+  }
+
+  printSection('🔧 Steps');
+  const steps = data.steps ?? [];
   if (steps.length === 0) {
     console.log(`  ${DIM}No troubleshooting steps generated.${RESET}`);
   }
   for (const step of steps) {
     const tag = TAG_COLORS[step.tag] ?? `[${step.tag}]`;
     console.log(`\n  ${BOLD}${step.num}.${RESET} ${BOLD}${step.title}${RESET}  ${tag}`);
-    // Wrap detail text
-    const lines = step.detail.split('\n');
+    const lines = (step.detail ?? '').split('\n');
     for (const line of lines) {
       console.log(`     ${line}`);
     }
   }
 
-  // Section 2 — Bottom Line
-  if (data.findings_summary) {
-    const fs = data.findings_summary;
-    printSection('💡 Bottom Line');
-    console.log(`\n  ${BOLD}${fs.diagnosis}${RESET}\n`);
-    for (const action of (fs.actions ?? [])) {
-      console.log(`  • ${action}`);
-    }
-    if (fs.guidance) {
-      console.log(`\n  ${DIM}Note: ${fs.guidance}${RESET}`);
+  const involvement = data.involvement;
+  if (involvement) {
+    printSection('🤝 Involvement');
+    if (involvement.needed) {
+      console.log(`\n  ${BOLD}Needed:${RESET} yes`);
+      if (involvement.who) console.log(`  ${BOLD}Who:${RESET} ${involvement.who}`);
+      if (involvement.channel) console.log(`  ${BOLD}Channel:${RESET} ${involvement.channel}`);
+      if (involvement.reason) console.log(`  ${BOLD}Reason:${RESET} ${involvement.reason}`);
+    } else {
+      console.log(`\n  ${DIM}No external involvement needed — case owner can finish.${RESET}`);
+      if (involvement.reason) console.log(`  ${DIM}${involvement.reason}${RESET}`);
     }
   }
 
-  // Sources
+  if (data.customer_message) {
+    printSection('💬 Customer message');
+    console.log(`\n  ${data.customer_message}`);
+  }
+
   const slackRefs = data.slack_refs ?? [];
   const atlassianRefs = data.atlassian_refs ?? [];
-  if (slackRefs.length > 0 || atlassianRefs.length > 0) {
+  const kbRefs = data.kb_refs ?? [];
+  if (slackRefs.length > 0 || atlassianRefs.length > 0 || kbRefs.length > 0) {
     printSection('📎 Sources Referenced');
     for (const ref of slackRefs) {
       const icon = ref.was_resolved ? '✅' : '⏳';
-      console.log(`  ${icon} ${BOLD}#${ref.channel}${RESET}${ref.author ? ` (${ref.author})` : ''} — ${ref.issue_summary}`);
+      console.log(`  ${icon} ${BOLD}#${ref.channel}${RESET}${ref.author ? ` (${ref.author})` : ''} — ${ref.issue_summary ?? ref.title ?? ''}`);
       if (ref.resolution) console.log(`     ${DIM}Resolution: ${ref.resolution}${RESET}`);
     }
     for (const ref of atlassianRefs) {
       const icon = ref.type === 'jira' ? '🎟️ ' : '📄';
-      console.log(`  ${icon} ${BOLD}${ref.title}${RESET}${ref.status ? ` [${ref.status}]` : ''} — ${ref.summary}`);
+      console.log(`  ${icon} ${BOLD}${ref.title}${RESET}${ref.status ? ` [${ref.status}]` : ''} — ${ref.summary ?? ''}`);
+      if (ref.url) console.log(`     ${DIM}${ref.url}${RESET}`);
+    }
+    for (const ref of kbRefs) {
+      console.log(`  📖 ${BOLD}${ref.title}${RESET}`);
       if (ref.url) console.log(`     ${DIM}${ref.url}${RESET}`);
     }
   }
@@ -116,6 +128,11 @@ function formatAccountingRedirect(query) {
   console.log(`  These are handled by a different team.\n`);
   console.log(`  ${BOLD}Please redirect to:${RESET} ${GREEN}${ACCOUNTING_REDIRECT_CHANNEL}${RESET}\n`);
   console.log(`  ${DIM}Original query: "${query.slice(0, 120)}${query.length > 120 ? '…' : ''}"${RESET}\n`);
+}
+
+function formatClarifying(question) {
+  printHeader('❓ Clarifying question');
+  console.log(`\n  ${question}\n`);
 }
 
 // ── Main loop ────────────────────────────────────────────────────────────────
@@ -241,8 +258,8 @@ rl.on('line', async (input) => {
     return;
   }
 
-  // 3. Call Claude
-  console.log(`\n${YELLOW}🔍 Searching knowledge sources… (this may take 10-30 seconds)${RESET}`);
+  // 3. Run pipeline
+  console.log(`\n${YELLOW}🔍 Searching knowledge sources… (pipeline hard cap 60s)${RESET}`);
 
   try {
     let dots = 0;
@@ -251,25 +268,13 @@ rl.on('line', async (input) => {
       process.stdout.write(`\r${YELLOW}${'·'.repeat(dots + 1)}${' '.repeat(3 - dots)}${RESET}`);
     }, 500);
 
-    // Inject past corrections for context
-    let feedbackContext = '';
-    const corrections = await getRelevantFeedback(query);
-    if (corrections.length > 0) {
-      const lines = corrections.map(
-        (c) => `- Query: "${c.query}" -> Bot was wrong (${c.feedbackType}). Correct answer: ${c.correction}`,
-      );
-      feedbackContext = `\n\nIMPORTANT - Past corrections from agents:\n${lines.join('\n')}`;
-      console.log(`${DIM}(injecting ${corrections.length} past correction(s) as context)${RESET}`);
-    }
-
-    const result = await queryWithContext(query + feedbackContext);
+    const result = await runPipeline({ rawQuery: query });
 
     clearInterval(spinner);
     process.stdout.write('\r    \r'); // clear spinner
 
-    // Double-check accounting via Claude's response
-    if (result.is_accounting_topic) {
-      formatAccountingRedirect(query);
+    if (result.clarifying_question) {
+      formatClarifying(result.clarifying_question);
     } else {
       lastQuery = query;
       lastResult = result;
@@ -278,6 +283,9 @@ rl.on('line', async (input) => {
     }
   } catch (err) {
     console.log(`\n${RED}${BOLD}Error:${RESET} ${err.message}`);
+    if (err.pipelineTimedOut) {
+      console.log(`${DIM}Pipeline hit the 60s hard cap.${RESET}`);
+    }
     if (err.message.includes('401') || err.message.includes('authentication')) {
       console.log(`${DIM}Check that your ANTHROPIC_API_KEY is valid.${RESET}`);
     }

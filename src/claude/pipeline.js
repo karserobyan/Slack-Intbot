@@ -1,12 +1,15 @@
 import { runInterpreter } from './interpreter.js';
 import { executeSearchPlan } from './search-executor.js';
 import { runEvaluator } from './evaluator.js';
-import { runAnswerer } from './answerer.js';
+import { runResolver, runReply } from './answerer.js';
+import { customerWasMentioned, RETIRED_ROLE_FIELDS } from './answer-schema.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
 
 const HARD_CAP_MS = 60000;
+
+const FALLBACK_REASON = 'Not enough detail to resolve automatically — add specifics or escalate manually.';
 
 function sanitize(str) {
   return String(str ?? '')
@@ -29,7 +32,36 @@ async function buildFeedbackContext(rawQuery) {
   }
 }
 
-export async function runPipeline({ rawQuery, role, agentName = null, threadHistory = [], onProgress, allowClarify = true }) {
+function stripRetiredAndNonModelFields(resolver) {
+  delete resolver.clarifying_question;
+  delete resolver.is_accounting_topic;
+  delete resolver.customer_message;
+  for (const key of RETIRED_ROLE_FIELDS) delete resolver[key];
+}
+
+function applyCappedFallback(answer) {
+  const missingCore = !answer.issue_title || !(answer.steps?.length);
+  if (!missingCore) return;
+
+  console.info('[pipeline] resolver missing required fields on a capped follow-up — coercing to best-effort/escalate');
+  answer.issue_title = 'Not enough detail to resolve';
+  answer.confidence = 'low';
+  answer.diagnosis = FALLBACK_REASON;
+  answer.steps = [{ num: 1, title: 'Escalate for more detail', detail: FALLBACK_REASON, tag: 'escalate' }];
+  answer.involvement = {
+    needed: true,
+    who: 'engineering',
+    reason: FALLBACK_REASON,
+    channel: '#ask-integrations',
+  };
+  if (!Array.isArray(answer.slack_refs)) answer.slack_refs = [];
+  if (!Array.isArray(answer.atlassian_refs)) answer.atlassian_refs = [];
+  if (!Array.isArray(answer.kb_refs)) answer.kb_refs = [];
+  if (!Array.isArray(answer.sources_used)) answer.sources_used = [];
+  if (!answer.integration_type) answer.integration_type = 'General';
+}
+
+export async function runPipeline({ rawQuery, threadHistory = [], onProgress, allowClarify = true }) {
   const overall = new AbortController();
   const overallTimer = setTimeout(() => overall.abort(), HARD_CAP_MS);
   const signal = overall.signal;
@@ -98,47 +130,52 @@ export async function runPipeline({ rawQuery, role, agentName = null, threadHist
       }
     }
 
-    onProgress?.({ phase: 'stage', stage: 'answerer' });
+    onProgress?.({ phase: 'stage', stage: 'resolver' });
     onProgress?.({ phase: 'writing' });
     const teamKnowledge = await getKnowledge().catch(() => null);
     const feedbackContext = await buildFeedbackContext(rawQuery);
 
-    const answererArgs = {
+    const resolverArgs = {
       cleanedQuestion: interp.cleaned_question,
       searchResults,
-      role,
       teamKnowledge,
       feedbackContext,
-      agentName,
       signal,
     };
 
-    const tAnswer = Date.now();
+    const tResolver = Date.now();
     let answer;
     try {
-      answer = await runAnswerer(answererArgs);
+      answer = await runResolver(resolverArgs);
     } catch (err1) {
       const transient = err1.status >= 500 || err1.name === 'AbortError' || err1.code === 'ECONNRESET' || err1.parseFailure === true;
       if (!transient || signal.aborted) throw err1;
-      console.warn('[pipeline] Answerer first attempt failed, retrying:', err1.message);
-      answer = await runAnswerer(answererArgs);
+      console.warn('[pipeline] Resolver first attempt failed, retrying:', err1.message);
+      answer = await runResolver(resolverArgs);
     }
-    timings.answerer = Date.now() - tAnswer;
+    timings.resolver = Date.now() - tResolver;
 
-    // Close the clarification loop at the ANSWERER stage too: allowClarify only
-    // gated the interpreter, but the answerer prompt is allowed to emit a
-    // clarifying-question-only response. On a capped follow-up we must never
-    // re-ask — strip it and coerce to a best-effort/escalate result.
-    if (!allowClarify && answer.clarifying_question) {
-      console.info('[pipeline] answerer tried to clarify on a capped follow-up — coercing to best-effort/escalate');
-      delete answer.clarifying_question;
-      if (!answer.issue_title && !(answer.agent_steps?.length)) {
-        answer.issue_title = 'Not enough detail to resolve';
-        answer.confidence = answer.confidence ?? 'low';
-        answer.escalate_decision = answer.escalate_decision ?? {
-          should_escalate: true,
-          reason: 'Not enough detail to resolve automatically — add specifics or escalate manually.',
-        };
+    stripRetiredAndNonModelFields(answer);
+
+    // Close the clarification loop: allowClarify only gated Intake, but a
+    // resolver must never re-ask on a capped follow-up. Strip any clarifying
+    // residue (already deleted) and coerce missing required fields to escalate.
+    if (!allowClarify) {
+      applyCappedFallback(answer);
+    }
+
+    if (customerWasMentioned(interp)) {
+      onProgress?.({ phase: 'stage', stage: 'reply' });
+      const tReply = Date.now();
+      const reply = await runReply({
+        cleanedQuestion: interp.cleaned_question,
+        resolver: answer,
+        searchResults,
+        signal,
+      });
+      timings.reply = Date.now() - tReply;
+      if (typeof reply?.customer_message === 'string' && reply.customer_message.trim()) {
+        answer.customer_message = reply.customer_message;
       }
     }
 
