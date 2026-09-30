@@ -31,7 +31,6 @@ function trustFromEvidence(ids, evidence) {
 export function buildAnswerEvidenceContract({
   answer,
   query,
-  role,
   channelId,
   threadTs,
   now = new Date(),
@@ -79,7 +78,6 @@ export function buildAnswerEvidenceContract({
     mode: 'shadow',
     queryHash: hashValue(query ?? ''),
     queryPreview: sanitizePreview(query ?? '', 120),
-    role: 'owner',
     channelId: sanitizePreview(channelId ?? '', 80),
     threadTs: sanitizePreview(threadTs ?? '', 80),
     issueTitle,

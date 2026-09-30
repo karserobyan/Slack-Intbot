@@ -2785,7 +2785,7 @@ const sensitiveScore = scoreEvidenceSource(sensitiveEvidence, {
   integrationType: 'Zapier',
   issueTitle: 'Token issue',
 });
-assert(sensitiveScore.sensitivity === 'specialist_only', 'source scoring preserves source-policy sensitivity');
+assert(sensitiveScore.sensitivity === 'internal', 'source scoring preserves source-policy sensitivity');
 
 const unclassifiedSensitiveScore = scoreEvidenceSource({
   id: 'ev_unclassified',
@@ -2798,8 +2798,13 @@ const unclassifiedSensitiveScore = scoreEvidenceSource({
   integrationType: 'Zapier',
   issueTitle: 'Token issue',
 });
-assert(unclassifiedSensitiveScore.sensitivity === 'specialist_only', 'source scoring applies source-policy to unclassified evidence-like inputs');
+assert(unclassifiedSensitiveScore.sensitivity === 'internal', 'source scoring applies source-policy to unclassified evidence-like inputs');
 assert(unclassifiedSensitiveScore.url === undefined, 'source scoring strips raw URL from prebuilt evidence-like inputs');
+assert(scoreEvidenceSource({ ...sensitiveEvidence, sensitivity: 'specialist_only' }, {
+  query: 'token issue',
+  integrationType: 'Zapier',
+  issueTitle: 'Token issue',
+}).sensitivity === 'internal', 'old specialist_only sensitivity is scored as internal');
 
 const scoredSources = scoreEvidenceSources({
   slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier API access answer' }],
@@ -2836,7 +2841,6 @@ const contractAnswer = {
 const contract = buildAnswerEvidenceContract({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   now: new Date('2026-07-09T00:00:00.000Z'),
@@ -2851,9 +2855,9 @@ assert(contract.queryPreview === 'Zapier API access disabled', 'contract stores 
 assert(contract.issueTitle === 'Zapier API Access', 'contract maps issue title');
 assert(contract.integrationType === 'Zapier', 'contract maps integration type');
 assert(contract.sections.steps.length === 2, 'contract maps each step');
-assert(contract.role === 'owner', 'contract.role is always owner');
-assert(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'csa', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }).role === 'owner', 'contract.role is owner even when caller passes role: csa');
-assert(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'specialist', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }).role === 'owner', 'contract.role is owner even when caller passes role: specialist');
+assert(!Object.hasOwn(contract, 'role'), 'contract does not store an audience role');
+assert(!Object.hasOwn(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'csa', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }), 'role'), 'contract drops a passed csa role');
+assert(!Object.hasOwn(buildAnswerEvidenceContract({ answer: contractAnswer, query: 'q', role: 'specialist', channelId: 'C', threadTs: '1', now: new Date('2026-07-09T00:00:00.000Z') }), 'role'), 'contract drops a passed specialist role');
 assert(contract.sections.steps[0].id.startsWith('claim_'), 'contract creates claim ids');
 assert(contract.evidence.length === 3, 'contract maps all refs to evidence');
 assert(contract.evidence.every(e => e.snippet === undefined), 'contract does not store raw snippet field');
@@ -2864,7 +2868,6 @@ assert(contract.sections.customerMessage.evidenceIds.every(id => contract.eviden
 const sparseContract = buildAnswerEvidenceContract({
   answer: { issue_title: 'Unknown issue', steps: [] },
   query: '',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   now: new Date('2026-07-09T00:00:00.000Z'),
@@ -2879,7 +2882,6 @@ const legacyOnlyContract = buildAnswerEvidenceContract({
     findings_summary: { diagnosis: 'Hidden findings diagnosis' },
   },
   query: 'legacy',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   now: new Date('2026-07-09T00:00:00.000Z'),
@@ -2941,6 +2943,7 @@ assert(normalizedEvidence[0].sourceQuality === 'high', 'shared evidence normaliz
 assert(normalizedEvidence[0].directness === 'direct', 'shared evidence normalization lowercases valid directness enum');
 assert(normalizedEvidence[0].freshness === 'fresh', 'shared evidence normalization lowercases valid freshness enum');
 assert(normalizedEvidence[0].sensitivity === 'safe', 'shared evidence normalization lowercases valid sensitivity enum');
+assert(normalizeQualityEvidence([{ id: 'ev_legacy_role', source: 'slack', sensitivity: 'specialist_only', directness: 'direct' }])[0].sensitivity === 'internal', 'old specialist_only sensitivity is stored as internal');
 assert(normalizedEvidence[0].reuseValue === 'high', 'shared evidence normalization lowercases valid reuse enum');
 assert(normalizedEvidence.find(e => e.id === 'ev_bound_0').source === 'unknown', 'shared evidence normalization clamps invalid source enum');
 assert(normalizedEvidence.at(-1).sourceQuality === 'unknown', 'shared evidence normalization clamps invalid quality enum');
@@ -2984,8 +2987,8 @@ assert.deepEqual(emptyEvidenceSummary(), {
   resolvedCount: 0,
   directCount: 0,
   safeDirectCount: 0,
-  specialistOnlyCount: 0,
-  exclusivelySpecialistOnly: false,
+  internalCount: 0,
+  exclusivelyInternal: false,
   highOrMediumQualityCount: 0,
   highOrMediumReuseCount: 0,
   qualifyingEvidenceCount: 0,
@@ -3112,8 +3115,8 @@ assert.deepEqual(eligiblePolicyResult.candidates[0].evidenceSummary, {
   resolvedCount: 1,
   directCount: 1,
   safeDirectCount: 1,
-  specialistOnlyCount: 0,
-  exclusivelySpecialistOnly: false,
+  internalCount: 0,
+  exclusivelyInternal: false,
   highOrMediumQualityCount: 1,
   highOrMediumReuseCount: 1,
   qualifyingEvidenceCount: 1,
@@ -3175,10 +3178,10 @@ assert.deepEqual(noDirectResult.candidates[0].eligibility.blockers, ['no_direct_
 
 const specialistOnlyResult = evaluateContractNominationPolicy(policyContract({
   answerId: 'ans_policy_specialist',
-  evidence: [policyEvidence({ id: 'ev_specialist_only', sensitivity: 'specialist_only' })],
+  evidence: [policyEvidence({ id: 'ev_specialist_only', sensitivity: 'internal' })],
   steps: [policyStep({ evidenceIds: ['ev_specialist_only'] })],
 }), { now: new Date('2026-07-16T09:00:00.000Z') });
-assert.deepEqual(specialistOnlyResult.candidates[0].eligibility.blockers, ['no_safe_direct_evidence', 'specialist_only_evidence'], 'direct specialist-only evidence gets the safe/specialist blockers without quality or reuse noise');
+assert.deepEqual(specialistOnlyResult.candidates[0].eligibility.blockers, ['no_safe_direct_evidence', 'internal_evidence'], 'direct internal evidence gets the safe and internal blockers');
 
 const weakQualityResult = evaluateContractNominationPolicy(policyContract({
   answerId: 'ans_policy_weak_quality',
@@ -3198,12 +3201,12 @@ const mixedSafeAndSpecialistResult = evaluateContractNominationPolicy(policyCont
   answerId: 'ans_policy_mixed_support',
   evidence: [
     policyEvidence({ id: 'ev_safe_kept' }),
-    policyEvidence({ id: 'ev_specialist_extra', sensitivity: 'specialist_only' }),
+    policyEvidence({ id: 'ev_specialist_extra', sensitivity: 'internal' }),
   ],
   steps: [policyStep({ evidenceIds: ['ev_safe_kept', 'ev_specialist_extra'] })],
 }), { now: new Date('2026-07-16T09:00:00.000Z') });
 assert(mixedSafeAndSpecialistResult.candidates[0].eligibility.preDuplicateEligible === true, 'mixed safe cohesive evidence plus specialist evidence may remain eligible');
-assert(mixedSafeAndSpecialistResult.candidates[0].evidenceSummary.specialistOnlyCount === 1, 'specialist evidence is still counted in mixed support summaries');
+assert(mixedSafeAndSpecialistResult.candidates[0].evidenceSummary.internalCount === 1, 'internal evidence is still counted in mixed support summaries');
 
 const tenantSpecificResult = evaluateContractNominationPolicy(policyContract({
   answerId: 'ans_policy_tenant_specific',
@@ -3361,7 +3364,7 @@ const aggregatePolicyContract = policyContract({
     policyEvidence({ id: 'ev_agg_eligible' }),
     policyEvidence({ id: 'ev_agg_stale', freshness: 'stale' }),
     policyEvidence({ id: 'ev_agg_related', directness: 'related' }),
-    policyEvidence({ id: 'ev_agg_specialist', sensitivity: 'specialist_only' }),
+    policyEvidence({ id: 'ev_agg_specialist', sensitivity: 'internal' }),
     policyEvidence({ id: 'ev_agg_quality_only', sourceQuality: 'high', reuseValue: 'low' }),
     policyEvidence({ id: 'ev_agg_reuse_only', sourceQuality: 'low', reuseValue: 'high' }),
   ],
@@ -3387,7 +3390,7 @@ assert.deepEqual(aggregateSummary.blockerCounts, {
   stale_evidence: 1,
   no_direct_evidence: 1,
   no_safe_direct_evidence: 1,
-  specialist_only_evidence: 1,
+  internal_evidence: 1,
   no_cohesive_qualifying_evidence: 1,
 }, 'blocker counts come only from blocked candidates');
 assert.deepEqual(aggregateSummary.eligibleReasonCounts, {
@@ -3401,8 +3404,8 @@ assert.deepEqual(aggregateSummary.supportCounts, {
   resolvedCount: 5,
   directCount: 4,
   safeDirectCount: 3,
-  specialistOnlyCount: 1,
-  exclusivelySpecialistOnly: 1,
+  internalCount: 1,
+  exclusivelyInternal: 1,
   highOrMediumQualityCount: 3,
   highOrMediumReuseCount: 3,
   qualifyingEvidenceCount: 2,
@@ -3797,8 +3800,8 @@ const TASK3_POLICY_SUPPORT_KEYS = [
   'resolvedCount',
   'directCount',
   'safeDirectCount',
-  'specialistOnlyCount',
-  'exclusivelySpecialistOnly',
+  'internalCount',
+  'exclusivelyInternal',
   'highOrMediumQualityCount',
   'highOrMediumReuseCount',
   'qualifyingEvidenceCount',
@@ -3840,8 +3843,8 @@ const validPersistedNominationPolicy = {
     resolvedCount: 9,
     directCount: 8,
     safeDirectCount: 7,
-    specialistOnlyCount: 2,
-    exclusivelySpecialistOnly: 1,
+    internalCount: 2,
+    exclusivelyInternal: 1,
     highOrMediumQualityCount: 6,
     highOrMediumReuseCount: 5,
     qualifyingEvidenceCount: 4,
@@ -3919,6 +3922,38 @@ await appendQualityShadowRecord({
 const validNominationPolicyText = await readFile(validNominationPolicyFile, 'utf-8');
 const validNominationPolicyRecord = JSON.parse(validNominationPolicyText.trim());
 assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'valid evaluated nomination policy persists in canonical form with approved keys only');
+assert(!Object.hasOwn(validNominationPolicyRecord, 'role'), 'shadow records do not store an audience role');
+
+const legacyRolePolicyFile = join(qualityTempDir, 'quality-shadow-legacy-role.jsonl');
+_setQualityShadowFileForTest(legacyRolePolicyFile);
+const legacyBlockers = { ...validPersistedNominationPolicy.blockerCounts };
+delete legacyBlockers.internal_evidence;
+legacyBlockers.specialist_only_evidence = 1;
+const legacySupport = { ...validPersistedNominationPolicy.supportCounts };
+delete legacySupport.internalCount;
+delete legacySupport.exclusivelyInternal;
+legacySupport.specialistOnlyCount = 2;
+legacySupport.exclusivelySpecialistOnly = 1;
+await appendQualityShadowRecord({
+  createdAt: '2026-07-16T00:01:00.000Z',
+  answerId: 'ans_legacy_role',
+  queryPreview: 'legacy role label',
+  role: 'csa',
+  quality: {
+    approximateMapping: true,
+    nominationPolicy: {
+      ...validPersistedNominationPolicy,
+      blockerCounts: legacyBlockers,
+      supportCounts: legacySupport,
+    },
+  },
+}, {
+  retention: { maxRecords: 3, maxAgeDays: 14, maxBytes: 20000 },
+  now: new Date('2026-07-16T00:01:00.000Z'),
+});
+const legacyRoleRecord = JSON.parse((await readFile(legacyRolePolicyFile, 'utf-8')).trim());
+assert(!Object.hasOwn(legacyRoleRecord, 'role'), 'a passed audience role is not stored');
+assert.deepEqual(legacyRoleRecord.quality.nominationPolicy, validPersistedNominationPolicy, 'old specialist_only policy keys are stored as internal');
 assert(validNominationPolicyRecord.quality.nominationPolicy.duplicateCheck === 'deferred', 'nomination policy persists duplicateCheck deferred');
 assert(validNominationPolicyRecord.quality.nominationPolicy.blockerCounts.no_cohesive_qualifying_evidence === 1, 'nomination policy allowlists no_cohesive_qualifying_evidence');
 assert.deepEqual(validNominationPolicyRecord.quality.nominationPolicy.eligibleReasonCounts, validPersistedNominationPolicy.eligibleReasonCounts, 'nomination policy persists actual Task 2 eligible reason names only');
@@ -4112,7 +4147,6 @@ let layerDisabledEvaluatorCalls = 0;
 const disabledRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
@@ -4131,7 +4165,6 @@ let notShadowEvaluatorCalls = 0;
 const notShadowModeRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
@@ -4154,7 +4187,6 @@ let policyDisabledEvaluatorCalls = 0;
 const policyDisabledRecord = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
@@ -4194,7 +4226,6 @@ for (const [label, shadowValue, expectedStatus] of [
   const shadowGateRecord = await recordQualityShadow({
     answer: contractAnswer,
     query: 'Zapier API access disabled',
-    role: 'csa',
     channelId: 'C123',
     threadTs: '1700000000.000',
     logger: { warn: (message) => shadowGateWarnings.push(message) },
@@ -4229,7 +4260,6 @@ let policyEnabledEvaluatorCalls = 0;
 const recorded = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
@@ -4273,7 +4303,6 @@ let policyEnabledUpperEvaluatorCalls = 0;
 const recordedUpper = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: console,
@@ -4302,7 +4331,6 @@ for (const [label, nominationPolicyEvaluator] of [
   const failureRecord = await recordQualityShadow({
     answer: contractAnswer,
     query: 'Zapier API access disabled',
-    role: 'csa',
     channelId: 'C123',
     threadTs: '1700000000.000',
     logger: { warn: (message) => policyWarnMessages.push(message) },
@@ -4336,7 +4364,6 @@ const firstMutationWarnings = [];
 const firstMutationFailure = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: { warn: (message) => firstMutationWarnings.push(message) },
@@ -4358,7 +4385,6 @@ const secondMutationWarnings = [];
 const secondMutationFailure = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: { warn: (message) => secondMutationWarnings.push(message) },
@@ -4395,7 +4421,6 @@ const warnMessages = [];
 const failedOpen = await recordQualityShadow({
   answer: contractAnswer,
   query: 'Zapier API access disabled',
-  role: 'csa',
   channelId: 'C123',
   threadTs: '1700000000.000',
   logger: { warn: (message) => warnMessages.push(message) },

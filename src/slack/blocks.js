@@ -388,7 +388,7 @@ export function buildFollowUpBlocks(text, { label = 'Follow-up' } = {}) {
 }
 
 /**
- * Builds the public help response shown to all roles when an agent asks "@bot help".
+ * Builds the public help response when an agent asks "@bot help".
  * @returns {Array} Slack blocks array
  */
 export function buildHelpBlocks() {

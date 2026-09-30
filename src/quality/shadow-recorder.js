@@ -28,7 +28,6 @@ function createPolicyFailedSummary() {
 export async function recordQualityShadow({
   answer,
   query,
-  role,
   channelId,
   threadTs,
   logger = console,
@@ -42,7 +41,6 @@ export async function recordQualityShadow({
     const contract = buildAnswerEvidenceContract({
       answer,
       query,
-      role,
       channelId,
       threadTs,
       now,

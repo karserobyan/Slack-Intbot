@@ -332,7 +332,6 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
   recordQualityShadow({
     answer: delivered.view,
     query,
-    role: 'owner',
     channelId,
     threadTs,
     logger: console,

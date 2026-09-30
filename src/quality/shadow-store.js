@@ -40,7 +40,7 @@ const NOMINATION_POLICY_BLOCKERS = new Set([
   'low_reuse_value',
   'no_cohesive_qualifying_evidence',
   'tenant_specific_claim',
-  'specialist_only_evidence',
+  'internal_evidence',
   'escalation_claim',
   'answer_requires_escalation',
   'non_durable_claim_type',
@@ -59,8 +59,8 @@ const NOMINATION_POLICY_SUPPORT_KEYS = new Set([
   'resolvedCount',
   'directCount',
   'safeDirectCount',
-  'specialistOnlyCount',
-  'exclusivelySpecialistOnly',
+  'internalCount',
+  'exclusivelyInternal',
   'highOrMediumQualityCount',
   'highOrMediumReuseCount',
   'qualifyingEvidenceCount',
@@ -113,6 +113,17 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function renameLegacyCountKeys(value, legacy) {
+  if (!isPlainObject(value)) return value;
+  const next = { ...value };
+  for (const [oldKey, newKey] of Object.entries(legacy)) {
+    if (next[oldKey] === undefined) continue;
+    if (next[newKey] === undefined) next[newKey] = next[oldKey];
+    delete next[oldKey];
+  }
+  return next;
+}
+
 function sanitizeNominationPolicyCountMap(value, allowedKeys) {
   if (!isPlainObject(value)) return null;
   for (const [key, count] of Object.entries(value)) {
@@ -135,10 +146,19 @@ function sanitizeNominationPolicySummary(value) {
     return canonicalPolicyFailedSummary();
   }
 
-  const blockerCounts = sanitizeNominationPolicyCountMap(value.blockerCounts, NOMINATION_POLICY_BLOCKERS);
+  const blockerCounts = sanitizeNominationPolicyCountMap(
+    renameLegacyCountKeys(value.blockerCounts, { specialist_only_evidence: 'internal_evidence' }),
+    NOMINATION_POLICY_BLOCKERS,
+  );
   const eligibleReasonCounts = sanitizeNominationPolicyCountMap(value.eligibleReasonCounts, NOMINATION_POLICY_ELIGIBLE_REASONS);
   const byClaimType = sanitizeNominationPolicyCountMap(value.byClaimType, NOMINATION_POLICY_CLAIM_TYPES);
-  const supportCounts = sanitizeNominationPolicyCountMap(value.supportCounts, NOMINATION_POLICY_SUPPORT_KEYS);
+  const supportCounts = sanitizeNominationPolicyCountMap(
+    renameLegacyCountKeys(value.supportCounts, {
+      specialistOnlyCount: 'internalCount',
+      exclusivelySpecialistOnly: 'exclusivelyInternal',
+    }),
+    NOMINATION_POLICY_SUPPORT_KEYS,
+  );
 
   if (!blockerCounts || !eligibleReasonCounts || !byClaimType || !supportCounts) {
     return canonicalPolicyFailedSummary();
@@ -228,7 +248,6 @@ function sanitizeShadowRecord(record) {
     createdAt: record.createdAt ?? new Date().toISOString(),
     answerId: sanitizePreview(record.answerId, 80),
     queryHash: safeHash(record.queryHash, record.queryPreview ?? ''),
-    role: sanitizePreview(record.role, 20),
     channelId: sanitizePreview(record.channelId, 80),
     threadTs: sanitizePreview(record.threadTs, 80),
     issueHash: record.issueTitle ? hashValue(record.issueTitle) : null,

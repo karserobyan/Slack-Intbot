@@ -4,7 +4,7 @@ const SOURCE_TYPES = new Set(['slack', 'confluence', 'jira', 'kb', 'unknown']);
 const SOURCE_QUALITY_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
 const DIRECTNESS_VALUES = new Set(['direct', 'related', 'background', 'unknown']);
 const FRESHNESS_VALUES = new Set(['fresh', 'stale', 'unknown']);
-const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'specialist_only', 'unknown']);
+const SENSITIVITY_VALUES = new Set(['safe', 'internal', 'unknown']);
 const REUSE_VALUES = new Set(['high', 'medium', 'low', 'unknown']);
 const ALLOWED_HOSTNAMES = new Set([
   'help.servicetitan.com',
@@ -50,6 +50,13 @@ function safeHash(value, fallbackValue = '') {
 function safeEnum(value, allowed, fallback = 'unknown') {
   const normalized = String(value ?? '').trim().toLowerCase();
   return allowed.has(normalized) ? normalized : fallback;
+}
+
+function normalizeSensitivity(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  // Older shadow rows used specialist_only for this same internal label.
+  if (normalized === 'specialist_only') return 'internal';
+  return safeEnum(normalized, SENSITIVITY_VALUES);
 }
 
 function safeHostname(value) {
@@ -98,7 +105,7 @@ export function normalizeQualityEvidence(evidence = []) {
         sourceQuality: safeEnum(e.sourceQuality, SOURCE_QUALITY_VALUES),
         directness: safeEnum(e.directness, DIRECTNESS_VALUES),
         freshness: safeEnum(e.freshness, FRESHNESS_VALUES),
-        sensitivity: safeEnum(e.sensitivity, SENSITIVITY_VALUES),
+        sensitivity: normalizeSensitivity(e.sensitivity),
         reuseValue: safeEnum(e.reuseValue, REUSE_VALUES),
         reasons: safeReasonCodes(e.reasons),
       };
