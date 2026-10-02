@@ -41,6 +41,7 @@ import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
+import { settleInvolvement, buildHandoffMessage, listPostableChannels, chooseHandoffChannel } from './src/slack/handoff-channels.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -465,12 +466,11 @@ const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elem
 assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
 assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
 assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
-const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(cpBtnNeeded !== undefined, 'Channel post button appears when involvement.needed');
-assert(cpBtnNeeded.value === 'Needs backend access', 'Channel post button value is involvement.reason');
+const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
+assert(cpBtnNeeded === undefined, 'the bot does not offer a button that posts the handoff');
 
 // No channel post when involvement.needed false
-const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
 assert(noCpOwner === undefined, 'Channel post button absent when involvement.needed false');
 
 // ── Sensitivity: refs always shown, no specialist-only hint ──────────────────
@@ -1756,9 +1756,8 @@ const channelPostBlocks = buildResponseBlocks({
   involvement: { needed: true, who: 'engineering', reason: 'Anyone seen this Zapier issue?', channel: '#ask-integrations' },
 });
 const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
-const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(cpBtn !== undefined, 'copy_channel_post button present when involvement.needed');
-assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is involvement.reason');
+const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'send_handoff');
+assert(cpBtn === undefined, 'send_handoff button is absent even when a channel is named');
 
 // Channel post button absent when involvement.needed false
 const noCpBlocks = buildResponseBlocks({
@@ -1766,8 +1765,8 @@ const noCpBlocks = buildResponseBlocks({
   involvement: { needed: false, who: null, reason: 'This should not appear.', channel: null },
 });
 const noCpActionsBlock = noCpBlocks.find(b => b.type === 'actions');
-const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(noCpBtn === undefined, 'copy_channel_post button absent when involvement.needed false');
+const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'send_handoff');
+assert(noCpBtn === undefined, 'send_handoff button absent when involvement.needed false');
 
 // new_chat button still last when isDm + involvement needed + channel post
 const fullDmBlocks = buildResponseBlocks({
@@ -2373,6 +2372,117 @@ const normalBlocks = buildResponseBlocks({
 assert(JSON.stringify(normalBlocks).includes('Zapier API access'), 'normal title not truncated');
 assert(!JSON.stringify(normalBlocks).includes('…'), 'normal content has no ellipsis');
 
+// ── handoff channels ──────────────────────────────────────────────────────────
+console.log('\n🔹 handoff channels');
+
+const workspaceChannels = [
+  { name: 'ask-pricebook', purpose: 'Questions about pricebook, services, and materials' },
+  { name: 'ask-public-api', purpose: 'Public API, developer API, and API v2' },
+  { name: 'ask-leads-integration', purpose: 'Angi, Thumbtack, Yelp, HomeAdvisor, and other lead providers' },
+  { name: 'ask-back-office', purpose: 'Back office configuration and payroll' },
+  { name: 'ask-integrations', purpose: 'Zapier, webhooks, and other integrations' },
+  { name: 'random-social', purpose: 'Lunch plans' },
+];
+
+let chooserCalls = [];
+const choose = async ({ system, user }) => {
+  chooserCalls.push({ system, user });
+  if (user.includes('Price book services are priced wrong')) return '{"channel":"#ask-pricebook"}';
+  if (user.includes('pb-support')) return '{"channel":"#pb-support"}';
+  if (user.includes('not a real channel')) return '{"channel":"#ask-made-up"}';
+  return '{"channel":null}';
+};
+
+const pricebookHandoff = await settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-integrations' },
+  'Price book services are priced wrong for this tenant',
+  workspaceChannels,
+  { complete: choose },
+);
+assert(pricebookHandoff.channel === '#ask-pricebook', 'the channel choice is accepted when that channel is in the workspace');
+assert(pricebookHandoff.who === 'engineering', 'handoff keeps the team the resolver named');
+assert(chooserCalls[0].user.includes('Price book services are priced wrong'), 'the chooser sees the issue wording, not a keyword bucket');
+assert(chooserCalls[0].user.includes('#ask-pricebook — Questions about pricebook, services, and materials'), 'the chooser sees each channel name and purpose');
+assert(chooserCalls[0].user.includes('#ask-public-api'), 'the chooser sees the other channels too');
+assert(chooserCalls[0].user.includes('#random-social'), 'every listed channel is shown, not a truncated sample');
+assert(chooserCalls[0].system.includes('specific') && chooserCalls[0].system.includes('null'), 'unsure means no channel, and a specific channel beats a general one');
+
+chooserCalls = [];
+const renamedPricebook = await chooseHandoffChannel(
+  'Catalog sync is broken',
+  [{ name: 'pb-support', purpose: 'Pricebook item sync issues' }],
+  { complete: choose },
+);
+assert(renamedPricebook === '#pb-support', 'the destination is whichever listed channel is chosen');
+
+const invented = await chooseHandoffChannel(
+  'not a real channel',
+  workspaceChannels,
+  { complete: choose },
+);
+assert(invented === null, 'a channel that is not in the workspace is not posted');
+
+const unsure = await chooseHandoffChannel(
+  'Something we cannot place',
+  workspaceChannels,
+  { complete: choose },
+);
+assert(unsure === null, 'no channel is posted when the choice is null');
+
+let chooserRan = false;
+const noCatalog = await settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-pricebook' },
+  'Pricebook items are not syncing',
+  [],
+  { complete: () => { chooserRan = true; return '{"channel":"#ask-pricebook"}'; } },
+);
+assert(noCatalog.channel === null && chooserRan === false, 'without the workspace channels, nothing is posted and no choice is made');
+
+const ownerFinishes = await settleInvolvement(
+  { needed: false, who: null, reason: null, channel: null },
+  'Pricebook items are not syncing',
+  workspaceChannels,
+  { complete: () => { throw new Error('should not choose'); } },
+);
+assert(ownerFinishes.needed === false && ownerFinishes.channel === null, 'a finished case is not handed off');
+
+const choiceFailed = await chooseHandoffChannel('Pricebook items', workspaceChannels, {
+  complete: async () => { throw new Error('model down'); },
+});
+assert(choiceFailed === null, 'a failed choice does not guess a channel');
+
+const listedUrls = [];
+const listed = await listPostableChannels({
+  token: 'xoxp-test',
+  fetchImpl: async (url) => {
+    listedUrls.push(String(url));
+    if (listedUrls.length === 1) {
+      return new Response(JSON.stringify({
+        ok: true,
+        channels: [
+          { id: 'C1', name: 'ask-pricebook', purpose: { value: 'Pricebook questions' }, topic: { value: '' } },
+        ],
+        response_metadata: { next_cursor: 'page-2' },
+      }));
+    }
+    return new Response('nope', { status: 500 });
+  },
+});
+assert(listedUrls[0].includes('conversations.list'), 'channels are listed from the workspace, not only channels the bot has joined');
+assert(listed.length === 1 && listed[0].name === 'ask-pricebook' && listed[0].purpose === 'Pricebook questions', 'a later page failure keeps the channels already found');
+
+const handoffText = buildHandoffMessage({
+  channel: '#ask-pricebook',
+  title: 'Pricebook sync',
+  diagnosis: 'Items are missing',
+  steps: [{ num: 1, title: 'Check the mapping', detail: 'Open pricebook' }],
+  reason: 'Pricebook team owns this',
+  sourceRef: 'From <#C123>',
+});
+assert(handoffText.includes('#ask-pricebook'), 'handoff message names the destination');
+assert(handoffText.includes('Check the mapping'), 'handoff message includes the steps');
+assert(handoffText.includes('From <#C123>'), 'handoff message points back at the source');
+
 // ── pipeline orchestrator ─────────────────────────────────────────────────────
 console.log('\n🔹 pipeline');
 
@@ -2437,6 +2547,33 @@ globalThis.fetch = passThroughFetch;
 const replyPipeResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' });
 assert(replyPipeResult.customer_message === 'Hi there, the Zapier API access toggle is off.', 'customer_mentioned true uses reply customer_message');
 assert(stepCounter === 4, 'Interpreter + Evaluator + Resolver + Reply when customer mentioned');
+
+// Test B4: a follow-up sends the earlier steps to the resolver and does not start from zero
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"step 2 failed","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"still broken"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Still broken","integration_type":"Zapier","confidence":"medium","diagnosis":"Reconnect did not stick","steps":[{"num":1,"title":"Check the new error","detail":"Read the latest Zapier task","tag":"verify"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+const priorBodies = [];
+globalThis.fetch = async (url, init) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    priorBodies.push(JSON.parse(init.body).messages?.[0]?.content ?? '');
+    return nextResponse();
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200 });
+};
+const followUpResult = await runPipeline({
+  rawQuery: 'step 2 failed',
+  allowClarify: false,
+  threadHistory: [
+    { role: 'user', content: 'Zapier broke' },
+    { role: 'assistant', content: 'Steps I gave:\n1. Reconnect Zapier (action): Toggle the connection' },
+  ],
+});
+assert(followUpResult.issue_title === 'Still broken', 'follow-up still returns a resolver answer');
+assert(priorBodies.some(body => body.includes('[PRIOR CASE]') && body.includes('Reconnect Zapier')), 'follow-up resolver sees the steps already given');
 
 // Test C: sufficient:false → exactly one refinement
 stepCounter = 0;
@@ -2548,6 +2685,14 @@ assert(allText.includes('Suggested steps'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
 assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
+const postable = buildAutoAnswerBlocks({
+  sourceChannelId: 'C_ASK_INTEGRATIONS',
+  originalTs: '1700000000.000100',
+  query: 'Customer says Zapier broke after migration',
+  result: sampleResult,
+});
+const postBtn = postable.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'post_auto_answer');
+assert(postBtn === undefined, 'auto-answer draft is not posted back to the original thread');
 
 const dangerousAutoAnswerBlocks = buildAutoAnswerBlocks({
   query: DANGEROUS_TEXT,
