@@ -7,6 +7,24 @@ description: Use when changing IntegrationsBot (this Slack bot), its pipeline, a
 
 Internal Slack bot for ServiceTitan integrations support people who own the case. One audience. There is no CSA mode and no Specialist mode.
 
+## Standing plan
+
+Memorized 2026-10-02. Full writeup: `docs/superpowers/plans/2026-10-02-no-channel-posts.md`.
+
+The bot answers in the thread or DM where someone asked. It does not post into any other channel. It names the channel that should receive the issue. A person posts there.
+
+Do not add a button or action that calls `chat.postMessage` into a destination channel or back into a source thread. There is no Send handoff button and no Post to thread button.
+
+Channel choice stays. Haiku reads the issue against `conversations.list` and may return only a listed channel. Unsure, unlisted, or a failed choice means `channel` is null. Channel names are not hardcoded.
+
+Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given.
+
+Accounting stays a keyword redirect in the asking thread. The bot does not post into that channel.
+
+Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`. It must not post into the original thread.
+
+Parked, and not to be started unless the user asks again: audit logs, CSA or Specialist roles, step-level source lines. A Reply throw still fails the request. That separate fix is not this plan.
+
 ## Runtime
 
 Node.js ESM (`import` / `export`). Entry `src/index.js`. Tests are plain `assert` in `test.js`.
@@ -44,7 +62,7 @@ Accounting is `isAccountingTopic` in `src/utils/accounting-filter.js`, before an
 
 Resolver fields: `issue_title`, `integration_type`, `confidence` (`high`|`medium`|`low`), `diagnosis`, `steps` (`num`, `title`, `detail`, `tag` of `action`|`backend`|`verify`|`escalate`), `involvement` (`needed`, `who`, `reason`, `channel`), `slack_refs`, `atlassian_refs`, `kb_refs`, `sources_used`.
 
-`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list and may return only a listed channel. If it is unsure, or the name is not in the list, `channel` is null and Send handoff stays off. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
+`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list and may return only a listed channel. If it is unsure, or the name is not in the list, `channel` is null. The card shows the channel name. The bot does not post it. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
 
 Reply field: `customer_message` only. Resolver must not emit it. The pipeline attaches it after Reply.
 
@@ -56,7 +74,7 @@ Not model output: `customer_message` on the Resolver, `is_accounting_topic`, `cl
 
 ## Slack card
 
-`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js`. Order: header, diagnosis, steps (cap 20), involvement, customer draft when `customer_message` is non-empty, source chips, actions. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, Channel post when `involvement.needed`, New chat in DMs. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
+`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js`. Order: header, diagnosis, steps (cap 20), involvement, customer draft when `customer_message` is non-empty, source chips, actions. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
 
 Escape user and model text with `escapeMrkdwn`. Stay well under Slack's 50-block limit. Button values stay small.
 

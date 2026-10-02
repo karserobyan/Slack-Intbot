@@ -86,7 +86,6 @@ export async function handleAutoAnswer({ event, client, logger }) {
   const blocks = buildAutoAnswerBlocks({
     originalUrl: permalink,
     sourceChannelId: sourceChannel,
-    originalTs: event.ts,
     originalUserId: event.user,
     query,
     result,

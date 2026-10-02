@@ -467,9 +467,7 @@ assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
 assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
 assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
 const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
-assert(cpBtnNeeded !== undefined, 'Send handoff button appears when involvement has a channel');
-assert(JSON.parse(cpBtnNeeded.value).channel === '#ask-integrations', 'Send handoff button names the channel');
-assert(JSON.parse(cpBtnNeeded.value).reason === 'Needs backend access', 'Send handoff button carries the involvement reason');
+assert(cpBtnNeeded === undefined, 'the bot does not offer a button that posts the handoff');
 
 // No channel post when involvement.needed false
 const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
@@ -1759,8 +1757,7 @@ const channelPostBlocks = buildResponseBlocks({
 });
 const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
 const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'send_handoff');
-assert(cpBtn !== undefined, 'send_handoff button present when involvement has a channel');
-assert(JSON.parse(cpBtn.value).reason === 'Anyone seen this Zapier issue?', 'send_handoff button carries the involvement reason');
+assert(cpBtn === undefined, 'send_handoff button is absent even when a channel is named');
 
 // Channel post button absent when involvement.needed false
 const noCpBlocks = buildResponseBlocks({
@@ -2695,9 +2692,7 @@ const postable = buildAutoAnswerBlocks({
   result: sampleResult,
 });
 const postBtn = postable.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'post_auto_answer');
-assert(postBtn !== undefined, 'auto-answer draft can be posted back to the original thread');
-assert(JSON.parse(postBtn.value).channel === 'C_ASK_INTEGRATIONS', 'post button names the source channel');
-assert(JSON.parse(postBtn.value).ts === '1700000000.000100', 'post button names the original message');
+assert(postBtn === undefined, 'auto-answer draft is not posted back to the original thread');
 
 const dangerousAutoAnswerBlocks = buildAutoAnswerBlocks({
   query: DANGEROUS_TEXT,

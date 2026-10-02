@@ -1,5 +1,4 @@
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
-import { lookupHandoffChannel } from './handoff-channels.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
 
 const TAG_CIRCLE = {
@@ -175,35 +174,6 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
         kbRefs,
         data.diagnosis ?? null,
       ),
-    });
-  }
-
-  const handoff = involvement?.needed ? lookupHandoffChannel(involvement.channel) : null;
-  if (handoff) {
-    const clip = (value, max) => escapeMrkdwn(String(value ?? '').slice(0, max));
-    const handoffPayload = {
-      channel: handoff.channel,
-      title: clip(data.issue_title, 80),
-      diagnosis: clip(data.diagnosis, 240),
-      steps: (data.steps ?? []).slice(0, 4).map((step) => ({
-        num: step.num,
-        title: clip(step.title, 60),
-        detail: clip(step.detail, 80),
-      })),
-      customerMessage: clip(data.customer_message, 240),
-      reason: clip(involvement.reason, 180),
-    };
-    let handoffValue = JSON.stringify(handoffPayload);
-    if (handoffValue.length > 1900) {
-      handoffPayload.customerMessage = '';
-      handoffPayload.steps = handoffPayload.steps.map((step) => ({ num: step.num, title: step.title }));
-      handoffValue = JSON.stringify(handoffPayload);
-    }
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '📤 Send handoff', emoji: true },
-      action_id: 'send_handoff',
-      value: handoffValue,
     });
   }
 
@@ -664,7 +634,7 @@ export function buildChatResolutionBlocks(data) {
  * draft email → footer (confidence + sources). Stays well under Slack's
  * 50-block limit even with the maximum 8 steps.
  */
-export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalTs, originalUserId, query, result }) {
+export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUserId, query, result }) {
   const blocks = [];
   const conf = CONFIDENCE_META[result.confidence] ?? CONFIDENCE_META.medium;
 
@@ -727,27 +697,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalTs
     }],
   });
 
-  if (sourceChannelId && originalTs) {
-    blocks.push({
-      type: 'actions',
-      elements: [{
-        type: 'button',
-        text: { type: 'plain_text', text: '📤 Post to thread', emoji: true },
-        action_id: 'post_auto_answer',
-        value: JSON.stringify({ channel: sourceChannelId, ts: originalTs }),
-      }],
-    });
-  }
-
   return blocks;
-}
-
-export function draftTextFromBlocks(blocks) {
-  return (blocks ?? [])
-    .filter((block) => block.type === 'section' && block.text?.text)
-    .map((block) => block.text.text)
-    .join('\n\n')
-    .slice(0, 3500);
 }
 
 function capitalizeFirst(s) {
