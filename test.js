@@ -41,7 +41,7 @@ import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
-import { settleInvolvement, buildHandoffMessage, listPostableChannels } from './src/slack/handoff-channels.js';
+import { settleInvolvement, buildHandoffMessage, listPostableChannels, chooseHandoffChannel } from './src/slack/handoff-channels.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -2387,82 +2387,92 @@ const workspaceChannels = [
   { name: 'random-social', purpose: 'Lunch plans' },
 ];
 
-const pricebookHandoff = settleInvolvement(
+let chooserCalls = [];
+const choose = async ({ system, user }) => {
+  chooserCalls.push({ system, user });
+  if (user.includes('Price book services are priced wrong')) return '{"channel":"#ask-pricebook"}';
+  if (user.includes('pb-support')) return '{"channel":"#pb-support"}';
+  if (user.includes('not a real channel')) return '{"channel":"#ask-made-up"}';
+  return '{"channel":null}';
+};
+
+const pricebookHandoff = await settleInvolvement(
   { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-integrations' },
-  'Pricebook items are not syncing for this tenant',
+  'Price book services are priced wrong for this tenant',
   workspaceChannels,
+  { complete: choose },
 );
-assert(pricebookHandoff.channel === '#ask-pricebook', 'a pricebook issue goes to the channel that is about pricebook');
+assert(pricebookHandoff.channel === '#ask-pricebook', 'the channel choice is accepted when that channel is in the workspace');
 assert(pricebookHandoff.who === 'engineering', 'handoff keeps the team the resolver named');
+assert(chooserCalls[0].user.includes('Price book services are priced wrong'), 'the chooser sees the issue wording, not a keyword bucket');
+assert(chooserCalls[0].user.includes('#ask-pricebook — Questions about pricebook, services, and materials'), 'the chooser sees each channel name and purpose');
+assert(chooserCalls[0].user.includes('#ask-public-api'), 'the chooser sees the other channels too');
+assert(chooserCalls[0].user.includes('#random-social'), 'every listed channel is shown, not a truncated sample');
+assert(chooserCalls[0].system.includes('specific') && chooserCalls[0].system.includes('null'), 'unsure means no channel, and a specific channel beats a general one');
 
-const renamedPricebook = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-pricebook' },
-  'Pricebook items are not syncing for this tenant',
+chooserCalls = [];
+const renamedPricebook = await chooseHandoffChannel(
+  'Catalog sync is broken',
   [{ name: 'pb-support', purpose: 'Pricebook item sync issues' }],
+  { complete: choose },
 );
-assert(renamedPricebook.channel === '#pb-support', 'the destination is whatever channel matches, not a hardcoded name');
+assert(renamedPricebook === '#pb-support', 'the destination is whichever listed channel is chosen');
 
-const apiHandoff = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'API question', channel: '#ask-integrations' },
-  'Their public API v2 webhook is failing',
+const invented = await chooseHandoffChannel(
+  'not a real channel',
   workspaceChannels,
+  { complete: choose },
 );
-assert(apiHandoff.channel === '#ask-public-api', 'a public API issue goes to the channel that is about the public API');
+assert(invented === null, 'a channel that is not in the workspace is not posted');
 
-const leadsHandoff = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Lead sync', channel: '#ask-integrations' },
-  'Angi leads stopped arriving',
+const unsure = await chooseHandoffChannel(
+  'Something we cannot place',
   workspaceChannels,
+  { complete: choose },
 );
-assert(leadsHandoff.channel === '#ask-leads-integration', 'a lead-provider issue goes to the channel that covers those leads');
+assert(unsure === null, 'no channel is posted when the choice is null');
 
-const officeHandoff = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Office config', channel: null },
-  'Back office payroll mapping is wrong',
-  workspaceChannels,
-);
-assert(officeHandoff.channel === '#ask-back-office', 'back office goes to the channel whose name matches that work');
-
-const officeWithoutChannel = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Office config', channel: '#ask-integrations' },
-  'Back office payroll mapping is wrong',
-  workspaceChannels.filter((channel) => channel.name !== 'ask-back-office'),
-);
-assert(officeWithoutChannel.channel === null, 'back office is not posted when no channel matches it');
-
-const zapierHandoff = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Zapier', channel: '#ask-made-up' },
-  'Zapier connection keeps dropping',
-  workspaceChannels,
-);
-assert(zapierHandoff.channel === '#ask-integrations', 'a Zapier issue goes to the channel whose purpose mentions Zapier');
-
-const noCatalog = settleInvolvement(
+let chooserRan = false;
+const noCatalog = await settleInvolvement(
   { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-pricebook' },
   'Pricebook items are not syncing',
   [],
+  { complete: () => { chooserRan = true; return '{"channel":"#ask-pricebook"}'; } },
 );
-assert(noCatalog.channel === null, 'without the workspace channels, nothing is posted');
+assert(noCatalog.channel === null && chooserRan === false, 'without the workspace channels, nothing is posted and no choice is made');
 
-const ownerFinishes = settleInvolvement(
+const ownerFinishes = await settleInvolvement(
   { needed: false, who: null, reason: null, channel: null },
   'Pricebook items are not syncing',
   workspaceChannels,
+  { complete: () => { throw new Error('should not choose'); } },
 );
 assert(ownerFinishes.needed === false && ownerFinishes.channel === null, 'a finished case is not handed off');
 
-const listed = await listPostableChannels({
-  token: 'xoxb-test',
-  fetchImpl: async () => new Response(JSON.stringify({
-    ok: true,
-    channels: [
-      { id: 'C1', name: 'ask-pricebook', purpose: { value: 'Pricebook questions' }, topic: { value: '' } },
-      { id: 'C2', name: 'lunch', purpose: { value: '' }, topic: { value: 'Food' } },
-    ],
-    response_metadata: { next_cursor: '' },
-  })),
+const choiceFailed = await chooseHandoffChannel('Pricebook items', workspaceChannels, {
+  complete: async () => { throw new Error('model down'); },
 });
-assert(listed.length === 2 && listed[0].name === 'ask-pricebook' && listed[0].purpose === 'Pricebook questions', 'postable channels come from Slack, with purpose text');
+assert(choiceFailed === null, 'a failed choice does not guess a channel');
+
+const listedUrls = [];
+const listed = await listPostableChannels({
+  token: 'xoxp-test',
+  fetchImpl: async (url) => {
+    listedUrls.push(String(url));
+    if (listedUrls.length === 1) {
+      return new Response(JSON.stringify({
+        ok: true,
+        channels: [
+          { id: 'C1', name: 'ask-pricebook', purpose: { value: 'Pricebook questions' }, topic: { value: '' } },
+        ],
+        response_metadata: { next_cursor: 'page-2' },
+      }));
+    }
+    return new Response('nope', { status: 500 });
+  },
+});
+assert(listedUrls[0].includes('conversations.list'), 'channels are listed from the workspace, not only channels the bot has joined');
+assert(listed.length === 1 && listed[0].name === 'ask-pricebook' && listed[0].purpose === 'Pricebook questions', 'a later page failure keeps the channels already found');
 
 const handoffText = buildHandoffMessage({
   channel: '#ask-pricebook',

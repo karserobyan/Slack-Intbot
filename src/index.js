@@ -10,7 +10,7 @@ import { pruneConversations } from './slack/conversation.js';
 import { initFeedbackStorage, getUnpostedPending, notifyFeedbackChannel } from './slack/feedback.js';
 import { handleFeedbackSubmission } from './slack/feedback-submission.js';
 import { buildChannelPostModal } from './slack/modal.js';
-import { buildHandoffMessage, lookupHandoffChannel } from './slack/handoff-channels.js';
+import { buildHandoffMessage, isListedChannel, listPostableChannels, lookupHandoffChannel } from './slack/handoff-channels.js';
 import { handleFeedbackReviewAction, handleNominationReviewAction } from './slack/review-actions.js';
 
 function decodeActionText(value) {
@@ -102,7 +102,8 @@ app.action('send_handoff', async ({ ack, body, client, action, logger }) => {
   const known = lookupHandoffChannel(payload.channel);
   const user = body.user?.id;
   const here = body.channel?.id;
-  if (!known) {
+  const listed = known ? await listPostableChannels().catch(() => []) : [];
+  if (!known || !isListedChannel(known.channel, listed)) {
     if (user && here) {
       await client.chat.postEphemeral({
         channel: here,

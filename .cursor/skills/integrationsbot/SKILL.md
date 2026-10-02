@@ -23,14 +23,15 @@ Zero failures before a PR. `npm test` is the same command.
 
 1. **Intake** — `runInterpreter` (Haiku). May return a clarifying question only when `allowClarify` is true and `question_confidence` is `low`.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search.
-3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement.
-4. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. A Reply throw fails the request.
+3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement. It sets `channel` to null.
+4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name only a channel on that list. A throw or an unlisted name leaves `channel` null and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
+5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. A Reply throw fails the request.
 
 Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, involvement engineering, and no channel until a workspace channel matches the issue.
 
 Models already chosen:
 
-- Interpreter, evaluator, KB web search: `claude-haiku-4-5-20251001`
+- Interpreter, evaluator, handoff channel, KB web search: `claude-haiku-4-5-20251001`
 - Resolver and Reply: `process.env.ANTHROPIC_MODEL` or `claude-sonnet-4-6`
 
 Do not switch these to Opus, adaptive thinking, or streaming unless the task says so. Do not add SDK retries. KB search calls the Messages API with `web_search_20250305` scoped to `help.servicetitan.com`; leave that tool type unless a task is specifically about KB search.
@@ -43,7 +44,7 @@ Accounting is `isAccountingTopic` in `src/utils/accounting-filter.js`, before an
 
 Resolver fields: `issue_title`, `integration_type`, `confidence` (`high`|`medium`|`low`), `diagnosis`, `steps` (`num`, `title`, `detail`, `tag` of `action`|`backend`|`verify`|`escalate`), `involvement` (`needed`, `who`, `reason`, `channel`), `slack_refs`, `atlassian_refs`, `kb_refs`, `sources_used`.
 
-`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not a stored list. The pipeline loads the channels the bot can post in and keeps the one whose name and purpose match this issue. If none match, `channel` is null and Send handoff stays off. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
+`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list and may return only a listed channel. If it is unsure, or the name is not in the list, `channel` is null and Send handoff stays off. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
 
 Reply field: `customer_message` only. Resolver must not emit it. The pipeline attaches it after Reply.
 

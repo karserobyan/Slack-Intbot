@@ -150,7 +150,6 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
       teamKnowledge,
       feedbackContext,
       threadHistory,
-      handoffChannels,
       signal,
     };
 
@@ -176,7 +175,7 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     }
 
     const handoffContext = [rawQuery, interp.cleaned_question, answer.issue_title, answer.diagnosis, answer.integration_type].filter(Boolean).join('\n');
-    answer.involvement = settleInvolvement(answer.involvement, handoffContext, handoffChannels);
+    answer.involvement = await settleInvolvement(answer.involvement, handoffContext, handoffChannels, { signal });
 
     if (customerWasMentioned(interp)) {
       onProgress?.({ phase: 'stage', stage: 'reply' });

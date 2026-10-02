@@ -1,28 +1,18 @@
-const CHANNEL_LIST_URL = 'https://slack.com/api/users.conversations';
+import { completeHandoffChoice } from '../claude/handoff-chooser.js';
+
+const CHANNEL_LIST_URL = 'https://slack.com/api/conversations.list';
 const CACHE_MS = 5 * 60 * 1000;
-const GENERIC_TOKENS = new Set([
-  'ask', 'api', 'app', 'bot', 'team', 'support', 'help', 'general',
-  'integration', 'integrations', 'question', 'questions', 'channel', 'channels',
-]);
 
-let channelCache = { at: 0, channels: [] };
+const CHOOSER_SYSTEM = `You choose the one Slack channel that should receive this support issue.
 
-function tokens(text) {
-  return String(text ?? '')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 3 && !GENERIC_TOKENS.has(token));
-}
+Reply with JSON only: {"channel":"#name"} or {"channel":null}.
 
-function stemsMatch(a, b) {
-  if (a === b) return true;
-  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
-  return shorter.length >= 4 && longer.length >= 5 && longer.startsWith(shorter);
-}
+- Copy the channel name exactly from the list. Never invent a name.
+- Read the issue. The wording may not match the channel name. A price book or services-and-materials problem belongs with the channel whose name or purpose is about that work. A public API problem belongs with the channel about the public API. A back-office problem belongs with the channel about back office. A lead-provider problem belongs with the channel about those leads.
+- A specific channel beats a general one.
+- If no listed channel owns the issue, or you are not sure, return null.`;
 
-function matchesIssue(channelToken, issueTokens) {
-  return issueTokens.some((word) => stemsMatch(channelToken, word));
-}
+let channelCache = { at: 0, token: '', channels: [] };
 
 export function normalizeChannelName(channel) {
   const raw = String(channel ?? '').trim().replace(/^#/, '').toLowerCase();
@@ -35,37 +25,60 @@ export function lookupHandoffChannel(channel) {
   return name ? { channel: name } : null;
 }
 
-/**
- * Pick the workspace channel whose name and purpose match this issue.
- * Channel names are not stored here — they come from the list Slack returns.
- * A tie means we do not guess.
- */
-export function chooseHandoffChannel(issueText, channels) {
-  const issueTokens = tokens(issueText);
-  if (issueTokens.length === 0 || !Array.isArray(channels) || channels.length === 0) return null;
-
-  const ranked = channels.map((channel) => {
-    const nameTokens = tokens(channel.name);
-    const aboutTokens = tokens(`${channel.purpose ?? ''} ${channel.topic ?? ''}`);
-    const nameHits = nameTokens.filter((token) => matchesIssue(token, issueTokens)).length;
-    const aboutHits = aboutTokens.filter((token) => (
-      matchesIssue(token, issueTokens) && !nameTokens.some((nameToken) => stemsMatch(nameToken, token))
-    )).length;
-    return {
-      channel: normalizeChannelName(channel.name),
-      score: nameHits * 3 + aboutHits * 2,
-      coverage: nameTokens.length ? nameHits / nameTokens.length : 0,
-    };
-  }).filter((entry) => entry.channel && entry.score > 0)
-    .sort((a, b) => b.score - a.score || b.coverage - a.coverage);
-
-  if (ranked.length === 0) return null;
-  const [best, second] = ranked;
-  if (second && second.score === best.score && second.coverage === best.coverage) return null;
-  return best.channel;
+export function isListedChannel(channel, channels) {
+  const name = normalizeChannelName(channel);
+  if (!name || !Array.isArray(channels)) return false;
+  return channels.some((entry) => normalizeChannelName(entry.name) === name);
 }
 
-export function settleInvolvement(involvement, contextText, channels = []) {
+function catalogLines(channels) {
+  return channels.map((channel) => {
+    const name = normalizeChannelName(channel.name);
+    if (!name) return null;
+    const about = [channel.purpose, channel.topic]
+      .filter(Boolean)
+      .join(' — ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180);
+    return about ? `${name} — ${about}` : name;
+  }).filter(Boolean);
+}
+
+function parseChoice(text) {
+  try {
+    const match = String(text ?? '').match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    return JSON.parse(match[0])?.channel ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function chooseHandoffChannel(issueText, channels, { complete = completeHandoffChoice, signal } = {}) {
+  const lines = catalogLines(channels);
+  const issue = String(issueText ?? '').trim();
+  if (!issue || lines.length === 0) return null;
+
+  let text;
+  try {
+    text = await complete({
+      system: CHOOSER_SYSTEM,
+      user: `Issue:\n${issue.slice(0, 4000)}\n\nChannels:\n${lines.join('\n')}`,
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.warn('[handoff] channel choice failed:', err.message);
+    return null;
+  }
+
+  const chosen = normalizeChannelName(parseChoice(text));
+  if (!chosen || !isListedChannel(chosen, channels)) return null;
+  return chosen;
+}
+
+export async function settleInvolvement(involvement, contextText, channels = [], options = {}) {
   if (!involvement || involvement.needed !== true) {
     return { needed: false, who: null, reason: involvement?.reason ?? null, channel: null };
   }
@@ -74,7 +87,7 @@ export function settleInvolvement(involvement, contextText, channels = []) {
     needed: true,
     who: involvement.who ?? null,
     reason: involvement.reason ?? null,
-    channel: chooseHandoffChannel(contextText, channels),
+    channel: await chooseHandoffChannel(contextText, channels, options),
   };
 }
 
@@ -95,32 +108,25 @@ export function buildHandoffMessage({ title, diagnosis, steps, customerMessage, 
   return lines.join('\n\n').slice(0, 3500);
 }
 
-export function formatHandoffChannels(channels) {
-  if (!Array.isArray(channels) || channels.length === 0) return '';
-  const lines = channels.slice(0, 80).map((channel) => {
-    const name = normalizeChannelName(channel.name);
-    if (!name) return null;
-    const about = [channel.purpose, channel.topic].filter(Boolean).join(' — ');
-    return about ? `${name} — ${about}` : name;
-  }).filter(Boolean);
-  if (lines.length === 0) return '';
-  return `[HANDOFF CHANNELS]\n${lines.join('\n')}\n[/HANDOFF CHANNELS]\n\n`;
+function usableToken(token) {
+  return Boolean(token) && token !== 'xoxb-replace-me' && token !== 'xoxp-replace-me';
 }
 
 export async function listPostableChannels({
-  token = process.env.SLACK_BOT_TOKEN,
+  token = process.env.SLACK_USER_TOKEN || process.env.SLACK_BOT_TOKEN,
   fetchImpl = globalThis.fetch,
   signal,
   now = Date.now(),
 } = {}) {
-  if (!token || token === 'xoxb-replace-me') return [];
+  if (!usableToken(token)) return [];
   const useCache = fetchImpl === globalThis.fetch;
-  if (useCache && channelCache.channels.length > 0 && now - channelCache.at < CACHE_MS) {
+  if (useCache && channelCache.token === token && channelCache.channels.length > 0 && now - channelCache.at < CACHE_MS) {
     return channelCache.channels;
   }
 
   const channels = [];
   let cursor = '';
+  let complete = true;
   for (let page = 0; page < 10; page++) {
     const url = new URL(CHANNEL_LIST_URL);
     url.searchParams.set('types', 'public_channel,private_channel');
@@ -128,13 +134,26 @@ export async function listPostableChannels({
     url.searchParams.set('limit', '200');
     if (cursor) url.searchParams.set('cursor', cursor);
 
-    const res = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal,
-    });
-    if (!res.ok) return [];
+    let res;
+    try {
+      res = await fetchImpl(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      complete = false;
+      break;
+    }
+    if (!res.ok) {
+      complete = false;
+      break;
+    }
     const data = await res.json();
-    if (data.ok === false) return [];
+    if (data.ok === false) {
+      complete = false;
+      break;
+    }
 
     for (const channel of data.channels ?? []) {
       if (!channel?.name) continue;
@@ -150,6 +169,6 @@ export async function listPostableChannels({
     if (!cursor) break;
   }
 
-  if (useCache) channelCache = { at: now, channels };
+  if (useCache && complete && channels.length > 0) channelCache = { at: now, token, channels };
   return channels;
 }

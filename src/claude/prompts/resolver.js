@@ -53,7 +53,7 @@ Required keys (exact list — do not add others): ${FIELD_LIST}
     "needed": true | false,
     "who": "${WHO_LIST} | null",
     "reason": "why another team is or is not needed",
-    "channel": "one #channel from [HANDOFF CHANNELS] that matches this issue, or null"
+    "channel": null
   },
   "slack_refs": [
     { "url": "https://servicetitan.slack.com/archives/...", "channel": "#channel-name", "title": "Brief description", "sensitive": true }
@@ -70,8 +70,7 @@ Required keys (exact list — do not add others): ${FIELD_LIST}
 
 involvement rules:
 - needed false → who null and channel null. The case owner finishes the case.
-- needed true → who is ${WHO_LIST}. channel is the one channel in [HANDOFF CHANNELS] whose name and purpose match this issue. A specific match beats a general one. If none match, or [HANDOFF CHANNELS] is absent, channel is null.
-- Never invent a channel name. Never use a channel that is not in [HANDOFF CHANNELS].
+- needed true → who is ${WHO_LIST}. Set channel to null. The destination is chosen after this answer, from the workspace channels that match this issue.
 - Do not recommend Live Assist, Integrations Specialist, or CSA routing.
 
 CONFIDENCE SCORING — set "confidence" using these exact criteria:
