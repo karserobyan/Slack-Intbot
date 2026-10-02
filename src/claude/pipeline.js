@@ -6,6 +6,7 @@ import { customerWasMentioned, RETIRED_ROLE_FIELDS } from './answer-schema.js';
 import { getKnowledge } from '../slack/knowledge.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
+import { settleInvolvement } from '../slack/handoff-channels.js';
 
 const HARD_CAP_MS = 60000;
 
@@ -140,6 +141,7 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
       searchResults,
       teamKnowledge,
       feedbackContext,
+      threadHistory,
       signal,
     };
 
@@ -163,6 +165,9 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     if (!allowClarify) {
       applyCappedFallback(answer);
     }
+
+    const handoffContext = [rawQuery, interp.cleaned_question, answer.issue_title, answer.diagnosis, answer.integration_type].filter(Boolean).join('\n');
+    answer.involvement = settleInvolvement(answer.involvement, handoffContext);
 
     if (customerWasMentioned(interp)) {
       onProgress?.({ phase: 'stage', stage: 'reply' });

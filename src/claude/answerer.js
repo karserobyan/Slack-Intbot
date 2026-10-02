@@ -100,15 +100,22 @@ function stripRetiredFields(parsed) {
  * @param {AbortSignal} [args.signal]
  * @returns {Promise<object>} Parsed resolver JSON with retired/non-model fields stripped.
  */
+function formatPriorCase(threadHistory) {
+  if (!Array.isArray(threadHistory) || threadHistory.length === 0) return '';
+  const lines = threadHistory.slice(-8).map((turn) => `${turn.role}: ${String(turn.content ?? '').slice(0, 800)}`);
+  return `[PRIOR CASE]\n${lines.join('\n')}\n[/PRIOR CASE]\n\n`;
+}
+
 export async function runResolver({
   cleanedQuestion,
   searchResults,
   teamKnowledge,
   feedbackContext,
+  threadHistory,
   signal: externalSignal,
 }) {
   const userContent = appendResearchBlocks(
-    `Issue: ${cleanedQuestion}`,
+    `${formatPriorCase(threadHistory)}Issue: ${cleanedQuestion}`,
     searchResults,
     { teamKnowledge, feedbackContext },
   );

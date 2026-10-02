@@ -41,6 +41,7 @@ import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
+import { settleInvolvement, buildHandoffMessage } from './src/slack/handoff-channels.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -465,12 +466,13 @@ const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elem
 assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
 assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
 assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
-const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(cpBtnNeeded !== undefined, 'Channel post button appears when involvement.needed');
-assert(cpBtnNeeded.value === 'Needs backend access', 'Channel post button value is involvement.reason');
+const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
+assert(cpBtnNeeded !== undefined, 'Send handoff button appears when involvement has a channel');
+assert(JSON.parse(cpBtnNeeded.value).channel === '#ask-integrations', 'Send handoff button names the channel');
+assert(JSON.parse(cpBtnNeeded.value).reason === 'Needs backend access', 'Send handoff button carries the involvement reason');
 
 // No channel post when involvement.needed false
-const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'copy_channel_post');
+const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
 assert(noCpOwner === undefined, 'Channel post button absent when involvement.needed false');
 
 // ── Sensitivity: refs always shown, no specialist-only hint ──────────────────
@@ -1756,9 +1758,9 @@ const channelPostBlocks = buildResponseBlocks({
   involvement: { needed: true, who: 'engineering', reason: 'Anyone seen this Zapier issue?', channel: '#ask-integrations' },
 });
 const cpActionsBlock = channelPostBlocks.find(b => b.type === 'actions');
-const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(cpBtn !== undefined, 'copy_channel_post button present when involvement.needed');
-assert(cpBtn.value === 'Anyone seen this Zapier issue?', 'copy_channel_post button value is involvement.reason');
+const cpBtn = cpActionsBlock?.elements?.find(e => e.action_id === 'send_handoff');
+assert(cpBtn !== undefined, 'send_handoff button present when involvement has a channel');
+assert(JSON.parse(cpBtn.value).reason === 'Anyone seen this Zapier issue?', 'send_handoff button carries the involvement reason');
 
 // Channel post button absent when involvement.needed false
 const noCpBlocks = buildResponseBlocks({
@@ -1766,8 +1768,8 @@ const noCpBlocks = buildResponseBlocks({
   involvement: { needed: false, who: null, reason: 'This should not appear.', channel: null },
 });
 const noCpActionsBlock = noCpBlocks.find(b => b.type === 'actions');
-const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'copy_channel_post');
-assert(noCpBtn === undefined, 'copy_channel_post button absent when involvement.needed false');
+const noCpBtn = noCpActionsBlock?.elements?.find(e => e.action_id === 'send_handoff');
+assert(noCpBtn === undefined, 'send_handoff button absent when involvement.needed false');
 
 // new_chat button still last when isDm + involvement needed + channel post
 const fullDmBlocks = buildResponseBlocks({
@@ -2373,6 +2375,59 @@ const normalBlocks = buildResponseBlocks({
 assert(JSON.stringify(normalBlocks).includes('Zapier API access'), 'normal title not truncated');
 assert(!JSON.stringify(normalBlocks).includes('…'), 'normal content has no ellipsis');
 
+// ── handoff channels ──────────────────────────────────────────────────────────
+console.log('\n🔹 handoff channels');
+
+const pricebookHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-integrations' },
+  'Pricebook items are not syncing for this tenant',
+);
+assert(pricebookHandoff.channel === '#ask-pricebook', 'pricebook questions hand off to #ask-pricebook');
+assert(pricebookHandoff.who === 'pricebook', 'pricebook handoff names the pricebook team');
+
+const apiHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'API question', channel: '#ask-integrations' },
+  'Their public API v2 webhook is failing',
+);
+assert(apiHandoff.channel === '#ask-public-api', 'public API questions hand off to #ask-public-api');
+
+const leadsHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Lead sync', channel: '#ask-integrations' },
+  'Angi leads stopped arriving',
+);
+assert(leadsHandoff.channel === '#ask-leads-integration', 'lead-provider questions hand off to #ask-leads-integration');
+
+const officeHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Office config', channel: '#ask-integrations' },
+  'Back office payroll mapping is wrong',
+);
+assert(officeHandoff.who === 'back-office', 'back office is recognized');
+assert(officeHandoff.channel === null, 'back office has no confirmed channel, so nothing is posted');
+
+const invented = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Somewhere', channel: '#ask-made-up' },
+  'Zapier API access is off',
+);
+assert(invented.channel === '#ask-integrations', 'an unknown channel falls back to #ask-integrations');
+
+const ownerFinishes = settleInvolvement(
+  { needed: false, who: null, reason: null, channel: null },
+  'Pricebook items are not syncing',
+);
+assert(ownerFinishes.needed === false && ownerFinishes.channel === null, 'a finished case is not handed off');
+
+const handoffText = buildHandoffMessage({
+  channel: '#ask-pricebook',
+  title: 'Pricebook sync',
+  diagnosis: 'Items are missing',
+  steps: [{ num: 1, title: 'Check the mapping', detail: 'Open pricebook' }],
+  reason: 'Pricebook team owns this',
+  sourceRef: 'From <#C123>',
+});
+assert(handoffText.includes('#ask-pricebook'), 'handoff message names the destination');
+assert(handoffText.includes('Check the mapping'), 'handoff message includes the steps');
+assert(handoffText.includes('From <#C123>'), 'handoff message points back at the source');
+
 // ── pipeline orchestrator ─────────────────────────────────────────────────────
 console.log('\n🔹 pipeline');
 
@@ -2437,6 +2492,33 @@ globalThis.fetch = passThroughFetch;
 const replyPipeResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' });
 assert(replyPipeResult.customer_message === 'Hi there, the Zapier API access toggle is off.', 'customer_mentioned true uses reply customer_message');
 assert(stepCounter === 4, 'Interpreter + Evaluator + Resolver + Reply when customer mentioned');
+
+// Test B4: a follow-up sends the earlier steps to the resolver and does not start from zero
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"step 2 failed","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"still broken"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Still broken","integration_type":"Zapier","confidence":"medium","diagnosis":"Reconnect did not stick","steps":[{"num":1,"title":"Check the new error","detail":"Read the latest Zapier task","tag":"verify"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+const priorBodies = [];
+globalThis.fetch = async (url, init) => {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    priorBodies.push(JSON.parse(init.body).messages?.[0]?.content ?? '');
+    return nextResponse();
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200 });
+};
+const followUpResult = await runPipeline({
+  rawQuery: 'step 2 failed',
+  allowClarify: false,
+  threadHistory: [
+    { role: 'user', content: 'Zapier broke' },
+    { role: 'assistant', content: 'Steps I gave:\n1. Reconnect Zapier (action): Toggle the connection' },
+  ],
+});
+assert(followUpResult.issue_title === 'Still broken', 'follow-up still returns a resolver answer');
+assert(priorBodies.some(body => body.includes('[PRIOR CASE]') && body.includes('Reconnect Zapier')), 'follow-up resolver sees the steps already given');
 
 // Test C: sufficient:false → exactly one refinement
 stepCounter = 0;
@@ -2548,6 +2630,16 @@ assert(allText.includes('Suggested steps'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
 assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
+const postable = buildAutoAnswerBlocks({
+  sourceChannelId: 'C_ASK_INTEGRATIONS',
+  originalTs: '1700000000.000100',
+  query: 'Customer says Zapier broke after migration',
+  result: sampleResult,
+});
+const postBtn = postable.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'post_auto_answer');
+assert(postBtn !== undefined, 'auto-answer draft can be posted back to the original thread');
+assert(JSON.parse(postBtn.value).channel === 'C_ASK_INTEGRATIONS', 'post button names the source channel');
+assert(JSON.parse(postBtn.value).ts === '1700000000.000100', 'post button names the original message');
 
 const dangerousAutoAnswerBlocks = buildAutoAnswerBlocks({
   query: DANGEROUS_TEXT,

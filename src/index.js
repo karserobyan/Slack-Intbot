@@ -3,13 +3,14 @@ import { App, LogLevel } from '@slack/bolt';
 import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { registerAutoAnswerHandler } from './handlers/auto-answer.js';
-import { buildFeedbackModal, buildSourcesModal } from './slack/blocks.js';
+import { buildFeedbackModal, buildSourcesModal, draftTextFromBlocks } from './slack/blocks.js';
 import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations } from './slack/conversation.js';
 import { initFeedbackStorage, getUnpostedPending, notifyFeedbackChannel } from './slack/feedback.js';
 import { handleFeedbackSubmission } from './slack/feedback-submission.js';
 import { buildChannelPostModal } from './slack/modal.js';
+import { buildHandoffMessage, lookupHandoffChannel } from './slack/handoff-channels.js';
 import { handleFeedbackReviewAction, handleNominationReviewAction } from './slack/review-actions.js';
 
 function decodeActionText(value) {
@@ -90,6 +91,70 @@ app.action('view_sources_modal', async ({ ack, body, client, action, logger }) =
     });
   } catch (err) {
     logger.error('[index] Failed to open sources modal:', err.message);
+  }
+});
+
+// ── "Send handoff" — posts the case into the destination channel ─────────────
+app.action('send_handoff', async ({ ack, body, client, action, logger }) => {
+  await ack();
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  const known = lookupHandoffChannel(payload.channel);
+  const user = body.user?.id;
+  const here = body.channel?.id;
+  if (!known) {
+    if (user && here) {
+      await client.chat.postEphemeral({
+        channel: here,
+        user,
+        text: 'This issue does not have a confirmed handoff channel yet.',
+      }).catch(() => {});
+    }
+    return;
+  }
+  const sourceRef = body.message?.ts && here ? `From <#${here}>` : '';
+  try {
+    await client.chat.postMessage({
+      channel: known.channel.replace(/^#/, ''),
+      text: buildHandoffMessage({ ...payload, channel: known.channel, sourceRef }),
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    if (user && here) {
+      await client.chat.postEphemeral({
+        channel: here,
+        user,
+        text: `Handed off to ${known.channel}.`,
+      }).catch(() => {});
+    }
+  } catch (err) {
+    logger.error('[index] send_handoff failed:', err.message);
+    if (user && here) {
+      await client.chat.postEphemeral({
+        channel: here,
+        user,
+        text: `Could not post to ${known.channel}. Invite the bot to that channel, then try again.`,
+      }).catch(() => {});
+    }
+  }
+});
+
+app.action('post_auto_answer', async ({ ack, body, client, action, logger }) => {
+  await ack();
+  let payload = {};
+  try { payload = JSON.parse(action.value); } catch { return; }
+  if (!payload.channel || !payload.ts) return;
+  const text = draftTextFromBlocks(body.message?.blocks);
+  try {
+    await client.chat.postMessage({
+      channel: payload.channel,
+      thread_ts: payload.ts,
+      text: text || 'Draft from IntegrationsBot',
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+  } catch (err) {
+    logger.error('[index] post_auto_answer failed:', err.message);
   }
 });
 

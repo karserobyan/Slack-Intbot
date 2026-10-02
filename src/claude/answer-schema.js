@@ -9,11 +9,20 @@ export const CONFIDENCE_VALUES = Object.freeze(['high', 'medium', 'low']);
 export const STEP_TAGS = Object.freeze(['action', 'backend', 'verify', 'escalate']);
 
 /** Another team. Absent who means the case owner finishes the case. */
-export const INVOLVEMENT_WHO = Object.freeze(['engineering', 'partner', 'leads']);
+export const INVOLVEMENT_WHO = Object.freeze([
+  'engineering',
+  'partner',
+  'leads',
+  'pricebook',
+  'public-api',
+  'back-office',
+]);
 
 export const INVOLVEMENT_CHANNELS = Object.freeze({
   engineering: '#ask-integrations',
   leads: '#ask-leads-integration',
+  pricebook: '#ask-pricebook',
+  'public-api': '#ask-public-api',
 });
 
 /**
@@ -21,8 +30,8 @@ export const INVOLVEMENT_CHANNELS = Object.freeze({
  * steps: [{ num, title, detail, tag }]
  * involvement: { needed, who, reason, channel }
  *   needed false → who null, channel null
- *   needed true  → who is engineering | partner | leads
- *   channel is #ask-integrations, #ask-leads-integration, or a partner channel
+ *   needed true  → who is engineering | partner | leads | pricebook | public-api | back-office
+ *   channel is a known handoff channel, or null when that team has no confirmed channel
  */
 export const RESOLVER_FIELDS = Object.freeze([
   'issue_title',
