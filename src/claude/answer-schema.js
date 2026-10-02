@@ -13,25 +13,15 @@ export const INVOLVEMENT_WHO = Object.freeze([
   'engineering',
   'partner',
   'leads',
-  'pricebook',
-  'public-api',
-  'back-office',
 ]);
-
-export const INVOLVEMENT_CHANNELS = Object.freeze({
-  engineering: '#ask-integrations',
-  leads: '#ask-leads-integration',
-  pricebook: '#ask-pricebook',
-  'public-api': '#ask-public-api',
-});
 
 /**
  * Resolver JSON keys, in card order. customer_message is not one of them.
  * steps: [{ num, title, detail, tag }]
  * involvement: { needed, who, reason, channel }
  *   needed false → who null, channel null
- *   needed true  → who is engineering | partner | leads | pricebook | public-api | back-office
- *   channel is a known handoff channel, or null when that team has no confirmed channel
+ *   needed true  → who is engineering | partner | leads
+ *   channel is chosen from the workspace channels that match this issue, or null
  */
 export const RESOLVER_FIELDS = Object.freeze([
   'issue_title',

@@ -3,6 +3,7 @@ import { RESOLVER_PROMPT } from './prompts/resolver.js';
 import { REPLY_PROMPT } from './prompts/reply.js';
 import { parseClaudeResponse } from './prompts.js';
 import { RETIRED_ROLE_FIELDS, NON_MODEL_FIELDS } from './answer-schema.js';
+import { formatHandoffChannels } from '../slack/handoff-channels.js';
 
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
@@ -112,10 +113,11 @@ export async function runResolver({
   teamKnowledge,
   feedbackContext,
   threadHistory,
+  handoffChannels,
   signal: externalSignal,
 }) {
   const userContent = appendResearchBlocks(
-    `${formatPriorCase(threadHistory)}Issue: ${cleanedQuestion}`,
+    `${formatPriorCase(threadHistory)}${formatHandoffChannels(handoffChannels)}Issue: ${cleanedQuestion}`,
     searchResults,
     { teamKnowledge, feedbackContext },
   );

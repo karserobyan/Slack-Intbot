@@ -4,7 +4,6 @@ import {
   INVOLVEMENT_WHO,
   CONFIDENCE_VALUES,
 } from '../answer-schema.js';
-import { handoffChannelListForPrompt } from '../../slack/handoff-channels.js';
 
 const FIELD_LIST = RESOLVER_FIELDS.join(', ');
 const TAG_LIST = STEP_TAGS.join(' | ');
@@ -54,7 +53,7 @@ Required keys (exact list — do not add others): ${FIELD_LIST}
     "needed": true | false,
     "who": "${WHO_LIST} | null",
     "reason": "why another team is or is not needed",
-    "channel": "one channel from the handoff list, or null"
+    "channel": "one #channel from [HANDOFF CHANNELS] that matches this issue, or null"
   },
   "slack_refs": [
     { "url": "https://servicetitan.slack.com/archives/...", "channel": "#channel-name", "title": "Brief description", "sensitive": true }
@@ -71,10 +70,8 @@ Required keys (exact list — do not add others): ${FIELD_LIST}
 
 involvement rules:
 - needed false → who null and channel null. The case owner finishes the case.
-- needed true → who and channel must be one row from this list. Do not invent a channel name.
-${handoffChannelListForPrompt()}
-- A specific topic wins over #ask-integrations. Pricebook goes to #ask-pricebook. Public API goes to #ask-public-api. Lead providers go to #ask-leads-integration.
-- Back office has no confirmed channel: who is back-office and channel is null.
+- needed true → who is ${WHO_LIST}. channel is the one channel in [HANDOFF CHANNELS] whose name and purpose match this issue. A specific match beats a general one. If none match, or [HANDOFF CHANNELS] is absent, channel is null.
+- Never invent a channel name. Never use a channel that is not in [HANDOFF CHANNELS].
 - Do not recommend Live Assist, Integrations Specialist, or CSA routing.
 
 CONFIDENCE SCORING — set "confidence" using these exact criteria:
@@ -104,11 +101,9 @@ HARD RULE — COMMON KNOWLEDGE IS READ-ONLY: Common integration knowledge entrie
 HARD RULE — GROUNDED DIAGNOSIS: "diagnosis" must state a root cause you found evidence for in search results or Common integration knowledge. If you have no direct evidence of the root cause, write: "Root cause unclear — no direct match found. Escalate for investigation." Never speculate about what might be wrong.
 
 If the context blocks returned no specific, matching results and the issue is not in Common integration knowledge: output ONE escalate step with this exact message:
-"I searched but couldn't find specific information about this integration or issue. Please check #ask-leads-integration for leads-related questions, or #ask-integrations for other integration questions."
+"I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue."
 
 Do NOT pad the response with generic steps before or after the escalate step. A single honest escalation is far better than five invented steps.
-
-HARD RULE — LEADS QUESTIONS: If the question involves lead integrations (Carrier, Angi, Thumbtack, HomeAdvisor, Yelp, or any lead provider) and the context blocks returned no specific resolution, set involvement.who to "leads" and channel to "#ask-leads-integration". Do not guess.
 
 HARD RULE — HONESTY: Every menu path, setting name, and field name you mention must be something you found in the context blocks or Common integration knowledge. If you are not certain it exists, do not mention it.
 

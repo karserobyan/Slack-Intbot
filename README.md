@@ -16,7 +16,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
 4. The placeholder is replaced with a structured Block Kit response:
    - **Diagnosis** — one-sentence finding
    - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
-   - **Involvement** — whether another team should take it: `#ask-integrations`, `#ask-pricebook`, `#ask-public-api`, or `#ask-leads-integration`. A Send handoff button posts the diagnosis and steps already tried into that channel. Back office is recognized, but its channel name is not confirmed, so the button stays off.
+   - **Involvement** — whether another team should take it. Send handoff posts the diagnosis and the steps already tried into the workspace channel whose name and purpose match this issue (pricebook, public API, back office, leads, or anything else the bot can post in). If no channel matches, the button stays off.
    - **💬 Customer message** — present only when a customer was mentioned
    - **📎 Sources** — Slack threads, Confluence pages, Jira tickets, and KB articles referenced
 
@@ -207,7 +207,7 @@ Resolver returns a structured JSON object. Reply adds `customer_message` only wh
 }
 ```
 
-When `involvement.needed` is true, `who` is one of `engineering`, `partner`, `leads`, `pricebook`, `public-api`, or `back-office`. `channel` is a confirmed destination: `#ask-integrations`, `#ask-leads-integration`, `#ask-pricebook`, or `#ask-public-api`. A specific topic replaces a generic `#ask-integrations` choice. Back office leaves `channel` null until the Slack name is confirmed.
+When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`. `channel` is whichever channel the bot can post in that matches this issue, or null when none does. Channel names are not hardcoded.
 
 ---
 

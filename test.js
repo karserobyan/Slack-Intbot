@@ -41,7 +41,7 @@ import { tmpdir } from 'node:os';
 import { rm, mkdtemp } from 'node:fs/promises';
 import { deepEqual } from 'node:assert/strict';
 import { buildChannelPostModal } from './src/slack/modal.js';
-import { settleInvolvement, buildHandoffMessage } from './src/slack/handoff-channels.js';
+import { settleInvolvement, buildHandoffMessage, listPostableChannels } from './src/slack/handoff-channels.js';
 import {
   appendKbArticle,
   appendBotResponse,
@@ -2378,43 +2378,91 @@ assert(!JSON.stringify(normalBlocks).includes('…'), 'normal content has no ell
 // ── handoff channels ──────────────────────────────────────────────────────────
 console.log('\n🔹 handoff channels');
 
+const workspaceChannels = [
+  { name: 'ask-pricebook', purpose: 'Questions about pricebook, services, and materials' },
+  { name: 'ask-public-api', purpose: 'Public API, developer API, and API v2' },
+  { name: 'ask-leads-integration', purpose: 'Angi, Thumbtack, Yelp, HomeAdvisor, and other lead providers' },
+  { name: 'ask-back-office', purpose: 'Back office configuration and payroll' },
+  { name: 'ask-integrations', purpose: 'Zapier, webhooks, and other integrations' },
+  { name: 'random-social', purpose: 'Lunch plans' },
+];
+
 const pricebookHandoff = settleInvolvement(
   { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-integrations' },
   'Pricebook items are not syncing for this tenant',
+  workspaceChannels,
 );
-assert(pricebookHandoff.channel === '#ask-pricebook', 'pricebook questions hand off to #ask-pricebook');
-assert(pricebookHandoff.who === 'pricebook', 'pricebook handoff names the pricebook team');
+assert(pricebookHandoff.channel === '#ask-pricebook', 'a pricebook issue goes to the channel that is about pricebook');
+assert(pricebookHandoff.who === 'engineering', 'handoff keeps the team the resolver named');
+
+const renamedPricebook = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-pricebook' },
+  'Pricebook items are not syncing for this tenant',
+  [{ name: 'pb-support', purpose: 'Pricebook item sync issues' }],
+);
+assert(renamedPricebook.channel === '#pb-support', 'the destination is whatever channel matches, not a hardcoded name');
 
 const apiHandoff = settleInvolvement(
   { needed: true, who: 'engineering', reason: 'API question', channel: '#ask-integrations' },
   'Their public API v2 webhook is failing',
+  workspaceChannels,
 );
-assert(apiHandoff.channel === '#ask-public-api', 'public API questions hand off to #ask-public-api');
+assert(apiHandoff.channel === '#ask-public-api', 'a public API issue goes to the channel that is about the public API');
 
 const leadsHandoff = settleInvolvement(
   { needed: true, who: 'engineering', reason: 'Lead sync', channel: '#ask-integrations' },
   'Angi leads stopped arriving',
+  workspaceChannels,
 );
-assert(leadsHandoff.channel === '#ask-leads-integration', 'lead-provider questions hand off to #ask-leads-integration');
+assert(leadsHandoff.channel === '#ask-leads-integration', 'a lead-provider issue goes to the channel that covers those leads');
 
 const officeHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Office config', channel: null },
+  'Back office payroll mapping is wrong',
+  workspaceChannels,
+);
+assert(officeHandoff.channel === '#ask-back-office', 'back office goes to the channel whose name matches that work');
+
+const officeWithoutChannel = settleInvolvement(
   { needed: true, who: 'engineering', reason: 'Office config', channel: '#ask-integrations' },
   'Back office payroll mapping is wrong',
+  workspaceChannels.filter((channel) => channel.name !== 'ask-back-office'),
 );
-assert(officeHandoff.who === 'back-office', 'back office is recognized');
-assert(officeHandoff.channel === null, 'back office has no confirmed channel, so nothing is posted');
+assert(officeWithoutChannel.channel === null, 'back office is not posted when no channel matches it');
 
-const invented = settleInvolvement(
-  { needed: true, who: 'engineering', reason: 'Somewhere', channel: '#ask-made-up' },
-  'Zapier API access is off',
+const zapierHandoff = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Zapier', channel: '#ask-made-up' },
+  'Zapier connection keeps dropping',
+  workspaceChannels,
 );
-assert(invented.channel === '#ask-integrations', 'an unknown channel falls back to #ask-integrations');
+assert(zapierHandoff.channel === '#ask-integrations', 'a Zapier issue goes to the channel whose purpose mentions Zapier');
+
+const noCatalog = settleInvolvement(
+  { needed: true, who: 'engineering', reason: 'Needs the pricebook team', channel: '#ask-pricebook' },
+  'Pricebook items are not syncing',
+  [],
+);
+assert(noCatalog.channel === null, 'without the workspace channels, nothing is posted');
 
 const ownerFinishes = settleInvolvement(
   { needed: false, who: null, reason: null, channel: null },
   'Pricebook items are not syncing',
+  workspaceChannels,
 );
 assert(ownerFinishes.needed === false && ownerFinishes.channel === null, 'a finished case is not handed off');
+
+const listed = await listPostableChannels({
+  token: 'xoxb-test',
+  fetchImpl: async () => new Response(JSON.stringify({
+    ok: true,
+    channels: [
+      { id: 'C1', name: 'ask-pricebook', purpose: { value: 'Pricebook questions' }, topic: { value: '' } },
+      { id: 'C2', name: 'lunch', purpose: { value: '' }, topic: { value: 'Food' } },
+    ],
+    response_metadata: { next_cursor: '' },
+  })),
+});
+assert(listed.length === 2 && listed[0].name === 'ask-pricebook' && listed[0].purpose === 'Pricebook questions', 'postable channels come from Slack, with purpose text');
 
 const handoffText = buildHandoffMessage({
   channel: '#ask-pricebook',

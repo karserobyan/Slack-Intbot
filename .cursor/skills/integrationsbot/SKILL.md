@@ -26,7 +26,7 @@ Zero failures before a PR. `npm test` is the same command.
 3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement.
 4. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. A Reply throw fails the request.
 
-Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, involvement engineering / `#ask-integrations`.
+Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, involvement engineering, and no channel until a workspace channel matches the issue.
 
 Models already chosen:
 
@@ -43,7 +43,7 @@ Accounting is `isAccountingTopic` in `src/utils/accounting-filter.js`, before an
 
 Resolver fields: `issue_title`, `integration_type`, `confidence` (`high`|`medium`|`low`), `diagnosis`, `steps` (`num`, `title`, `detail`, `tag` of `action`|`backend`|`verify`|`escalate`), `involvement` (`needed`, `who`, `reason`, `channel`), `slack_refs`, `atlassian_refs`, `kb_refs`, `sources_used`.
 
-`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, `leads`, `pricebook`, `public-api`, or `back-office`. Known channels: `#ask-integrations`, `#ask-leads-integration`, `#ask-pricebook`, `#ask-public-api`. A specific topic replaces a generic `#ask-integrations` handoff. Back office is recognized and has no confirmed channel, so the send button stays off. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
+`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not a stored list. The pipeline loads the channels the bot can post in and keeps the one whose name and purpose match this issue. If none match, `channel` is null and Send handoff stays off. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
 
 Reply field: `customer_message` only. Resolver must not emit it. The pipeline attaches it after Reply.
 
