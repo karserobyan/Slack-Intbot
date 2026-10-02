@@ -21,7 +21,7 @@ export const INVOLVEMENT_WHO = Object.freeze([
  * involvement: { needed, who, reason, channel }
  *   needed false → who null, channel null
  *   needed true  → who is engineering | partner | leads
- *   channel is chosen from the workspace channels that match this issue, or null
+ *   channel is a listed workspace channel chosen for this issue, or null
  */
 export const RESOLVER_FIELDS = Object.freeze([
   'issue_title',
