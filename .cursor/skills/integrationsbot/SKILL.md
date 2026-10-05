@@ -11,11 +11,11 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
 
 Memorized 2026-10-02. Full writeup: `docs/superpowers/plans/2026-10-02-no-channel-posts.md`.
 
-The bot answers in the thread or DM where someone asked. It does not post into any other channel. It names the channel that should receive the issue. A person posts there.
+The bot answers in the thread or DM where someone asked. It does not post into any other channel. It names the channel that should receive the issue, or a few suggestions when no single channel owns it. A person posts there.
 
 Do not add a button or action that calls `chat.postMessage` into a destination channel or back into a source thread. There is no Send handoff button and no Post to thread button.
 
-Channel choice stays. Haiku reads the issue against `conversations.list` and may return only a listed channel. Unsure, unlisted, or a failed choice means `channel` is null. Channel names are not hardcoded.
+Channel choice stays. Haiku reads the issue against `conversations.list`. One clear listed channel is `channel`, with `suggestions` empty. When several listed channels could receive it, `channel` is null and `suggestions` holds up to 3 of them. Unlisted names are dropped. A failed choice or no fit means both are empty. Channel names are not hardcoded.
 
 Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given.
 
@@ -42,7 +42,7 @@ Zero failures before a PR. `npm test` is the same command.
 1. **Intake** — `runInterpreter` (Haiku). May return a clarifying question only when `allowClarify` is true and `question_confidence` is `low`.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search.
 3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement. It sets `channel` to null.
-4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name only a channel on that list. A throw or an unlisted name leaves `channel` null and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
+4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name one listed channel, or up to 3 suggestions when no single channel owns the issue. A throw leaves both empty and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
 5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. Channel stays null unless the handoff choice names a listed channel.
@@ -62,7 +62,7 @@ Accounting is `isAccountingTopic` in `src/utils/accounting-filter.js`, before an
 
 Resolver fields: `issue_title`, `integration_type`, `confidence` (`high`|`medium`|`low`), `diagnosis`, `steps` (`num`, `title`, `detail`, `tag` of `action`|`backend`|`verify`|`escalate`), `involvement` (`needed`, `who`, `reason`, `channel`), `slack_refs`, `atlassian_refs`, `kb_refs`, `sources_used`.
 
-`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list and may return only a listed channel. If it is unsure, or the name is not in the list, `channel` is null. The card shows the channel name. The bot does not post it. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
+`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list. One clear listed channel is `channel`. When no single channel owns the issue, `suggestions` holds up to 3 listed channels and `channel` is null. The card shows the name, or "Could go to" those suggestions. The bot does not post it. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
 
 Reply field: `customer_message` only. Resolver must not emit it. The pipeline attaches it after Reply.
 

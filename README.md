@@ -16,7 +16,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
 4. The placeholder is replaced with a structured Block Kit response:
    - **Diagnosis** — one-sentence finding
    - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
-   - **Involvement** — whether another team should take it. The card names the workspace channel that owns this issue. The bot does not post into that channel. A person posts there.
+   - **Involvement** — whether another team should take it. The card names the workspace channel that owns this issue, or a few channels it could go to when no single one does. The bot does not post into those channels. A person posts there.
    - **💬 Customer message** — present only when a customer was mentioned
    - **📎 Sources** — Slack threads, Confluence pages, Jira tickets, and KB articles referenced
 
@@ -207,7 +207,7 @@ Resolver returns a structured JSON object. Reply adds `customer_message` only wh
 }
 ```
 
-When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`. `channel` is the listed workspace channel chosen for this issue, or null when none fits. Channel names are not stored in the bot. The card shows the name. The bot does not post the handoff.
+When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`. `channel` is the one listed workspace channel for this issue, or null. `suggestions` holds up to 3 listed channels when no single channel owns it. Channel names are not stored in the bot. The card shows them. The bot does not post the handoff.
 
 ---
 

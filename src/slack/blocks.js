@@ -114,10 +114,17 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   if (involvement?.needed) {
     const who = escapeMrkdwn(involvement.who ?? 'another team');
     const channel = escapeMrkdwn(involvement.channel ?? '');
-    const channelPart = channel ? ` in ${channel}` : '';
+    const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
+    let where = '';
+    if (channel) where = ` in ${channel}`;
+    else if (suggestions.length === 1) where = `. Could go to ${suggestions[0]}`;
+    else if (suggestions.length > 1) {
+      const last = suggestions[suggestions.length - 1];
+      where = `. Could go to ${suggestions.slice(0, -1).join(', ')}, or ${last}`;
+    }
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `📢 Needs ${who}${channelPart}` }],
+      elements: [{ type: 'mrkdwn', text: `📢 Needs ${who}${where}` }],
     });
   } else if (involvement && involvement.needed === false) {
     blocks.push({
