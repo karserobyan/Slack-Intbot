@@ -2548,6 +2548,22 @@ const replyPipeResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' })
 assert(replyPipeResult.customer_message === 'Hi there, the Zapier API access toggle is off.', 'customer_mentioned true uses reply customer_message');
 assert(stepCounter === 4, 'Interpreter + Evaluator + Resolver + Reply when customer mentioned');
 
+// Test B3: reply failure keeps the resolver answer and omits the customer draft
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":true,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","confidence":"high","diagnosis":"API off","steps":[{"num":1,"title":"Enable","detail":"Toggle","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  new Response('upstream down', { status: 500, headers: { 'content-type': 'text/plain' } }),
+);
+globalThis.fetch = passThroughFetch;
+const replyFailedResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' });
+assert(replyFailedResult.issue_title === 'T', 'reply failure still returns the resolver diagnosis');
+assert(replyFailedResult.diagnosis === 'API off', 'reply failure keeps resolver diagnosis text');
+assert(replyFailedResult.customer_message === undefined, 'reply failure does not attach a customer draft');
+assert(stepCounter === 4, 'reply failure still attempts the reply call');
+
 // Test B4: a follow-up sends the earlier steps to the resolver and does not start from zero
 stepCounter = 0;
 sequenceResponses.length = 0;

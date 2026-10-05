@@ -23,7 +23,7 @@ Accounting stays a keyword redirect in the asking thread. The bot does not post 
 
 Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`. It must not post into the original thread.
 
-Parked, and not to be started unless the user asks again: audit logs, CSA or Specialist roles, step-level source lines. A Reply throw still fails the request. That separate fix is not this plan.
+Parked, and not to be started unless the user asks again: audit logs, CSA or Specialist roles, step-level source lines. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 ## Runtime
 
@@ -43,7 +43,7 @@ Zero failures before a PR. `npm test` is the same command.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search.
 3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement. It sets `channel` to null.
 4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name only a channel on that list. A throw or an unlisted name leaves `channel` null and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
-5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. A Reply throw fails the request.
+5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. Channel stays null unless the handoff choice names a listed channel.
 

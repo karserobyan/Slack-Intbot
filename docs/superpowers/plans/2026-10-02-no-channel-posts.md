@@ -19,7 +19,7 @@
 - Channel names are not hardcoded. The chooser may return only a channel on the live list. Unsure, unlisted, or a failed choice means `channel` is null.
 - Do not restore CSA or Specialist mode. Do not build audit logs. Do not add step-level source lines.
 - `node test.js` must finish with 0 failures.
-- A Reply throw still fails the request. The separate fix for that is not this plan.
+- If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 ## Review Focus
 
@@ -36,7 +36,7 @@
 4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given.
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.
-7. Parked, and not to be started from this plan: audit logs, CSA roles, step-level source lines, and merging the reply-failure PR.
+7. Parked, and not to be started from this plan: audit logs, CSA roles, and step-level source lines. If Reply fails before the 60s cap, the Resolver answer is kept and the customer draft is omitted.
 
 ## Task 1: Remove the posting actions
 
