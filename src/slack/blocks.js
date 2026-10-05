@@ -177,15 +177,6 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     });
   }
 
-  if (involvement?.needed) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '📋 Channel post', emoji: true },
-      action_id: 'copy_channel_post',
-      value: String(involvement.reason ?? '').slice(0, 2000),
-    });
-  }
-
   if (isDm) {
     actionElements.push({
       type: 'button',
