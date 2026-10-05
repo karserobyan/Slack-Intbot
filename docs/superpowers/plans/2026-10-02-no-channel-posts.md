@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The bot names the channel that should receive an issue, and it never posts into that channel or any other channel.
+**Goal:** The bot names the channel that should receive an issue, or a few suggestions when no single channel owns it, and it never posts into that channel or any other channel.
 
 **Architecture:** Channel choice stays a Haiku call over the live `conversations.list` result. The card shows that name. There is no Send handoff button and no Post to thread button. `chat.postMessage` stays only for the reply in the thread or DM that asked, and for the private auto-answer draft in `AUTO_ANSWER_TARGET_CHANNEL`.
 
@@ -32,7 +32,7 @@
 
 1. The bot answers in the thread or DM where someone asked.
 2. The bot does not post a handoff, a draft, or any other message into a different channel.
-3. The card names the channel. A person posts there.
+3. The card names the channel, or up to three suggestions when no single channel owns the issue. A person posts there.
 4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given.
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.

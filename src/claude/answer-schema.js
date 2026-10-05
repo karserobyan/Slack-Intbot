@@ -18,10 +18,11 @@ export const INVOLVEMENT_WHO = Object.freeze([
 /**
  * Resolver JSON keys, in card order. customer_message is not one of them.
  * steps: [{ num, title, detail, tag }]
- * involvement: { needed, who, reason, channel }
- *   needed false → who null, channel null
+ * involvement: { needed, who, reason, channel, suggestions }
+ *   needed false → who null, channel null, suggestions []
  *   needed true  → who is engineering | partner | leads
- *   channel is a listed workspace channel chosen for this issue, or null
+ *   channel is the one listed workspace channel for this issue, or null
+ *   suggestions lists up to 3 listed channels when no single channel owns it
  */
 export const RESOLVER_FIELDS = Object.freeze([
   'issue_title',

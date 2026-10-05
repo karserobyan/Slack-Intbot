@@ -466,6 +466,13 @@ const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elem
 assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
 assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
 assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
+const suggestionBlocks = buildResponseBlocks({
+  ...sampleJson,
+  involvement: { needed: true, who: 'engineering', reason: 'Could be either', channel: null, suggestions: ['#ask-pricebook', '#ask-public-api'] },
+});
+const suggestionLine = suggestionBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('Could go to'));
+assert(suggestionLine.elements[0].text.includes('#ask-pricebook') && suggestionLine.elements[0].text.includes('#ask-public-api'), 'several channels are shown as suggestions');
+assert(!suggestionLine.elements[0].text.includes(' in #'), 'suggestions are not presented as the one channel');
 const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
 assert(cpBtnNeeded === undefined, 'the bot does not offer a button that posts the handoff');
 
@@ -2405,7 +2412,8 @@ assert(chooserCalls[0].user.includes('Price book services are priced wrong'), 't
 assert(chooserCalls[0].user.includes('#ask-pricebook — Questions about pricebook, services, and materials'), 'the chooser sees each channel name and purpose');
 assert(chooserCalls[0].user.includes('#ask-public-api'), 'the chooser sees the other channels too');
 assert(chooserCalls[0].user.includes('#random-social'), 'every listed channel is shown, not a truncated sample');
-assert(chooserCalls[0].system.includes('specific') && chooserCalls[0].system.includes('null'), 'unsure means no channel, and a specific channel beats a general one');
+assert(chooserCalls[0].system.includes('suggestions'), 'when no single channel owns the issue, the chooser may name a few');
+assert(pricebookHandoff.suggestions.length === 0, 'a concrete channel does not also list suggestions');
 
 chooserCalls = [];
 const renamedPricebook = await chooseHandoffChannel(
@@ -2413,21 +2421,30 @@ const renamedPricebook = await chooseHandoffChannel(
   [{ name: 'pb-support', purpose: 'Pricebook item sync issues' }],
   { complete: choose },
 );
-assert(renamedPricebook === '#pb-support', 'the destination is whichever listed channel is chosen');
+assert(renamedPricebook.channel === '#pb-support' && renamedPricebook.suggestions.length === 0, 'the destination is whichever listed channel is chosen');
 
 const invented = await chooseHandoffChannel(
   'not a real channel',
   workspaceChannels,
   { complete: choose },
 );
-assert(invented === null, 'a channel that is not in the workspace is not posted');
+assert(invented.channel === null && invented.suggestions.length === 0, 'a channel that is not in the workspace is dropped');
 
 const unsure = await chooseHandoffChannel(
   'Something we cannot place',
   workspaceChannels,
   { complete: choose },
 );
-assert(unsure === null, 'no channel is posted when the choice is null');
+assert(unsure.channel === null && unsure.suggestions.length === 0, 'nothing is named when no listed channel fits');
+
+const ambiguous = await chooseHandoffChannel(
+  'This might be pricebook or the public API',
+  workspaceChannels,
+  { complete: async () => '{"channel":null,"suggestions":["#ask-pricebook","#ask-public-api","#ask-made-up","#ask-integrations","#ask-pricebook"]}' },
+);
+assert(ambiguous.channel === null, 'several possible channels are not collapsed into one');
+assert(ambiguous.suggestions.length === 3, 'suggestions stay at three');
+assert(ambiguous.suggestions[0] === '#ask-pricebook' && ambiguous.suggestions[1] === '#ask-public-api' && ambiguous.suggestions[2] === '#ask-integrations', 'suggestions keep listed channels in order and drop invented names');
 
 let chooserRan = false;
 const noCatalog = await settleInvolvement(
@@ -2444,12 +2461,12 @@ const ownerFinishes = await settleInvolvement(
   workspaceChannels,
   { complete: () => { throw new Error('should not choose'); } },
 );
-assert(ownerFinishes.needed === false && ownerFinishes.channel === null, 'a finished case is not handed off');
+assert(ownerFinishes.needed === false && ownerFinishes.channel === null && ownerFinishes.suggestions.length === 0, 'a finished case is not handed off');
 
 const choiceFailed = await chooseHandoffChannel('Pricebook items', workspaceChannels, {
   complete: async () => { throw new Error('model down'); },
 });
-assert(choiceFailed === null, 'a failed choice does not guess a channel');
+assert(choiceFailed.channel === null && choiceFailed.suggestions.length === 0, 'a failed choice does not guess a channel');
 
 const listedUrls = [];
 const listed = await listPostableChannels({
