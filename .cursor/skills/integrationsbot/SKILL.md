@@ -7,6 +7,24 @@ description: Use when changing IntegrationsBot (this Slack bot), its pipeline, a
 
 Internal Slack bot for ServiceTitan integrations support people who own the case. One audience. There is no CSA mode and no Specialist mode.
 
+## Standing plan
+
+Memorized 2026-10-02. Full writeup: `docs/superpowers/plans/2026-10-02-no-channel-posts.md`.
+
+The bot answers in the thread or DM where someone asked. It does not post into any other channel. It names the channel that should receive the issue. A person posts there.
+
+Do not add a button or action that calls `chat.postMessage` into a destination channel or back into a source thread. There is no Send handoff button and no Post to thread button.
+
+Channel choice stays. Haiku reads the issue against `conversations.list` and may return only a listed channel. Unsure, unlisted, or a failed choice means `channel` is null. Channel names are not hardcoded.
+
+Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given.
+
+Accounting stays a keyword redirect in the asking thread. The bot does not post into that channel.
+
+Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`. It must not post into the original thread.
+
+Parked, and not to be started unless the user asks again: audit logs, CSA or Specialist roles, step-level source lines. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
+
 ## Runtime
 
 Node.js ESM (`import` / `export`). Entry `src/index.js`. Tests are plain `assert` in `test.js`.
@@ -23,14 +41,15 @@ Zero failures before a PR. `npm test` is the same command.
 
 1. **Intake** — `runInterpreter` (Haiku). May return a clarifying question only when `allowClarify` is true and `question_confidence` is `low`.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search.
-3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement.
-4. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
+3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement. It sets `channel` to null.
+4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name only a channel on that list. A throw or an unlisted name leaves `channel` null and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
+5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
-Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, involvement engineering / `#ask-integrations`.
+Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. Channel stays null unless the handoff choice names a listed channel.
 
 Models already chosen:
 
-- Interpreter, evaluator, KB web search: `claude-haiku-4-5-20251001`
+- Interpreter, evaluator, handoff channel, KB web search: `claude-haiku-4-5-20251001`
 - Resolver and Reply: `process.env.ANTHROPIC_MODEL` or `claude-sonnet-4-6`
 
 Do not switch these to Opus, adaptive thinking, or streaming unless the task says so. Do not add SDK retries. KB search calls the Messages API with `web_search_20250305` scoped to `help.servicetitan.com`; leave that tool type unless a task is specifically about KB search.
@@ -43,7 +62,7 @@ Accounting is `isAccountingTopic` in `src/utils/accounting-filter.js`, before an
 
 Resolver fields: `issue_title`, `integration_type`, `confidence` (`high`|`medium`|`low`), `diagnosis`, `steps` (`num`, `title`, `detail`, `tag` of `action`|`backend`|`verify`|`escalate`), `involvement` (`needed`, `who`, `reason`, `channel`), `slack_refs`, `atlassian_refs`, `kb_refs`, `sources_used`.
 
-`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. Engineering channel is `#ask-integrations`. Leads channel is `#ask-leads-integration`. Partner uses a partner channel.
+`involvement.needed === false` means `who` and `channel` are null. `needed === true` means `who` is `engineering`, `partner`, or `leads`. `channel` is not stored. After the Resolver, Haiku reads the issue and the live channel list and may return only a listed channel. If it is unsure, or the name is not in the list, `channel` is null. The card shows the channel name. The bot does not post it. Resolver sets `channel` to null. Follow-ups pass `[PRIOR CASE]` into the Resolver and must not repeat steps already given.
 
 Reply field: `customer_message` only. Resolver must not emit it. The pipeline attaches it after Reply.
 
@@ -55,7 +74,7 @@ Not model output: `customer_message` on the Resolver, `is_accounting_topic`, `cl
 
 ## Slack card
 
-`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js`. Order: header, diagnosis, steps (cap 20), involvement, customer draft when `customer_message` is non-empty, source chips, actions. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, Channel post when `involvement.needed`, New chat in DMs. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
+`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js`. Order: header, diagnosis, steps (cap 20), involvement, customer draft when `customer_message` is non-empty, source chips, actions. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
 
 Escape user and model text with `escapeMrkdwn`. Stay well under Slack's 50-block limit. Button values stay small.
 

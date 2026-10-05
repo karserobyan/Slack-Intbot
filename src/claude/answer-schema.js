@@ -9,12 +9,11 @@ export const CONFIDENCE_VALUES = Object.freeze(['high', 'medium', 'low']);
 export const STEP_TAGS = Object.freeze(['action', 'backend', 'verify', 'escalate']);
 
 /** Another team. Absent who means the case owner finishes the case. */
-export const INVOLVEMENT_WHO = Object.freeze(['engineering', 'partner', 'leads']);
-
-export const INVOLVEMENT_CHANNELS = Object.freeze({
-  engineering: '#ask-integrations',
-  leads: '#ask-leads-integration',
-});
+export const INVOLVEMENT_WHO = Object.freeze([
+  'engineering',
+  'partner',
+  'leads',
+]);
 
 /**
  * Resolver JSON keys, in card order. customer_message is not one of them.
@@ -22,7 +21,7 @@ export const INVOLVEMENT_CHANNELS = Object.freeze({
  * involvement: { needed, who, reason, channel }
  *   needed false → who null, channel null
  *   needed true  → who is engineering | partner | leads
- *   channel is #ask-integrations, #ask-leads-integration, or a partner channel
+ *   channel is a listed workspace channel chosen for this issue, or null
  */
 export const RESOLVER_FIELDS = Object.freeze([
   'issue_title',
