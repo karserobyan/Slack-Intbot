@@ -33,10 +33,11 @@
 1. The bot answers in the thread or DM where someone asked.
 2. The bot does not post a handoff, a draft, or any other message into a different channel.
 3. The card names the channel, or up to three suggestions when no single channel owns the issue. A person posts there.
-4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given.
+4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given. In the thread, the bot checks the follow-up against the case it already has. The card leads with the research summary and what is still open. It does not open like a new investigation.
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.
 7. Parked, and not to be started from this plan: audit logs, CSA roles, and step-level source lines. If Reply fails before the 60s cap, the Resolver answer is kept and the customer draft is omitted.
+8. The answer card leads with a research summary: the diagnosis and linked sources. It does not show a customer draft or word-only source chips. Auto-answer may still show the draft email in the review channel.
 
 ## Task 1: Remove the posting actions
 

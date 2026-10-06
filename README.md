@@ -1,6 +1,6 @@
 # IntegrationsBot — ServiceTitan Integrations Support
 
-Internal Slack bot for ServiceTitan integrations support people who own the case. Given a customer issue, the bot runs a fixed pipeline — Intake → Research → Resolver → (optional) Reply — searching Slack history, Confluence, Jira, and the ServiceTitan KB, then returns a structured response: diagnosis, step-by-step troubleshooting, involvement guidance when another team is needed, optional customer message, and referenced sources.
+Internal Slack bot for ServiceTitan integrations support people who own the case. Given a customer issue, the bot runs a fixed pipeline — Intake → Research → Resolver → (optional) Reply — searching Slack history, Confluence, Jira, and the ServiceTitan KB, then returns a structured response: a research summary with linked sources, step-by-step troubleshooting, and involvement guidance when another team is needed.
 
 ---
 
@@ -14,11 +14,9 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Resolver** — produces diagnosis, steps, and involvement
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:
-   - **Diagnosis** — one-sentence finding
-   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`
+   - **Research** — the diagnosis, then the Slack, Confluence, Jira, and KB sources as links when the host is allowlisted
+   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`. A follow-up in the same thread labels these *Still open* and continues the case instead of opening a new investigation
    - **Involvement** — whether another team should take it. The card names the workspace channel that owns this issue, or a few channels it could go to when no single one does. The bot does not post into those channels. A person posts there.
-   - **💬 Customer message** — present only when a customer was mentioned
-   - **📎 Sources** — Slack threads, Confluence pages, Jira tickets, and KB articles referenced
 
 One audience: integrations support people who own the case. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
 

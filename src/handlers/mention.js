@@ -71,9 +71,9 @@ async function deliverPipelineResult({
   delete pipelineResult._cleanedQuestion;
 
   const view = withRequestContext(pipelineResult, { query, threadTs, channelId });
-  const blocks = buildResponseBlocks(view, { isDm });
+  const blocks = buildResponseBlocks(view, { isDm, followUp });
   const fallbackText = followUp
-    ? `Troubleshooting: ${view.issue_title ?? query.slice(0, 80)}`
+    ? `Follow-up: ${view.issue_title ?? query.slice(0, 80)}`
     : `Troubleshooting: ${view.issue_title} (${view.integration_type})`;
 
   if (thinkingTs) {
@@ -117,7 +117,7 @@ function maybeNominate(client, result, query, queryStart) {
   }
 }
 
-function makeProgressHandler({ client, channelId, thinkingTs, query, thinkingLabel }) {
+function makeProgressHandler({ client, channelId, thinkingTs, query, thinkingLabel, followUp = false }) {
   const steps = [];
   let lastUpdateMs = 0;
   return async (event) => {
@@ -137,7 +137,7 @@ function makeProgressHandler({ client, channelId, thinkingTs, query, thinkingLab
       await client.chat.update({
         channel: channelId,
         ts: thinkingTs,
-        blocks: buildProgressBlocks(query, steps),
+        blocks: buildProgressBlocks(query, steps, { followUp }),
         text: thinkingLabel,
       }).catch(() => {});
     }
@@ -200,8 +200,8 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
       const thinkingMsg = await client.chat.postMessage({
         channel: channelId,
         thread_ts: threadTs,
-        blocks: buildThinkingBlocks(query),
-        text: 'Thinking…',
+        blocks: buildThinkingBlocks(query, { followUp: true }),
+        text: 'Checking your follow-up…',
       });
       thinkingTs = thinkingMsg.ts;
     } catch (err) {
@@ -209,7 +209,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     }
 
     const onProgress = makeProgressHandler({
-      client, channelId, thinkingTs, query, thinkingLabel: 'Thinking…',
+      client, channelId, thinkingTs, query, thinkingLabel: 'Checking your follow-up…', followUp: true,
     });
 
     let pipelineResult;
