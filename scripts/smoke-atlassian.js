@@ -14,15 +14,29 @@ const auth = 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
 const headers = { Authorization: auth, Accept: 'application/json' };
 
 const tests = [
-  { name: 'whoami',    url: `${base}/wiki/rest/api/user/current` },
+  { name: 'whoami', url: `${base}/wiki/rest/api/user/current` },
   { name: 'confluence', url: `${base}/wiki/rest/api/search?cql=${encodeURIComponent('text ~ "integration" AND type = page')}&limit=2` },
-  { name: 'jira',      url: `${base}/rest/api/3/myself` },
+  { name: 'jira-myself', url: `${base}/rest/api/3/myself` },
+  {
+    name: 'jira-search',
+    url: `${base}/rest/api/3/search/jql`,
+    method: 'POST',
+    body: JSON.stringify({
+      jql: 'text ~ "integration" ORDER BY updated DESC',
+      maxResults: 2,
+      fields: ['summary', 'status'],
+    }),
+  },
 ];
 
 for (const t of tests) {
   console.log(`--- ${t.name} ---`);
   try {
-    const res = await fetch(t.url, { headers });
+    const res = await fetch(t.url, {
+      method: t.method ?? 'GET',
+      headers: t.body ? { ...headers, 'Content-Type': 'application/json' } : headers,
+      body: t.body,
+    });
     const body = await res.text();
     console.log(`status: ${res.status} ${res.statusText}`);
     console.log(body.slice(0, 400));

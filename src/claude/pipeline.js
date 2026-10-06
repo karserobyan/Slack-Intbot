@@ -1,5 +1,5 @@
 import { runInterpreter } from './interpreter.js';
-import { executeSearchPlan } from './search-executor.js';
+import { executeSearchPlan, ensureSourceCoverage } from './search-executor.js';
 import { runEvaluator } from './evaluator.js';
 import { runResolver, runReply } from './answerer.js';
 import { customerWasMentioned, RETIRED_ROLE_FIELDS } from './answer-schema.js';
@@ -31,6 +31,27 @@ async function buildFeedbackContext(rawQuery) {
   } catch {
     return '';
   }
+}
+
+function unionRefs(existing, incoming) {
+  const seen = new Set((existing ?? []).map((ref) => ref?.url).filter(Boolean));
+  const out = [...(existing ?? [])];
+  for (const ref of incoming ?? []) {
+    if (!ref?.url || seen.has(ref.url)) continue;
+    seen.add(ref.url);
+    out.push(ref);
+  }
+  return out;
+}
+
+export function mergeFoundRefs(answer, searchResults) {
+  answer.slack_refs = unionRefs(answer.slack_refs, searchResults?.slack?.refs);
+  answer.atlassian_refs = unionRefs(answer.atlassian_refs, [
+    ...(searchResults?.confluence?.refs ?? []),
+    ...(searchResults?.jira?.refs ?? []),
+  ]);
+  answer.kb_refs = unionRefs(answer.kb_refs, searchResults?.kb?.refs);
+  return answer;
 }
 
 function stripRetiredAndNonModelFields(resolver) {
@@ -90,16 +111,12 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
 
     // A low-confidence interpret leaves search_plan null; when clarification is
     // capped, synthesize a plan from the cleaned/raw question so the answerer
-    // still has something to work with (resolve-or-escalate, never loop). Uses
-    // the fast REST sources only — skip the slow KB web-search on a query too
-    // vague to have anchored it in the first place.
-    const searchPlan = interp.search_plan ?? {
-      sources: [
-        { name: 'confluence', priority: 'high', query: interp.cleaned_question || rawQuery },
-        { name: 'slack', priority: 'high', query: interp.cleaned_question || rawQuery },
-      ],
+    // still has something to work with (resolve-or-escalate, never loop).
+    // Every question still searches Confluence, Jira, Slack, and the help center.
+    const searchPlan = ensureSourceCoverage(interp.search_plan ?? {
+      sources: [],
       rationale: 'clarification capped — answering with best available context',
-    };
+    }, interp.cleaned_question || rawQuery);
     if (interp.question_confidence === 'low') {
       console.info(`[pipeline] clarification capped — forcing best-effort answer (interpreter=${timings.interpreter}ms)`);
     }
@@ -198,22 +215,11 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
       }
     }
 
-    // Parity with the legacy path (query.js): attach fetched KB refs so the
-    // "📚 Knowledge Base" links show deterministically even if the answerer omits
-    // them, and auto-save new KB articles to the team knowledge file — the new
-    // pipeline otherwise silently stopped growing the KB after the flag flip.
-    if (!(answer.slack_refs?.length) && searchResults.slack?.refs?.length) {
-      answer.slack_refs = searchResults.slack.refs;
-    }
-    const searchedAtlassian = [
-      ...(searchResults.confluence?.refs ?? []),
-      ...(searchResults.jira?.refs ?? []),
-    ];
-    if (!(answer.atlassian_refs?.length) && searchedAtlassian.length) {
-      answer.atlassian_refs = searchedAtlassian;
-    }
+    // Keep every page, ticket, thread, and article the search actually returned,
+    // including when the Resolver already cited one. Auto-save new KB articles
+    // so the team knowledge file keeps growing.
+    mergeFoundRefs(answer, searchResults);
     if (searchResults.kb?.refs?.length > 0) {
-      if (!(answer.kb_refs?.length)) answer.kb_refs = searchResults.kb.refs;
       const integration = answer.integration_type || 'General';
       for (const ref of searchResults.kb.refs) {
         appendKbArticle(integration, ref.url, ref.title, ref.snippet ?? '').catch((err) => {
