@@ -262,7 +262,7 @@ assert(typeof histSummary === 'string', 'summarizeResultForHistory returns strin
 assert(histSummary.includes('Hi Sarah'), 'summary includes customer_message');
 assert(histSummary.includes('Enable Zapier API'), 'summary includes step title');
 assert(histSummary.includes('backend'), 'summary includes step tag');
-assert(histSummary.includes('Involvement: case owner finishes it'), 'summary includes involvement when needed false');
+assert(histSummary.includes('Involvement: no other team is needed'), 'summary includes involvement when needed false');
 assert(!histSummary.includes('CSA can handle'), 'summary does not print CSA can handle');
 assert(!histSummary.includes('No escalation needed'), 'summary does not print No escalation needed');
 assert(histSummary.includes('Zapier API access needs enabling'), 'summary includes diagnosis');
@@ -417,7 +417,7 @@ assert(responseBlocks.length > 0 && responseBlocks.length <= 50, `Response block
 assert(responseBlocks[0].type === 'header', 'First block is header');
 assert(responseBlocks.some(b => b.type === 'divider'), 'Contains dividers');
 assert(responseBlocks.some(b => b.type === 'actions'), 'Contains action buttons');
-assert(responseBlocks.some(b => b.type === 'context'), 'Contains context block');
+assert(!JSON.stringify(responseBlocks).includes('Case owner'), 'a finished answer has no role line');
 
 // Check header contains issue title and confidence icon
 const headerText = responseBlocks[0].text.text;
@@ -427,11 +427,11 @@ assert(headerText.startsWith('🟢'), 'Header has high-confidence icon');
 // Research summary before steps; the customer draft is not on this card
 const blockTexts = responseBlocks.map(b => b.text?.text ?? b.elements?.[0]?.text ?? '');
 const researchIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('*Research*'));
-const stepsHeadingIdx = blockTexts.findIndex(t => t === '*🔧 What you do*');
+const stepsHeadingIdx = blockTexts.findIndex(t => t === '*What to do*');
 const researchText = researchIdx === -1 ? '' : blockTexts[researchIdx];
 const responseJson = JSON.stringify(responseBlocks);
 assert(researchIdx !== -1, 'Research summary present');
-assert(stepsHeadingIdx !== -1, 'Steps section header renders as "🔧 What you do"');
+assert(stepsHeadingIdx !== -1, 'Steps section header renders as "What to do"');
 assert(researchIdx !== -1 && researchIdx < stepsHeadingIdx, 'research summary before the steps heading');
 assert(!responseJson.includes('Zapier connection was reset'), 'customer draft is not on the answer card');
 assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'Slack source is the public channel');
@@ -468,8 +468,9 @@ const stepBlocks = responseBlocks.filter(b => b.type === 'section' && /\*\d+\. /
 assert(stepBlocks.length === 4, `All 4 steps rendered (found ${stepBlocks.length})`);
 
 // Check tags render
-assert(stepBlocks[0].text.text.includes('`action`'), 'Step 1 has action tag');
-assert(stepBlocks[1].text.text.includes('`backend`'), 'Step 2 has backend tag');
+assert(!stepBlocks[0].text.text.includes('`action`'), 'steps do not show an internal action tag');
+assert(!stepBlocks[1].text.text.includes('`backend`'), 'steps do not show an internal backend tag');
+assert(stepBlocks[0].text.text.includes('Check tenant Zapier config'), 'step title is on the card');
 assert(stepBlocks[0].text.text.startsWith('🔵'), 'Action step has blue circle');
 assert(stepBlocks[1].text.text.startsWith('🟠'), 'Backend step has orange circle');
 assert(stepBlocks[2].text.text.startsWith('🟢'), 'Verify step has green circle');
@@ -480,19 +481,16 @@ const researchSection = responseBlocks.find(b => b.type === 'section' && b.text?
 assert(researchSection !== undefined, 'Research summary is inline in response');
 assert((researchSection?.text?.text ?? '').includes('API access has not been enabled'), 'Diagnosis text is in the research summary');
 
-// Involvement: case owner finishes
-const ownerLine = responseBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('Case owner can finish'));
-assert(ownerLine !== undefined, 'Involvement: case owner finish line when needed false');
-assert(ownerLine.elements[0].text.includes('✅'), 'Involvement: ✅ signal when case owner finishes');
+const ownerLine = responseBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('Case owner'));
+assert(ownerLine === undefined, 'a finished answer does not add a role line');
 
 // Involvement needed — channel name + channel post button
 const escalateRoutingBlocks = buildResponseBlocks({
   ...sampleJson,
   involvement: { needed: true, who: 'engineering', reason: 'Needs backend access', channel: '#ask-integrations' },
 });
-const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('📢'));
-assert(postBlock !== undefined, 'Involvement: needs-team line renders 📢');
-assert(postBlock.elements[0].text.includes('engineering'), 'Involvement: names who');
+const postBlock = escalateRoutingBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('This belongs in'));
+assert(postBlock !== undefined, 'Involvement: names where the issue belongs');
 assert(postBlock.elements[0].text.includes('#ask-integrations'), 'Involvement: includes channel name');
 const suggestionBlocks = buildResponseBlocks({
   ...sampleJson,
@@ -571,7 +569,7 @@ const codeSensitiveBlocks = buildResponseBlocks({
 });
 const codeSensitiveText = JSON.stringify(codeSensitiveBlocks);
 assert(!codeSensitiveText.includes('specialist-only'), 'backend Slack refs have no specialist-only hint');
-assert(codeSensitiveText.includes('Diagnosis + Sources'), 'backend Slack refs still expose sources button');
+assert(codeSensitiveText.includes('🔍 Sources'), 'backend Slack refs still expose sources button');
 
 const kbSensitiveBlocks = buildResponseBlocks({
   issue_title: 'Sensitive KB Source',
@@ -589,7 +587,7 @@ const kbSensitiveBlocks = buildResponseBlocks({
 });
 const kbSensitiveText = JSON.stringify(kbSensitiveBlocks);
 assert(!kbSensitiveText.includes('specialist-only'), 'sensitive KB refs have no specialist-only hint');
-assert(kbSensitiveText.includes('Diagnosis + Sources'), 'sensitive KB refs still expose sources button');
+assert(kbSensitiveText.includes('🔍 Sources'), 'sensitive KB refs still expose sources button');
 
 // Accounting redirect
 const redirectBlocks = buildAccountingRedirectBlocks('How do I set up QuickBooks?');
@@ -1180,7 +1178,7 @@ const withRefsActions = withRefsBlocks.find(b => b.type === 'actions');
 const sourcesBtn = withRefsActions?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(sourcesBtn !== undefined, 'Sources button appears when refs present');
 assert(sourcesBtn?.value?.length <= 2000, 'Sources button value within 2000 chars');
-assert(sourcesBtn?.text?.text === '🔍 Diagnosis + Sources', 'Sources button text updated');
+assert(sourcesBtn?.text?.text === '🔍 Sources', 'Sources button text is Sources');
 const parsedSrcBtnValue = JSON.parse(sourcesBtn.value);
 assert('diagnosis' in parsedSrcBtnValue, 'Sources button value contains diagnosis field');
 assert(parsedSrcBtnValue.diagnosis !== null, 'Sources button value has non-null diagnosis when diagnosis present');
@@ -2901,7 +2899,7 @@ assert(!allText.includes('Toggle API access before connecting.'), 'auto-answer c
 assert(allText.includes('<https://help.servicetitan.com/zapier-setup|Zapier setup>'), 'auto-answer card links the KB source');
 assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
 assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
-assert(allText.includes('Suggested steps'), 'steps section rendered');
+assert(allText.includes('What to do'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
 const postable = buildAutoAnswerBlocks({

@@ -10,7 +10,7 @@ import { listPostableChannels, settleInvolvement } from '../slack/handoff-channe
 
 const HARD_CAP_MS = 60000;
 
-const FALLBACK_REASON = 'Not enough detail to resolve automatically — add specifics or escalate manually.';
+const FALLBACK_REASON = 'Not enough detail to answer yet. Name the integration and what you are seeing.';
 
 function sanitize(str) {
   return String(str ?? '')
@@ -69,7 +69,7 @@ function applyCappedFallback(answer) {
   answer.issue_title = 'Not enough detail to resolve';
   answer.confidence = 'low';
   answer.diagnosis = FALLBACK_REASON;
-  answer.steps = [{ num: 1, title: 'Escalate for more detail', detail: FALLBACK_REASON, tag: 'escalate' }];
+  answer.steps = [{ num: 1, title: 'Add the missing detail', detail: FALLBACK_REASON, tag: 'escalate' }];
   answer.involvement = {
     needed: true,
     who: 'engineering',

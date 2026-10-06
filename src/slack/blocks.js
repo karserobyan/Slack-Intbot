@@ -150,12 +150,11 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   if (steps.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '*🔧 What you do*' },
+      text: { type: 'mrkdwn', text: '*What to do*' },
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const safeTag = renderEscapedCode(step.tag ?? 'step');
-      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*  ${safeTag}\n`;
+      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
       const detailRaw = escapeMrkdwn(step.detail);
       const budget = 2900 - prefix.length;
       const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
@@ -172,21 +171,14 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     const who = escapeMrkdwn(involvement.who ?? 'another team');
     const channel = escapeMrkdwn(involvement.channel ?? '');
     const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
-    let where = '';
-    if (channel) where = ` in ${channel}`;
-    else if (suggestions.length === 1) where = `. Could go to ${suggestions[0]}`;
-    else if (suggestions.length > 1) {
-      const last = suggestions[suggestions.length - 1];
-      where = `. Could go to ${suggestions.slice(0, -1).join(', ')}, or ${last}`;
-    }
+    const handoff = channel
+      ? `This belongs in ${channel}`
+      : suggestions.length
+        ? `Could go to ${suggestions.length === 1 ? suggestions[0] : `${suggestions.slice(0, -1).join(', ')}, or ${suggestions[suggestions.length - 1]}`}`
+        : `Someone else needs to take this${who ? ` (${who})` : ''}`;
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `📢 Needs ${who}${where}` }],
-    });
-  } else if (involvement && involvement.needed === false) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: '✅ Case owner can finish this' }],
+      elements: [{ type: 'mrkdwn', text: handoff }],
     });
   }
 
@@ -209,7 +201,7 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   if (totalRefs > 0) {
     actionElements.push({
       type: 'button',
-      text: { type: 'plain_text', text: '🔍 Diagnosis + Sources', emoji: true },
+      text: { type: 'plain_text', text: '🔍 Sources', emoji: true },
       action_id: 'view_sources_modal',
       value: _buildSourcesButtonValue(
         slackRefs,
@@ -340,12 +332,12 @@ export function buildErrorBlocks(query) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*❌ Something went wrong*\n\nI wasn't able to process your request. Please try again, or escalate manually.\n\n_Query: "${safePreview}"_`,
+        text: `*❌ Something went wrong*\n\nI wasn't able to answer that. Please try again.\n\n_Question: "${safePreview}"_`,
       },
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot • Error • Please retry or escalate_' }],
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot • Please try again_' }],
     },
   ];
 }
@@ -443,7 +435,7 @@ export function buildHelpBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*What I do*\nSearch Confluence, Jira, and past Slack threads to give you troubleshooting steps for integration issues. Describe the problem and I\'ll tell you what to do — or ask a clarifying question to narrow it down first.',
+        text: '*What I do*\nI answer integration questions from Confluence, Jira, public Slack channels, and the help center. The first reply is the answer, with links you can open. Ask again in the same thread and I continue that conversation.',
       },
     },
     {
@@ -469,7 +461,7 @@ export function buildHelpBlocks() {
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot · Tag me or DM me with an issue · Team support: #ask-integrations_' }],
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot · Tag me or DM me with a question_' }],
     },
   ];
 }
@@ -488,14 +480,14 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*What the card shows*\nThe research summary comes first: the diagnosis and linked sources from the investigation. Steps come after that. When another team has to be involved, the card names engineering, a partner, or the leads channel.',
+        text: '*What the card shows*\nThe first reply leads with the diagnosis and linked sources. What to do comes after that, in plain language. When the issue belongs in another channel, the card names that channel. A person posts there.',
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Confidence levels*\nEach answer shows a confidence indicator so you know how much to rely on it.\n🟢 *High* — every step traced directly to a search result. Act on it.\n🟡 *Medium* — partial match or drawn from built-in knowledge. Verify before actioning.\n🔴 *Low* — no direct match found. Treat as a starting point; escalate if unsure.',
+        text: '*Confidence*\nThe header shows the confidence of the answer.\n🟢 *High* — it comes straight from a source.\n🟡 *Medium* — part of it is from a related source. Check it.\n🔴 *Low* — there was no direct match. Treat it as a starting point.',
       },
     },
     {
@@ -509,7 +501,7 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Thread continuation*\nThe first answer is the case card. After that, a follow-up in the same thread is a chat reply: the summary of the answer, with links when a source has one. It does not open a new case card or ask a second clarifying question.',
+        text: '*Thread continuation*\nThe first answer is the full reply. After that, a follow-up in the same thread is a chat reply: the summary of the answer, with links when a source has one. It does not open a new card.',
       },
     },
     {
@@ -521,7 +513,7 @@ export function buildHelpDetailBlocks() {
     },
     {
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot · Case owner reference_' }],
+      elements: [{ type: 'mrkdwn', text: '_IntegrationsBot_' }],
     },
   ];
 }
@@ -719,7 +711,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     blocks.push({ type: 'divider' });
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '*🔧 Suggested steps*' },
+      text: { type: 'mrkdwn', text: '*What to do*' },
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';

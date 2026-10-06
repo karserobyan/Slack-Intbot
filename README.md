@@ -15,10 +15,10 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:
    - **Research** — the diagnosis, then one line of sources: public Slack channels by name, plus Confluence, Jira, and KB titles as links when the host is allowlisted. Locked channels are not shown.
-   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`. A follow-up in the same thread is a chat reply: the summary only, with source links, and no new case card
-   - **Involvement** — whether another team should take it. The card names the workspace channel that owns this issue, or a few channels it could go to when no single one does. The bot does not post into those channels. A person posts there.
+   - **What to do** — the next actions, in plain language. A follow-up in the same thread is a chat reply: the summary only, with source links, and no new card
+   - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to. The bot does not post into those channels. A person posts there.
 
-One audience: integrations support people who own the case. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
+Anyone can ask. The answer is the same for every role. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
 
 Accounting integration topics (QuickBooks, Sage Intacct, NetSuite, Xero, etc.) are a keyword check and redirect to `#ask-partner-enabled-accounting-integrations`.
 
