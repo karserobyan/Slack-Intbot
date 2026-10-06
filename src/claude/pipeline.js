@@ -202,6 +202,16 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     // "📚 Knowledge Base" links show deterministically even if the answerer omits
     // them, and auto-save new KB articles to the team knowledge file — the new
     // pipeline otherwise silently stopped growing the KB after the flag flip.
+    if (!(answer.slack_refs?.length) && searchResults.slack?.refs?.length) {
+      answer.slack_refs = searchResults.slack.refs;
+    }
+    const searchedAtlassian = [
+      ...(searchResults.confluence?.refs ?? []),
+      ...(searchResults.jira?.refs ?? []),
+    ];
+    if (!(answer.atlassian_refs?.length) && searchedAtlassian.length) {
+      answer.atlassian_refs = searchedAtlassian;
+    }
     if (searchResults.kb?.refs?.length > 0) {
       if (!(answer.kb_refs?.length)) answer.kb_refs = searchResults.kb.refs;
       const integration = answer.integration_type || 'General';

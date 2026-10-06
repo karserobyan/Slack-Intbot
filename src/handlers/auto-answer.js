@@ -1,5 +1,7 @@
 import { runPipeline } from '../claude/pipeline.js';
+import { summarizeResultForHistory } from '../claude/prompts.js';
 import { buildAutoAnswerBlocks } from '../slack/blocks.js';
+import { appendToHistory } from '../slack/conversation.js';
 import { isAccountingTopic } from '../utils/accounting-filter.js';
 
 const MIN_QUERY_LEN = 8;
@@ -91,15 +93,22 @@ export async function handleAutoAnswer({ event, client, logger }) {
     result,
   });
 
-  const fallback = (result.customer_message ?? result.issue_title ?? 'New auto-answer').slice(0, 200);
+  const fallback = (result.issue_title ?? 'New auto-answer').slice(0, 200);
 
-  await client.chat.postMessage({
+  const posted = await client.chat.postMessage({
     channel: targetChannel,
     blocks,
     text: fallback,
     unfurl_links: false,
     unfurl_media: false,
   });
+
+  const history = [
+    { role: 'user', content: query },
+    { role: 'assistant', content: summarizeResultForHistory(result) },
+  ];
+  appendToHistory(event.ts, history);
+  if (posted?.ts) appendToHistory(posted.ts, history);
 }
 
 /**
