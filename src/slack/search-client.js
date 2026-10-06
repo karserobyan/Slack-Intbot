@@ -44,11 +44,22 @@ export async function searchSlackMessages(query, { signal: externalSignal } = {}
     const matches = data.messages?.matches ?? [];
     if (matches.length === 0) return null;
 
-    const refs = matches.map(m => ({
-      url: m.permalink ?? '',
-      channel: m.channel?.name ? `#${m.channel.name}` : '',
-      title: (m.text ?? '').slice(0, 200),
-    }));
+    const refs = matches.flatMap((m) => {
+      const channel = m.channel;
+      // Only a channel Slack marks public can be shown. Private channels, DMs,
+      // and anything without that flag are locked: the reader cannot open them.
+      if (!channel || channel.is_private !== false || channel.is_im || channel.is_mpim || channel.is_group || !channel.name || !m.permalink) {
+        return [];
+      }
+      return [{
+        url: m.permalink,
+        channel: `#${channel.name}`,
+        title: (m.text ?? '').slice(0, 200),
+        is_private: false,
+      }];
+    });
+
+    if (refs.length === 0) return null;
 
     const text = refs
       .map((r, i) => `${i + 1}. [${r.channel}] ${r.title}\n   ${r.url}`)
