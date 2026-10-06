@@ -37,7 +37,7 @@
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.
 7. Parked, and not to be started from this plan: audit logs, CSA roles, and step-level source lines. If Reply fails before the 60s cap, the Resolver answer is kept and the customer draft is omitted.
-8. The answer card and the auto-answer review card lead with a research summary: the diagnosis and linked sources. Neither shows a customer draft or word-only source chips. Search hits are attached when the Resolver leaves that ref list empty.
+8. The answer card and the auto-answer review card lead with a research summary: the diagnosis and linked sources. Neither shows a customer draft or word-only source chips. Every question searches Confluence, Jira, Slack, and the help center. Found refs are merged onto the answer by URL, including when the Resolver already cited one.
 
 ## Task 1: Remove the posting actions
 

@@ -54,7 +54,10 @@ import {
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { searchSlackMessages } from './src/slack/search-client.js';
-import { executeSearchPlan } from './src/claude/search-executor.js';
+import { executeSearchPlan, ensureSourceCoverage } from './src/claude/search-executor.js';
+import { searchConfluence, searchJira } from './src/claude/atlassian-search.js';
+import { mergeFoundRefs } from './src/claude/pipeline.js';
+import { INTERPRETER_PROMPT } from './src/claude/prompts/interpreter.js';
 import { runResolver, runReply } from './src/claude/answerer.js';
 import { RESOLVER_PROMPT } from './src/claude/prompts/resolver.js';
 import { classifySourceRef } from './src/slack/source-policy.js';
@@ -2064,6 +2067,56 @@ delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.SLACK_USER_TOKEN;
 
+const covered = ensureSourceCoverage(
+  { sources: [{ name: 'slack', priority: 'high', query: 'calendar sync' }] },
+  'Apple/Google calendar sync?',
+);
+const coveredNames = covered.sources.map(s => s.name);
+assert(coveredNames.includes('confluence') && coveredNames.includes('jira') && coveredNames.includes('kb') && coveredNames.includes('slack'), 'every question searches Confluence, Jira, Slack, and KB');
+assert(INTERPRETER_PROMPT.includes('Always include confluence, jira, slack, and kb'), 'interpreter is told not to drop Confluence or Jira');
+
+process.env.ATLASSIAN_EMAIL = 'a@b.c';
+process.env.ATLASSIAN_API_TOKEN = 't';
+process.env.ATLASSIAN_BASE_URL = 'https://servicetitan.atlassian.net';
+const atlassianCalls = [];
+globalThis.fetch = async (url, init) => {
+  atlassianCalls.push({ url: String(url), init });
+  const u = String(url);
+  if (u.includes('/wiki/rest/api/search')) {
+    return new Response(JSON.stringify({
+      results: [{ title: '@@@hl@@@Zapier@@@endhl@@@ calendar', url: '/spaces/INT/pages/1/Zapier', excerpt: 'Two-way sync' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('/rest/api/3/search/jql')) {
+    return new Response(JSON.stringify({
+      issues: [{ key: 'INT-9', fields: { summary: 'Calendar zap', status: { name: 'Open' } } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('{}', { status: 500 });
+};
+const confluenceHit = await searchConfluence('Apple/Google calendar sync?');
+const confluenceUrl = new URL(atlassianCalls.find(c => c.url.includes('/wiki/rest/api/search')).url);
+const confluenceCql = confluenceUrl.searchParams.get('cql');
+assert(!confluenceCql.includes('?') && !confluenceCql.includes('/'), 'Confluence query drops characters that break CQL');
+assert(confluenceHit.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1/Zapier', 'Confluence ref is a site page link');
+assert(confluenceHit.refs[0].title === 'Zapier calendar', 'Confluence title drops highlight markers');
+const jiraHit = await searchJira('Apple/Google calendar sync?');
+const jiraCall = atlassianCalls.find(c => c.url.includes('/rest/api/3/search/jql'));
+assert(jiraCall.init?.method === 'POST', 'Jira search uses the JQL POST endpoint');
+const jiraBody = JSON.parse(jiraCall.init.body);
+assert(Array.isArray(jiraBody.fields) && jiraBody.fields.includes('summary'), 'Jira search requests issue fields');
+assert(!jiraBody.jql.includes('?') && !jiraBody.jql.includes('/'), 'Jira query drops characters that break JQL');
+assert(jiraHit.refs[0].url === 'https://servicetitan.atlassian.net/browse/INT-9', 'Jira ref links the issue');
+assert(jiraHit.refs[0].title === 'INT-9 — Calendar zap', 'Jira ref keeps the issue summary');
+const merged = mergeFoundRefs(
+  { slack_refs: [], atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/old', title: 'Old page' }], kb_refs: [] },
+  { slack: null, kb: null, jira: null, confluence: { refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1/Zapier', title: 'Zapier calendar' }] } },
+);
+assert(merged.atlassian_refs.length === 2, 'found Confluence pages are added even when the model already cited one');
+delete process.env.ATLASSIAN_EMAIL;
+delete process.env.ATLASSIAN_API_TOKEN;
+delete process.env.ATLASSIAN_BASE_URL;
+
 // ── answerer (resolver + reply) ───────────────────────────────────────────────
 console.log('\n🔹 answerer');
 
@@ -2549,8 +2602,25 @@ function anthropicMock(body) {
     stop_reason: 'end_turn',
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 }
-async function passThroughFetch(url) {
-  if (typeof url === 'string' && url.includes('anthropic.com')) return nextResponse();
+function isHelpCenterSearch(init) {
+  try {
+    const body = JSON.parse(init?.body ?? '{}');
+    return Array.isArray(body.tools) && body.tools.some((tool) => tool.name === 'web_search' || tool.type === 'web_search_20250305');
+  } catch {
+    return false;
+  }
+}
+function emptyHelpCenterResponse() {
+  return new Response(JSON.stringify({
+    content: [{ type: 'web_search_tool_result', tool_use_id: 'kb', content: [] }],
+    stop_reason: 'end_turn',
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+async function passThroughFetch(url, init) {
+  if (typeof url === 'string' && url.includes('anthropic.com')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return nextResponse();
+  }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200 });
 }
 
@@ -2620,6 +2690,7 @@ sequenceResponses.push(
 const priorBodies = [];
 globalThis.fetch = async (url, init) => {
   if (typeof url === 'string' && url.includes('anthropic.com')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     priorBodies.push(JSON.parse(init.body).messages?.[0]?.content ?? '');
     return nextResponse();
   }
@@ -2714,9 +2785,12 @@ const fillResponses = [
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
   anthropicMock('{"issue_title":"Toggle","integration_type":"Zapier","confidence":"medium","diagnosis":"The toggle is off.","steps":[{"num":1,"title":"Enable it","detail":"Turn Zapier API access on.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":[]}'),
 ];
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) return fillResponses[fillStep++];
+  if (u.includes('anthropic.com')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return fillResponses[fillStep++];
+  }
   if (u.includes('slack.com/api/search.messages')) {
     return new Response(JSON.stringify({
       ok: true,
@@ -2837,9 +2911,12 @@ const draftResponses = [
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
   anthropicMock('{"issue_title":"Zapier API access","integration_type":"Zapier","confidence":"high","diagnosis":"API access is off.","steps":[{"num":1,"title":"Enable API access","detail":"Toggle it on.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 ];
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) return draftResponses[draftStep++];
+  if (u.includes('anthropic.com')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return draftResponses[draftStep++];
+  }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 const draftPosts = [];
@@ -4747,7 +4824,10 @@ const mentionResponses = [
 ];
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) return mentionResponses[mentionStepCounter++];
+  if (u.includes('anthropic.com')) {
+    if (isHelpCenterSearch(opts)) return emptyHelpCenterResponse();
+    return mentionResponses[mentionStepCounter++];
+  }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 
@@ -4802,9 +4882,12 @@ const followUpResponses = [
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
   anthropicMock('{"issue_title":"Zapier toggle","integration_type":"Zapier","confidence":"medium","diagnosis":"The tenant toggle is still off.","steps":[{"num":1,"title":"Recheck the toggle","detail":"Confirm Zapier API access is on for this tenant.","tag":"verify"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C9/p9","channel":"#ask-integrations","title":"Toggle thread"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 ];
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) return followUpResponses[followUpStep++];
+  if (u.includes('anthropic.com')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return followUpResponses[followUpStep++];
+  }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 const followUpPosts = [];

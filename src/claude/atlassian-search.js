@@ -1,13 +1,32 @@
 import 'dotenv/config';
 
-const BASE_URL = process.env.ATLASSIAN_BASE_URL ?? 'https://servicetitan.atlassian.net';
 const TIMEOUT_MS = 8000;
+let missingAuthWarned = false;
+
+function siteBase() {
+  return (process.env.ATLASSIAN_BASE_URL ?? 'https://servicetitan.atlassian.net').replace(/\/$/, '');
+}
 
 function getAuth() {
   const email = process.env.ATLASSIAN_EMAIL;
   const token = process.env.ATLASSIAN_API_TOKEN;
-  if (!email || !token) return null;
+  if (!email || !token) {
+    if (!missingAuthWarned) {
+      missingAuthWarned = true;
+      console.warn('[atlassian] ATLASSIAN_EMAIL or ATLASSIAN_API_TOKEN is missing — Confluence and Jira search is off');
+    }
+    return null;
+  }
   return 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
+}
+
+function searchPhrase(query) {
+  return String(query ?? '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 1)
+    .slice(0, 8)
+    .join(' ');
 }
 
 function escapeQuery(str) {
@@ -36,9 +55,10 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     : localController.signal;
 
   try {
-    const cql = `text ~ "${escapeQuery(query)}" AND type = page`;
-    // Top-5 results; cap bounds the answerer prompt (rationale: MAX_RESULTS in kb-search.js).
-    const url = `${BASE_URL}/wiki/rest/api/search?` + new URLSearchParams({ cql, limit: '5' });
+    const phrase = searchPhrase(query);
+    if (!phrase) return { text: null, refs: [] };
+    const cql = `text ~ "${escapeQuery(phrase)}" AND type = page`;
+    const url = `${siteBase()}/wiki/rest/api/search?` + new URLSearchParams({ cql, limit: '5' });
 
     const res = await fetch(url, {
       headers: { Authorization: auth, Accept: 'application/json' },
@@ -46,7 +66,8 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     });
 
     if (!res.ok) {
-      console.warn('[atlassian] Confluence search HTTP error:', res.status);
+      const body = await res.text();
+      console.warn(`[atlassian] Confluence search HTTP ${res.status}: ${body.slice(0, 200)}`);
       return null;
     }
 
@@ -54,12 +75,25 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     const results = data.results ?? [];
     if (results.length === 0) return { text: null, refs: [] };
 
-    const refs = results.map(r => ({
-      type: 'confluence',
-      title: r.title ?? 'Untitled',
-      url: `${BASE_URL}/wiki${r.url ?? ''}`,
-      excerpt: stripHtml(r.excerpt ?? '').slice(0, 300),
-    }));
+    const base = siteBase();
+    const refs = results.map(r => {
+      const raw = r.url || r.content?._links?.webui || '';
+      let pageUrl = '';
+      if (/^https?:\/\//i.test(raw)) pageUrl = raw;
+      else if (raw) {
+        const path = raw.startsWith('/wiki') ? raw : `/wiki${raw.startsWith('/') ? raw : `/${raw}`}`;
+        pageUrl = `${base}${path}`;
+      } else if (r.content?.id) {
+        pageUrl = `${base}/wiki/pages/viewpage.action?pageId=${r.content.id}`;
+      }
+      const title = String(r.content?.title || r.title || 'Untitled').replace(/@@@hl@@@|@@@endhl@@@/g, '').trim();
+      return {
+        type: 'confluence',
+        title,
+        url: pageUrl,
+        excerpt: stripHtml(r.excerpt ?? '').slice(0, 300),
+      };
+    }).filter(r => r.url);
 
     const text = refs.map(r => `[Confluence] ${r.title}\n${r.excerpt}\n${r.url}`).join('\n\n');
     return { text, refs };
@@ -88,21 +122,25 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     : localController.signal;
 
   try {
-    const jql = `text ~ "${escapeQuery(query)}" ORDER BY updated DESC`;
-    const url = `${BASE_URL}/rest/api/3/search/jql?` + new URLSearchParams({
-      jql,
-      // Top-5 results; cap bounds the answerer prompt (rationale: MAX_RESULTS in kb-search.js).
-      maxResults: '5',
-      fields: 'summary,status,issuetype',
-    });
+    const phrase = searchPhrase(query);
+    if (!phrase) return { text: null, refs: [] };
+    const jql = `text ~ "${escapeQuery(phrase)}" ORDER BY updated DESC`;
+    const url = `${siteBase()}/rest/api/3/search/jql`;
 
     const res = await fetch(url, {
-      headers: { Authorization: auth, Accept: 'application/json' },
+      method: 'POST',
+      headers: { Authorization: auth, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jql,
+        maxResults: 5,
+        fields: ['summary', 'status'],
+      }),
       signal,
     });
 
     if (!res.ok) {
-      console.warn('[atlassian] Jira search HTTP error:', res.status);
+      const body = await res.text();
+      console.warn(`[atlassian] Jira search HTTP ${res.status}: ${body.slice(0, 200)}`);
       return null;
     }
 
@@ -113,7 +151,7 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     const refs = issues.map(i => ({
       type: 'jira',
       title: `${i.key} — ${i.fields?.summary ?? ''}`,
-      url: `${BASE_URL}/browse/${i.key}`,
+      url: `${siteBase()}/browse/${i.key}`,
       status: i.fields?.status?.name ?? '',
     }));
 

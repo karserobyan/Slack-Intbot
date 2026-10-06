@@ -10,7 +10,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
 2. The bot posts a "searching…" placeholder immediately
 3. The always-on pipeline runs (60s hard cap):
    - **Intake (Interpreter)** — understands the question and builds a search plan
-   - **Research** — searches sources in parallel; an evaluator may refine the plan once
+   - **Research** — every question searches Confluence, Jira, Slack, and the help center in parallel; an evaluator may refine the plan once. Pages and tickets that come back stay on the card.
    - **Resolver** — produces diagnosis, steps, and involvement
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:

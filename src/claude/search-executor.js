@@ -2,6 +2,31 @@ import { searchKnowledgeBase } from './kb-search.js';
 import { searchConfluence, searchJira } from './atlassian-search.js';
 import { searchSlackMessages } from '../slack/search-client.js';
 
+const REQUIRED_SOURCES = ['confluence', 'jira', 'slack', 'kb'];
+
+function keywordQuery(query) {
+  const words = String(query ?? '')
+    .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length > 1)
+    .slice(0, 8);
+  return words.join(' ') || 'integration';
+}
+
+export function ensureSourceCoverage(plan, query) {
+  const sources = Array.isArray(plan?.sources) ? plan.sources.map((source) => ({ ...source })) : [];
+  const keyword = keywordQuery(query);
+  for (const name of REQUIRED_SOURCES) {
+    if (!sources.some((source) => source.name === name)) {
+      sources.push({ name, priority: 'high', query: keyword });
+    }
+  }
+  return {
+    sources,
+    rationale: plan?.rationale ?? 'Confluence, Jira, Slack, and the help center are always searched',
+  };
+}
+
 const SOURCE_FUNCS = {
   kb: searchKnowledgeBase,
   confluence: searchConfluence,
