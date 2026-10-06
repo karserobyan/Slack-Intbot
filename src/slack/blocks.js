@@ -102,7 +102,17 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false, followUp = false } = {}) {
+export function buildThreadReplyBlocks(data) {
+  const reply = String(data?.diagnosis ?? '').trim() || String(data?.issue_title ?? '').trim() || 'I need a bit more detail to answer that.';
+  const sources = researchSourceLines(data?.slack_refs ?? [], data?.atlassian_refs ?? [], data?.kb_refs ?? []);
+  const text = sources.length ? `${escapeMrkdwn(reply)}\n\n${sources.join('\n')}` : escapeMrkdwn(reply);
+  return [{
+    type: 'section',
+    text: { type: 'mrkdwn', text: clamp(text) },
+  }];
+}
+
+export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
@@ -117,13 +127,6 @@ export function buildResponseBlocks(data, { isDm = false, followUp = false } = {
   });
   blocks.push({ type: 'divider' });
 
-  if (followUp) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: '_Continuing this thread_' }],
-    });
-  }
-
   const summary = researchSummaryText(data.diagnosis, slackRefs, atlassianRefs, kbRefs);
   if (summary) {
     blocks.push({
@@ -137,7 +140,7 @@ export function buildResponseBlocks(data, { isDm = false, followUp = false } = {
   if (steps.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: followUp ? '*Still open*' : '*🔧 What you do*' },
+      text: { type: 'mrkdwn', text: '*🔧 What you do*' },
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
@@ -296,11 +299,7 @@ export function buildThinkingBlocks(_query, { followUp = false } = {}) {
     return [
       {
         type: 'section',
-        text: { type: 'mrkdwn', text: '*Checking your follow-up…*' },
-      },
-      {
-        type: 'context',
-        elements: [{ type: 'mrkdwn', text: '_Using what this thread already found_' }],
+        text: { type: 'mrkdwn', text: 'Replying…' },
       },
     ];
   }
@@ -500,7 +499,7 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Thread continuation*\nAfter the first response, a follow-up in the same thread stays on the case. The bot checks the follow-up against what it already found and answers what is still open. It does not open a new investigation or ask a second clarifying question.',
+        text: '*Thread continuation*\nThe first answer is the case card. After that, a follow-up in the same thread is a chat reply: the summary of the answer, with links when a source has one. It does not open a new case card or ask a second clarifying question.',
       },
     },
     {
@@ -748,6 +747,9 @@ function truncateQuery(q, max = 60) {
 }
 
 export function buildProgressBlocks(query, steps, { followUp = false } = {}) {
+  if (followUp) {
+    return [{ type: 'section', text: { type: 'mrkdwn', text: 'Replying…' } }];
+  }
   const toolStatus = {};
   let slackSearching = false;
   let isWriting = false;
@@ -765,7 +767,7 @@ export function buildProgressBlocks(query, steps, { followUp = false } = {}) {
     }
   }
 
-  const lines = [followUp ? '*Checking your follow-up…*' : '*⚙️ Looking into this…*'];
+  const lines = ['*⚙️ Looking into this…*'];
 
   for (const tool of KNOWN_TOOLS) {
     const label = TOOL_LABEL[tool];
@@ -786,7 +788,7 @@ export function buildProgressBlocks(query, steps, { followUp = false } = {}) {
     }
   }
 
-  let statusLine = followUp ? '_Using what this thread already found_' : DEFAULT_STATUS;
+  let statusLine = DEFAULT_STATUS;
   if (isWriting) {
     statusLine = '_Now: writing answer…_';
   } else if (slackSearching) {

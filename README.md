@@ -15,7 +15,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:
    - **Research** — the diagnosis, then the Slack, Confluence, Jira, and KB sources as links when the host is allowlisted
-   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`. A follow-up in the same thread labels these *Still open* and continues the case instead of opening a new investigation
+   - **Steps** — numbered steps tagged `action`, `backend`, `verify`, or `escalate`. A follow-up in the same thread is a chat reply: the summary only, with source links, and no new case card
    - **Involvement** — whether another team should take it. The card names the workspace channel that owns this issue, or a few channels it could go to when no single one does. The bot does not post into those channels. A person posts there.
 
 One audience: integrations support people who own the case. There is no CSA vs Specialist mode split and no legacy single-call rollback path.

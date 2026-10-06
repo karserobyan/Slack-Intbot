@@ -3,6 +3,7 @@ import { summarizeResultForHistory } from '../claude/prompts.js';
 import { getHistory, hasHistory, appendToHistory } from '../slack/conversation.js';
 import {
   buildResponseBlocks,
+  buildThreadReplyBlocks,
   buildAccountingRedirectBlocks,
   buildThinkingBlocks,
   buildErrorBlocks,
@@ -71,9 +72,9 @@ async function deliverPipelineResult({
   delete pipelineResult._cleanedQuestion;
 
   const view = withRequestContext(pipelineResult, { query, threadTs, channelId });
-  const blocks = buildResponseBlocks(view, { isDm, followUp });
+  const blocks = followUp ? buildThreadReplyBlocks(view) : buildResponseBlocks(view, { isDm });
   const fallbackText = followUp
-    ? `Follow-up: ${view.issue_title ?? query.slice(0, 80)}`
+    ? String(view.diagnosis ?? view.issue_title ?? query).slice(0, 200)
     : `Troubleshooting: ${view.issue_title} (${view.integration_type})`;
 
   if (thinkingTs) {
@@ -84,9 +85,12 @@ async function deliverPipelineResult({
     await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: fallbackText });
   }
 
+  const assistantTurn = followUp
+    ? String(view.diagnosis ?? '').trim() || summarizeResultForHistory(view)
+    : summarizeResultForHistory(view);
   appendToHistory(threadTs, [
     { role: 'user', content: query },
-    { role: 'assistant', content: summarizeResultForHistory(view) },
+    { role: 'assistant', content: assistantTurn },
   ]);
 
   return { delivered: true, clarifying: false, view, cleanedKey };
@@ -201,7 +205,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
         channel: channelId,
         thread_ts: threadTs,
         blocks: buildThinkingBlocks(query, { followUp: true }),
-        text: 'Checking your follow-up…',
+        text: 'Replying…',
       });
       thinkingTs = thinkingMsg.ts;
     } catch (err) {
@@ -209,7 +213,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     }
 
     const onProgress = makeProgressHandler({
-      client, channelId, thinkingTs, query, thinkingLabel: 'Checking your follow-up…', followUp: true,
+      client, channelId, thinkingTs, query, thinkingLabel: 'Replying…', followUp: true,
     });
 
     let pipelineResult;
