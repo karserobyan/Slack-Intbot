@@ -17,7 +17,7 @@ Do not add a button or action that calls `chat.postMessage` into a destination c
 
 Channel choice stays. Haiku reads the issue against `conversations.list`. One clear listed channel is `channel`, with `suggestions` empty. When several listed channels could receive it, `channel` is null and `suggestions` holds up to 3 of them. Unlisted names are dropped. A failed choice or no fit means both are empty. Channel names are not hardcoded.
 
-Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given.
+Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given. In the thread, the placeholder says it is checking the follow-up, and the card continues that case. It does not open like a new investigation.
 
 Accounting stays a keyword redirect in the asking thread. The bot does not post into that channel.
 
@@ -74,7 +74,7 @@ Not model output: `customer_message` on the Resolver, `is_accounting_topic`, `cl
 
 ## Slack card
 
-`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js`. Order: header, diagnosis, steps (cap 20), involvement, customer draft when `customer_message` is non-empty, source chips, actions. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
+`buildResponseBlocks(data, { isDm = false, followUp = false })` in `src/slack/blocks.js`. Order: header, research summary, steps (cap 20), involvement, actions. The research summary is the diagnosis plus Slack, Confluence, Jira, and KB sources as `safeSlackLink` hyperlinks when the host is allowlisted. The answer card does not render `customer_message` or word-only source chips. Auto-answer still shows the draft email in the review channel. A follow-up adds `_Continuing this thread_`, labels steps `*Still open*`, and uses the placeholder `Checking your follow-up…`. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
 
 Escape user and model text with `escapeMrkdwn`. Stay well under Slack's 50-block limit. Button values stay small.
 

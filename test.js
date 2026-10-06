@@ -419,16 +419,21 @@ const headerText = responseBlocks[0].text.text;
 assert(headerText.includes('Zapier API Access Not Enabled'), 'Header has issue title');
 assert(headerText.startsWith('🟢'), 'Header has high-confidence icon');
 
-// Diagnosis before steps heading; steps before customer draft
+// Research summary before steps; the customer draft is not on this card
 const blockTexts = responseBlocks.map(b => b.text?.text ?? b.elements?.[0]?.text ?? '');
-const diagIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('*Diagnosis*'));
+const researchIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('*Research*'));
 const stepsHeadingIdx = blockTexts.findIndex(t => t === '*🔧 What you do*');
-const customerIdx = blockTexts.findIndex(t => typeof t === 'string' && t.includes('Zapier connection was reset'));
-assert(diagIdx !== -1, 'Diagnosis section present');
+const researchText = researchIdx === -1 ? '' : blockTexts[researchIdx];
+const responseJson = JSON.stringify(responseBlocks);
+assert(researchIdx !== -1, 'Research summary present');
 assert(stepsHeadingIdx !== -1, 'Steps section header renders as "🔧 What you do"');
-assert(customerIdx !== -1, 'Customer message block present');
-assert(diagIdx < stepsHeadingIdx, 'diagnosis section text before the steps heading');
-assert(stepsHeadingIdx < customerIdx, 'steps before the customer draft');
+assert(researchIdx !== -1 && researchIdx < stepsHeadingIdx, 'research summary before the steps heading');
+assert(!responseJson.includes('Zapier connection was reset'), 'customer draft is not on the answer card');
+assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|Zapier API access not working after tenant migration>'), 'Slack source is a hyperlink');
+assert(researchText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
+assert(researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is in the research summary');
+assert(researchText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the research summary');
+assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
 
 // Check steps are present
 const stepBlocks = responseBlocks.filter(b => b.type === 'section' && /\*\d+\. /.test(b.text?.text ?? ''));
@@ -442,15 +447,10 @@ assert(stepBlocks[1].text.text.startsWith('🟠'), 'Backend step has orange circ
 assert(stepBlocks[2].text.text.startsWith('🟢'), 'Verify step has green circle');
 assert(stepBlocks[3].text.text.startsWith('🔴'), 'Escalate step has red circle');
 
-// Diagnosis is inline as a section (not the old modal-only Root Cause label)
-const diagSection = responseBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
-assert(diagSection !== undefined, 'Diagnosis section is inline in response');
-assert(diagSection.text.text.includes('API access has not been enabled'), 'Diagnosis text present');
-
-// Customer message — label removed, just the message
-const talktackBlock = responseBlocks.find(b => b.text?.text?.includes('Zapier connection was reset'));
-assert(!talktackBlock.text.text.includes('Message the customer'), 'Customer message has no label text');
-assert(talktackBlock.text.text.startsWith('💬'), 'Customer message starts with 💬 emoji');
+// Research summary is inline and carries the diagnosis
+const researchSection = responseBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
+assert(researchSection !== undefined, 'Research summary is inline in response');
+assert((researchSection?.text?.text ?? '').includes('API access has not been enabled'), 'Diagnosis text is in the research summary');
 
 // Involvement: case owner finishes
 const ownerLine = responseBlocks.find(b => b.type === 'context' && b.elements?.[0]?.text?.includes('Case owner can finish'));
@@ -495,10 +495,12 @@ const sensitiveData = {
 };
 
 const sensBlocks = buildResponseBlocks(sensitiveData);
-const sensChipBlock = sensBlocks.find(b => b.type === 'context' && b.elements[0].text.includes('💬'));
-assert(sensChipBlock !== undefined, 'sensitivity: Slack chip shown for sensitive payload');
-assert(sensChipBlock.elements[0].text.includes('📄 Confluence'), 'sensitivity: Confluence chip shown');
-assert(!sensChipBlock.elements[0].text.includes('specialist-only'), 'sensitivity: no specialist-only hint');
+const sensResearch = sensBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
+const sensResearchText = sensResearch?.text?.text ?? '';
+assert(sensResearch !== undefined, 'sensitivity: research summary shown for sensitive payload');
+assert(sensResearchText.includes('Internal escalation notes'), 'sensitivity: sensitive Slack title is in the summary');
+assert(sensResearchText.includes('Internal runbook'), 'sensitivity: sensitive Confluence title is in the summary');
+assert(!sensResearchText.includes('specialist-only'), 'sensitivity: no specialist-only hint');
 const sensSrcBtn = sensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(sensSrcBtn !== undefined, 'sensitivity: sources button present');
 const sensSrcVal = JSON.parse(sensSrcBtn.value);
@@ -569,6 +571,20 @@ assert(redirectBlocks[0].text.text.includes('#ask-partner-enabled-accounting-int
 const thinkingBlocks = buildThinkingBlocks('Zapier not working');
 assert(thinkingBlocks.length === 2, 'Thinking has 2 blocks');
 assert(thinkingBlocks[0].text.text.includes('Looking into this'), 'Thinking shows looking-into-this message');
+
+const followUpThinking = buildThinkingBlocks('Did the tenant toggle stick?', { followUp: true });
+assert(followUpThinking[0].text.text.includes('Checking your follow-up'), 'follow-up thinking continues the thread');
+assert(!JSON.stringify(followUpThinking).includes('Looking into this'), 'follow-up thinking does not open a new investigation');
+assert(followUpThinking[1].elements[0].text.includes('what this thread already found'), 'follow-up thinking says it is using the thread');
+
+const followUpCard = buildResponseBlocks(sampleJson, { followUp: true });
+const followUpCardJson = JSON.stringify(followUpCard);
+assert(followUpCardJson.includes('_Continuing this thread_'), 'follow-up card says it is continuing the thread');
+assert(followUpCardJson.includes('*Still open*'), 'follow-up steps are what is still open');
+assert(followUpCardJson.includes('*Research*'), 'follow-up card still leads with the research summary');
+assert(!followUpCardJson.includes('*🔧 What you do*'), 'follow-up card does not restart with What you do');
+assert(!followUpCardJson.includes('Zapier connection was reset'), 'follow-up card has no customer draft');
+assert(!followUpCardJson.includes('Looking into this'), 'follow-up card does not say it is looking into this');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -1042,8 +1058,10 @@ assert(helpDetailBlocks.length > 0, 'buildHelpDetailBlocks returns non-empty arr
 assert(helpDetailBlocks[0].type === 'header', 'buildHelpDetailBlocks first block is header');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('confidence')), 'detail blocks explain confidence levels');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'detail blocks explain feedback');
-assert(helpDetailBlocks.some(b => b.text?.text?.includes('Diagnosis')), 'detail blocks mention diagnosis');
-assert(helpDetailBlocks.some(b => b.text?.text?.includes('draft reply') || b.text?.text?.includes('customer draft') || b.text?.text?.toLowerCase().includes('draft')), 'detail blocks mention a customer draft');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('diagnosis')), 'detail blocks mention diagnosis');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('linked sources')), 'detail blocks describe linked sources');
+assert(!helpDetailBlocks.some(b => b.text?.text?.toLowerCase().includes('draft')), 'detail blocks do not describe a customer draft');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('still open')), 'detail blocks say a follow-up answers what is still open');
 assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks do not mention Specialist Detail');
 assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialists only')), 'detail blocks do not mention Specialists only');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
@@ -1731,31 +1749,29 @@ assert(cpContext.elements[0].text.includes('Select all and copy'), 'instructions
 // ── 20. buildResponseBlocks — diagnosis + chips + channel post button ──────────
 console.log('\n🔹 buildResponseBlocks — new fields');
 
-// Diagnosis section present when diagnosis is set
+// Research summary present when diagnosis is set
 const withDiagBlocks = buildResponseBlocks({
   ...sampleJson,
 });
-const diagBlock = withDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
-assert(diagBlock !== undefined, 'diagnosis section present when diagnosis set');
-assert(diagBlock.text.text.includes('Zapier integration is failing'), 'diagnosis text is from diagnosis field');
+const diagBlock = withDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
+assert(diagBlock !== undefined, 'research summary present when diagnosis set');
+assert((diagBlock?.text?.text ?? '').includes('Zapier integration is failing'), 'diagnosis text is from diagnosis field');
 
-// Diagnosis section absent when diagnosis is missing
+// Sources stay when diagnosis is missing; the diagnosis sentence does not
 const noDiagBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined });
-const noDiagBlock2 = noDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Diagnosis*'));
-assert(noDiagBlock2 === undefined, 'no diagnosis block when diagnosis missing');
+const noDiagResearch = noDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
+assert(noDiagResearch !== undefined, 'research summary still lists sources when diagnosis is missing');
+assert(!(noDiagResearch?.text?.text ?? '').includes('Zapier integration is failing'), 'missing diagnosis is not invented');
 
-// Source chips: Confluence chip when atlassian_refs has confluence entry
+// No research block when there is nothing to summarize
+const noResearchBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined, slack_refs: [], atlassian_refs: [], kb_refs: [] });
+const noResearchBlock = noResearchBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
+assert(noResearchBlock === undefined, 'no research summary when diagnosis and refs are empty');
+
+// Word-only source chips are replaced by the linked summary
 const chipsBlocks = buildResponseBlocks({ ...sampleJson });
-const chipsBlock = chipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence'));
-assert(chipsBlock !== undefined, 'Confluence chip present when atlassian_refs has confluence');
-assert(chipsBlock.elements[0].text.includes('📄 Jira'), 'Jira chip present when atlassian_refs has jira');
-assert(chipsBlock.elements[0].text.includes('💬 Slack'), 'Slack chip present when slack_refs non-empty');
-assert(chipsBlock.elements[0].text.includes('📖 KB'), 'KB chip present when kb_refs non-empty');
-
-// No chips when all ref arrays are empty
-const noChipsBlocks = buildResponseBlocks({ ...sampleJson, slack_refs: [], atlassian_refs: [], kb_refs: [] });
-const noChipsBlock = noChipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence') || b.elements[0].text?.includes('📄 Jira') || b.elements[0].text?.includes('💬 Slack') || b.elements[0].text?.includes('📖 KB'));
-assert(noChipsBlock === undefined, 'no chips context block when all ref arrays empty');
+const chipsBlock = chipsBlocks.filter(b => b.type === 'context').find(b => b.elements[0].text?.includes('📄 Confluence') || b.elements[0].text?.includes('📖 KB'));
+assert(chipsBlock === undefined, 'word-only source chips are not on the answer card');
 
 // Channel post button present when involvement.needed
 const channelPostBlocks = buildResponseBlocks({
@@ -1794,6 +1810,10 @@ assert(progEmpty[0].type === 'section', 'first block is section');
 assert(progEmpty[0].text.type === 'mrkdwn', 'section uses mrkdwn');
 assert(progEmpty[0].text.text.includes('⚙️ Looking into this'), 'header includes ⚙️ Looking into this');
 assert(progEmpty[1].type === 'context', 'second block is context');
+
+const followUpProgress = buildProgressBlocks('Did the tenant toggle stick?', [], { followUp: true });
+assert(followUpProgress[0].text.text.includes('Checking your follow-up'), 'follow-up progress continues the thread');
+assert(!followUpProgress[0].text.text.includes('Looking into this'), 'follow-up progress does not open a new investigation');
 
 // tool_start step → ⟳ Confluence  searching…
 const progStart = buildProgressBlocks('test', [
@@ -4665,6 +4685,59 @@ else process.env.QUALITY_NOMINATION_POLICY_ENABLED = oldQualityNominationPolicyE
 
 await rm(recorderTempDir, { recursive: true, force: true });
 await rm(mentionShadowDir, { recursive: true, force: true });
+
+appendToHistory('follow-up-messaging', [
+  { role: 'user', content: 'Zapier API access is off' },
+  { role: 'assistant', content: 'Enable API access for the tenant.' },
+]);
+const followUpApiKey = process.env.ANTHROPIC_API_KEY;
+process.env.ANTHROPIC_API_KEY = 'test';
+const followUpFetch = globalThis.fetch;
+let followUpStep = 0;
+const followUpResponses = [
+  anthropicMock('{"cleaned_question":"did the tenant toggle stick","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"toggle"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier toggle"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Zapier toggle","integration_type":"Zapier","confidence":"medium","diagnosis":"The tenant toggle is still off.","steps":[{"num":1,"title":"Recheck the toggle","detail":"Confirm Zapier API access is on for this tenant.","tag":"verify"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C9/p9","channel":"#ask-integrations","title":"Toggle thread"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+];
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) return followUpResponses[followUpStep++];
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const followUpPosts = [];
+const followUpUpdates = [];
+await handleQuery({
+  rawText: '<@UBOT> Did the tenant toggle stick?',
+  channelId: 'C123',
+  threadTs: 'follow-up-messaging',
+  userId: 'U-follow',
+  client: {
+    chat: {
+      postMessage: async (payload) => {
+        followUpPosts.push(payload);
+        return { ts: 'follow-up-thinking' };
+      },
+      update: async (payload) => {
+        followUpUpdates.push(payload);
+        return payload;
+      },
+    },
+  },
+});
+const followUpPlaceholder = followUpPosts.find((payload) => payload.text === 'Checking your follow-up…');
+assert(followUpPlaceholder !== undefined, 'a thread follow-up posts a continuation placeholder');
+assert(!JSON.stringify(followUpPlaceholder?.blocks ?? []).includes('Looking into this'), 'the follow-up placeholder does not say it is looking into this');
+const followUpAnswer = followUpUpdates.find((payload) => typeof payload.text === 'string' && payload.text.startsWith('Follow-up:'));
+assert(followUpAnswer !== undefined, 'the thread reply is delivered as a follow-up');
+const followUpAnswerJson = JSON.stringify(followUpAnswer?.blocks ?? []);
+assert(followUpAnswerJson.includes('_Continuing this thread_'), 'the thread reply says it is continuing');
+assert(followUpAnswerJson.includes('*Still open*'), 'the thread reply labels remaining steps as still open');
+assert(followUpAnswerJson.includes('*Research*'), 'the thread reply leads with the research summary');
+assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|Toggle thread>'), 'the thread reply links the source it found');
+assert(!followUpAnswerJson.includes('*🔧 What you do*'), 'the thread reply does not restart the first-answer steps heading');
+globalThis.fetch = followUpFetch;
+if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+else process.env.ANTHROPIC_API_KEY = followUpApiKey;
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

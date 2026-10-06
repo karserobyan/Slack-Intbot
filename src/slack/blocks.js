@@ -34,6 +34,41 @@ function encodeActionText(value) {
   return encodeURIComponent(String(value ?? ''));
 }
 
+const RESEARCH_SOURCE_CAP = 8;
+
+function refTitle(ref) {
+  return ref?.title || ref?.url || 'Source';
+}
+
+function researchSourceLines(slackRefs, atlassianRefs, kbRefs) {
+  const lines = [];
+  for (const ref of slackRefs.slice(0, RESEARCH_SOURCE_CAP)) {
+    const channel = ref.channel ? ` · ${escapeMrkdwn(ref.channel)}` : '';
+    lines.push(`• ${safeSlackLink(ref.url, refTitle(ref))}${channel}`);
+  }
+  for (const ref of atlassianRefs.slice(0, RESEARCH_SOURCE_CAP)) {
+    const kind = ref.type === 'jira' ? 'Jira' : ref.type === 'confluence' ? 'Confluence' : 'Atlassian';
+    lines.push(`• ${kind}: ${safeSlackLink(ref.url, refTitle(ref))}`);
+  }
+  for (const ref of kbRefs.slice(0, RESEARCH_SOURCE_CAP)) {
+    const snippet = ref.snippet ? `\n  _${escapeMrkdwn(ref.snippet)}_` : '';
+    lines.push(`• ${safeSlackLink(ref.url, refTitle(ref))}${snippet}`);
+  }
+  return lines;
+}
+
+function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
+  const parts = [];
+  if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
+  const sources = researchSourceLines(slackRefs, atlassianRefs, kbRefs);
+  if (sources.length) {
+    if (parts.length) parts.push('');
+    parts.push(...sources);
+  }
+  if (!parts.length) return '';
+  return clamp(`*Research*\n${parts.join('\n')}`);
+}
+
 /**
  * Builds the Block Kit payload for a successful (non-accounting) response.
  * Stays well under Slack's 50-block limit by capping steps and refs.
@@ -65,7 +100,7 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
   return JSON.stringify({ diagnosis: diagStr, slack_refs: [], atlassian_refs: [], kb_refs: [] });
 }
 
-export function buildResponseBlocks(data, { isDm = false } = {}) {
+export function buildResponseBlocks(data, { isDm = false, followUp = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
 
@@ -80,11 +115,18 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   });
   blocks.push({ type: 'divider' });
 
-  // 2. Diagnosis
-  if (data.diagnosis) {
+  if (followUp) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_Continuing this thread_' }],
+    });
+  }
+
+  const summary = researchSummaryText(data.diagnosis, slackRefs, atlassianRefs, kbRefs);
+  if (summary) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*Diagnosis*\n${escapeMrkdwn(data.diagnosis)}`) },
+      text: { type: 'mrkdwn', text: summary },
     });
   }
 
@@ -93,7 +135,7 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   if (steps.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: '*🔧 What you do*' },
+      text: { type: 'mrkdwn', text: followUp ? '*Still open*' : '*🔧 What you do*' },
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
@@ -130,27 +172,6 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     blocks.push({
       type: 'context',
       elements: [{ type: 'mrkdwn', text: '✅ Case owner can finish this' }],
-    });
-  }
-
-  // 5. Customer draft
-  if (typeof data.customer_message === 'string' && data.customer_message.length > 0) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `💬 _"${clamp(escapeMrkdwn(data.customer_message))}"_` },
-    });
-  }
-
-  // 6. Source chips
-  const chips = [];
-  if (atlassianRefs.some(r => r.type === 'confluence')) chips.push('📄 Confluence');
-  if (atlassianRefs.some(r => r.type === 'jira'))       chips.push('📄 Jira');
-  if (slackRefs.length > 0)                             chips.push('💬 Slack');
-  if (kbRefs.length > 0)                                chips.push('📖 KB');
-  if (chips.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: chips.join('  ·  ') }],
     });
   }
 
@@ -268,7 +289,19 @@ export function buildAccountingRedirectBlocks(query) {
 /**
  * Builds a "thinking…" placeholder block shown while Claude is working.
  */
-export function buildThinkingBlocks(_query) {
+export function buildThinkingBlocks(_query, { followUp = false } = {}) {
+  if (followUp) {
+    return [
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: '*Checking your follow-up…*' },
+      },
+      {
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: '_Using what this thread already found_' }],
+      },
+    ];
+  }
   return [
     {
       type: 'section',
@@ -444,7 +477,7 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*What the card shows*\nDiagnosis and steps come first. If the question named a customer, a draft reply sits underneath. Sources are listed for every answer. When another team has to be involved, the card names engineering, a partner, or the leads channel.',
+        text: '*What the card shows*\nThe research summary comes first: the diagnosis and linked sources from the investigation. Steps come after that. When another team has to be involved, the card names engineering, a partner, or the leads channel.',
       },
     },
     {
@@ -465,7 +498,7 @@ export function buildHelpDetailBlocks() {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Thread continuation*\nAfter the first response, a follow-up in the same thread stays on the case. The bot answers or escalates. It does not ask a second clarifying question.',
+        text: '*Thread continuation*\nAfter the first response, a follow-up in the same thread stays on the case. The bot checks the follow-up against what it already found and answers what is still open. It does not open a new investigation or ask a second clarifying question.',
       },
     },
     {
@@ -721,7 +754,7 @@ function truncateQuery(q, max = 60) {
   return s.length > max ? s.slice(0, max - 1).trimEnd() + '…' : s;
 }
 
-export function buildProgressBlocks(query, steps) {
+export function buildProgressBlocks(query, steps, { followUp = false } = {}) {
   const toolStatus = {};
   let slackSearching = false;
   let isWriting = false;
@@ -739,7 +772,7 @@ export function buildProgressBlocks(query, steps) {
     }
   }
 
-  const lines = ['*⚙️ Looking into this…*'];
+  const lines = [followUp ? '*Checking your follow-up…*' : '*⚙️ Looking into this…*'];
 
   for (const tool of KNOWN_TOOLS) {
     const label = TOOL_LABEL[tool];
@@ -760,7 +793,7 @@ export function buildProgressBlocks(query, steps) {
     }
   }
 
-  let statusLine = DEFAULT_STATUS;
+  let statusLine = followUp ? '_Using what this thread already found_' : DEFAULT_STATUS;
   if (isWriting) {
     statusLine = '_Now: writing answer…_';
   } else if (slackSearching) {
