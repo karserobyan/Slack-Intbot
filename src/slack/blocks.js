@@ -48,7 +48,9 @@ function researchSourceLines(slackRefs, atlassianRefs, kbRefs) {
   }
   for (const ref of atlassianRefs.slice(0, RESEARCH_SOURCE_CAP)) {
     const kind = ref.type === 'jira' ? 'Jira' : ref.type === 'confluence' ? 'Confluence' : 'Atlassian';
-    lines.push(`• ${kind}: ${safeSlackLink(ref.url, refTitle(ref))}`);
+    const excerpt = ref.excerpt || ref.snippet;
+    const extra = excerpt ? `\n  _${escapeMrkdwn(excerpt)}_` : '';
+    lines.push(`• ${kind}: ${safeSlackLink(ref.url, refTitle(ref))}${extra}`);
   }
   for (const ref of kbRefs.slice(0, RESEARCH_SOURCE_CAP)) {
     const snippet = ref.snippet ? `\n  _${escapeMrkdwn(ref.snippet)}_` : '';
@@ -670,9 +672,8 @@ export function buildChatResolutionBlocks(data) {
 
 /**
  * Compact block-kit for the auto-answer drafts channel.
- * Layout: link to original + author → question → diagnosis → numbered steps →
- * draft email → footer (confidence + sources). Stays well under Slack's
- * 50-block limit even with the maximum 8 steps.
+ * Layout: link to original + author → question → research summary → numbered steps →
+ * confidence. Stays well under Slack's 50-block limit even with the maximum 8 steps.
  */
 export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUserId, query, result }) {
   const blocks = [];
@@ -694,10 +695,11 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
   });
 
-  if (result.diagnosis) {
+  const summary = researchSummaryText(result.diagnosis, result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
+  if (summary) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*Diagnosis:* ${escapeMrkdwn(result.diagnosis)}`) },
+      text: { type: 'mrkdwn', text: summary },
     });
   }
 
@@ -720,20 +722,11 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     }
   }
 
-  if (typeof result.customer_message === 'string' && result.customer_message.length > 0) {
-    blocks.push({ type: 'divider' });
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: clamp(`*📧 Draft email*\n${escapeMrkdwn(result.customer_message)}`) },
-    });
-  }
-
-  const sourceChips = (result.sources_used ?? []).map((source) => renderEscapedCode(source)).join('  ·  ');
   blocks.push({
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `${conf.icon} ${conf.label} confidence${sourceChips ? `  ·  Sources: ${sourceChips}` : ''}`,
+      text: `${conf.icon} ${conf.label} confidence`,
     }],
   });
 

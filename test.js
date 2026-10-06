@@ -59,7 +59,7 @@ import { classifySourceRef } from './src/slack/source-policy.js';
 import * as sourcePolicy from './src/slack/source-policy.js';
 import { missingResolverFields, retiredRoleFieldsIn, customerWasMentioned } from './src/claude/answer-schema.js';
 import { handleQuery, registerMentionHandler, stripTransient, withRequestContext } from './src/handlers/mention.js';
-import { shouldSkipMessage, verifyChannelAccess } from './src/handlers/auto-answer.js';
+import { shouldSkipMessage, verifyChannelAccess, handleAutoAnswer } from './src/handlers/auto-answer.js';
 import {
   isQualityLayerEnabled,
   isQualityNominationPolicyEnabled,
@@ -2681,6 +2681,33 @@ assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'ca
 assert(answererClarifyCapped.involvement?.needed === true, 'capped clarifying-only sets involvement.needed true');
 assert(answererClarifyCapped.involvement?.who === 'engineering', 'capped clarifying-only sets involvement.who to engineering');
 
+const oldSlackUserToken = process.env.SLACK_USER_TOKEN;
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+process.env.ANTHROPIC_API_KEY = 'test';
+let fillStep = 0;
+const fillResponses = [
+  anthropicMock('{"cleaned_question":"zapier toggle is off","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"toggle"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier toggle"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Toggle","integration_type":"Zapier","confidence":"medium","diagnosis":"The toggle is off.","steps":[{"num":1,"title":"Enable it","detail":"Turn Zapier API access on.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":[]}'),
+];
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) return fillResponses[fillStep++];
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({
+      ok: true,
+      messages: { matches: [{ permalink: 'https://servicetitan.slack.com/archives/C1/p9', text: 'Enable the Zapier toggle', channel: { name: 'ask-integrations' } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const filled = await runPipeline({ rawQuery: 'Zapier toggle is off' });
+assert(filled.slack_refs?.[0]?.url === 'https://servicetitan.slack.com/archives/C1/p9', 'empty resolver slack refs are filled from the search');
+assert(filled.slack_refs?.[0]?.title === 'Enable the Zapier toggle', 'filled slack ref keeps the message text');
+assert(filled.slack_refs?.[0]?.channel === '#ask-integrations', 'filled slack ref keeps the channel');
+if (oldSlackUserToken === undefined) delete process.env.SLACK_USER_TOKEN;
+else process.env.SLACK_USER_TOKEN = oldSlackUserToken;
+
 globalThis.fetch = origFetchPipe;
 delete process.env.ANTHROPIC_API_KEY;
 
@@ -2717,6 +2744,9 @@ const sampleResult = {
     { num: 2, title: 'Verify token', detail: 'Reissue if needed.', tag: 'verify' },
   ],
   involvement: { needed: false, who: null, reason: null, channel: null },
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Zapier thread' }],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/zapier', title: 'Zapier guide', excerpt: 'Toggle API access before connecting.' }],
+  kb_refs: [{ url: 'https://help.servicetitan.com/zapier-setup', title: 'Zapier setup', snippet: 'Enable API access first.' }],
   sources_used: ['slack', 'kb'],
 };
 const aaBlocks = buildAutoAnswerBlocks({
@@ -2732,12 +2762,17 @@ const firstCtx = JSON.stringify(aaBlocks[0]);
 assert(firstCtx.includes('View original') && firstCtx.includes('U999') && firstCtx.includes('C_ASK_INTEGRATIONS'), 'first block has link, author, and source channel');
 const allText = JSON.stringify(aaBlocks);
 assert(allText.includes('Zapier API access'), 'issue title rendered');
-assert(allText.includes('Diagnosis'), 'diagnosis section rendered');
-assert(allText.includes('Draft email'), 'customer_message section rendered');
+assert(allText.includes('*Research*'), 'auto-answer card leads with the research summary');
+assert(allText.includes('API access disabled at backend.'), 'diagnosis is inside the research summary');
+assert(allText.includes('<https://servicetitan.slack.com/archives/C1/p1|Zapier thread>'), 'auto-answer card links the Slack source');
+assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Zapier guide>'), 'auto-answer card links the Confluence source');
+assert(allText.includes('Toggle API access before connecting.'), 'auto-answer card includes the Confluence excerpt');
+assert(allText.includes('<https://help.servicetitan.com/zapier-setup|Zapier setup>'), 'auto-answer card links the KB source');
+assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
+assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
 assert(allText.includes('Suggested steps'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
-assert(allText.includes('`slack`') && allText.includes('`kb`'), 'sources_used chips rendered');
 const postable = buildAutoAnswerBlocks({
   sourceChannelId: 'C_ASK_INTEGRATIONS',
   originalTs: '1700000000.000100',
@@ -2765,6 +2800,50 @@ const minimalBlocks = buildAutoAnswerBlocks({
   result: { confidence: 'low' },
 });
 assert(Array.isArray(minimalBlocks) && minimalBlocks.length >= 2, 'works with minimal result object (no crash)');
+
+const oldDraftToken = process.env.SLACK_USER_TOKEN;
+delete process.env.SLACK_USER_TOKEN;
+const oldDraftBot = process.env.SLACK_BOT_TOKEN;
+delete process.env.SLACK_BOT_TOKEN;
+process.env.ANTHROPIC_API_KEY = 'test';
+const draftFetch = globalThis.fetch;
+let draftStep = 0;
+const draftResponses = [
+  anthropicMock('{"cleaned_question":"zapier api access is off","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"off"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"zapier"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Zapier API access","integration_type":"Zapier","confidence":"high","diagnosis":"API access is off.","steps":[{"num":1,"title":"Enable API access","detail":"Toggle it on.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+];
+globalThis.fetch = async (url) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('anthropic.com')) return draftResponses[draftStep++];
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const draftPosts = [];
+await handleAutoAnswer({
+  event: { text: 'Zapier API access is off for this tenant', ts: 'source-thread', user: 'U1', channel: 'C_ASK_INTEGRATIONS' },
+  client: {
+    chat: {
+      getPermalink: async () => ({ ok: true, permalink: 'https://servicetitan.slack.com/archives/C_ASK_INTEGRATIONS/p1' }),
+      postMessage: async (payload) => {
+        draftPosts.push(payload);
+        return { ts: 'draft-thread' };
+      },
+    },
+  },
+  logger: { info() {}, warn() {}, error() {} },
+});
+const draftJson = JSON.stringify(draftPosts[0]?.blocks ?? []);
+assert(draftJson.includes('*Research*'), 'the review draft leads with the research summary');
+assert(draftJson.includes('API access is off.'), 'the review draft includes the diagnosis');
+assert(!draftJson.includes('Draft email'), 'the review draft has no email draft');
+assert(hasHistory('source-thread'), 'a later question in the source thread can continue this case');
+assert(hasHistory('draft-thread'), 'a later question under the draft can continue this case');
+globalThis.fetch = draftFetch;
+delete process.env.ANTHROPIC_API_KEY;
+if (oldDraftToken === undefined) delete process.env.SLACK_USER_TOKEN;
+else process.env.SLACK_USER_TOKEN = oldDraftToken;
+if (oldDraftBot === undefined) delete process.env.SLACK_BOT_TOKEN;
+else process.env.SLACK_BOT_TOKEN = oldDraftBot;
 
 // — auto-answer docs/config expectations —
 const readmeText = await readFile('README.md', 'utf-8');
