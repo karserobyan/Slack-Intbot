@@ -158,7 +158,7 @@ Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is no
   2. Research summary: diagnosis, then Slack, Confluence, Jira, and KB sources as links when the host is allowlisted
   3. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate). A thread follow-up labels these "Still open"
   4. Involvement (who / channel / reason) when another team is needed
-  5. Action buttons: **Wrong Answer**, **Diagnosis + Sources** when refs exist, **New chat** in DMs
+  5. Action buttons: **Wrong Answer**, **Sources** when refs exist, **New chat** in DMs
   7. Nomination suggestion if the response qualifies for the knowledge base
 
 ### Wrong-answer feedback flow

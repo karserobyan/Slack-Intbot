@@ -227,8 +227,8 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     } catch (err) {
       console.error('[mention] pipeline (follow-up) failed:', err.message);
       const errText = err.pipelineTimedOut
-        ? 'This question took longer than 60 seconds to investigate — try a more specific phrasing, or escalate manually.'
-        : 'Something went wrong — please retry or escalate manually.';
+        ? 'This question took longer than 60 seconds. Try a more specific question.'
+        : 'Something went wrong. Please try again.';
       if (thinkingTs) {
         await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: buildErrorBlocks(query), text: errText });
       } else {
@@ -301,8 +301,8 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     console.error('[mention] pipeline (initial) failed:', err.message);
     const errBlocks = buildErrorBlocks(query);
     const errText = err.pipelineTimedOut
-      ? 'This question took longer than 60 seconds to investigate — try a more specific phrasing, or escalate manually.'
-      : 'Something went wrong — please retry or escalate manually.';
+      ? 'This question took longer than 60 seconds. Try a more specific question.'
+      : 'Something went wrong. Please try again.';
     if (thinkingTs) {
       await client.chat.update({ channel: channelId, ts: thinkingTs, blocks: errBlocks, text: errText });
     } else {
@@ -371,7 +371,7 @@ export function registerMentionHandler(app, { queryHandler = handleQuery, dedupe
       await client.chat.postMessage({
         channel: event.channel,
         thread_ts: event.thread_ts ?? event.ts,
-        text: 'I hit an internal error handling this request. Please retry or escalate manually.',
+        text: 'Something went wrong. Please try again.',
       }).catch((postErr) => {
         logger.error?.(`[mention] failed to post fallback for event=${eventKey}: ${postErr.message}`);
       });

@@ -61,7 +61,7 @@ export function summarizeResultForHistory(result) {
       const who = inv.who ?? 'another team';
       lines.push(`\nInvolvement: ${who}${channel} — ${inv.reason ?? ''}`.trimEnd());
     } else {
-      lines.push('\nInvolvement: case owner finishes it');
+      lines.push('\nInvolvement: no other team is needed');
     }
   }
 
