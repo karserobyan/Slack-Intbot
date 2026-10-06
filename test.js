@@ -434,11 +434,34 @@ assert(researchIdx !== -1, 'Research summary present');
 assert(stepsHeadingIdx !== -1, 'Steps section header renders as "🔧 What you do"');
 assert(researchIdx !== -1 && researchIdx < stepsHeadingIdx, 'research summary before the steps heading');
 assert(!responseJson.includes('Zapier connection was reset'), 'customer draft is not on the answer card');
-assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|Zapier API access not working after tenant migration>'), 'Slack source is a hyperlink');
+assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'Slack source is the public channel');
+assert(!researchText.includes('Zapier API access not working after tenant migration'), 'the summary does not dump the Slack message');
 assert(researchText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
-assert(researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is in the research summary');
+assert(!researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is not repeated under the summary');
 assert(researchText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the research summary');
+assert(!researchText.includes('\n• '), 'sources sit on one line under the summary');
 assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
+const lockedSourceBlocks = buildResponseBlocks({
+  ...sampleJson,
+  diagnosis: 'The public thread in #ask-integrations has the toggle.',
+  slack_refs: [
+    { url: 'https://servicetitan.slack.com/archives/G1/p1', channel: '#private-eng', title: 'Secret thread', is_private: true },
+    { url: 'https://servicetitan.slack.com/archives/C9/p9', channel: '#ask-integrations', title: 'Public thread', is_private: false },
+    { url: 'https://servicetitan.slack.com/archives/C9/p10', channel: '#ask-integrations', title: 'Same channel again', is_private: false },
+  ],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const lockedSummary = lockedSourceBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'))?.text?.text ?? '';
+assert(lockedSummary.includes('#ask-integrations'), 'the summary names the public channel');
+assert(!lockedSummary.includes('private-eng') && !lockedSummary.includes('Secret thread'), 'a locked channel is not on the card');
+assert(!lockedSummary.includes('Public thread') && !lockedSummary.includes('Same channel again'), 'message text is not repeated after the summary');
+assert(!lockedSummary.includes('/p10'), 'the same public channel is named once');
+const lockedCardText = JSON.stringify(lockedSourceBlocks);
+assert(!lockedCardText.includes('private-eng') && !lockedCardText.includes('Secret thread'), 'a locked channel is not stored on the card');
+const lockedButton = lockedSourceBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+const lockedButtonRefs = JSON.parse(lockedButton.value).slack_refs;
+assert(lockedButtonRefs.every((ref) => ref.channel !== '#private-eng'), 'the sources button does not carry a locked channel');
 
 // Check steps are present
 const stepBlocks = responseBlocks.filter(b => b.type === 'section' && /\*\d+\. /.test(b.text?.text ?? ''));
@@ -503,7 +526,8 @@ const sensBlocks = buildResponseBlocks(sensitiveData);
 const sensResearch = sensBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
 const sensResearchText = sensResearch?.text?.text ?? '';
 assert(sensResearch !== undefined, 'sensitivity: research summary shown for sensitive payload');
-assert(sensResearchText.includes('Internal escalation notes'), 'sensitivity: sensitive Slack title is in the summary');
+assert(sensResearchText.includes('<https://servicetitan.slack.com/archives/C1/p1|#escalations>'), 'sensitivity: a public Slack channel stays in the summary');
+assert(!sensResearchText.includes('Internal escalation notes'), 'sensitivity: the Slack message is not dumped under the summary');
 assert(sensResearchText.includes('Internal runbook'), 'sensitivity: sensitive Confluence title is in the summary');
 assert(!sensResearchText.includes('specialist-only'), 'sensitivity: no specialist-only hint');
 const sensSrcBtn = sensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
@@ -587,7 +611,8 @@ const followUpCardJson = JSON.stringify(followUpCard);
 assert(followUpCard.length === 1, 'a thread reply is a single chat message');
 assert(followUpCard[0].type === 'section', 'a thread reply is a message, not a card');
 assert(followUpCardJson.includes('API access has not been enabled'), 'a thread reply is the summary');
-assert(followUpCardJson.includes('<https://servicetitan.slack.com/archives/C123/p456|Zapier API access not working after tenant migration>'), 'a thread reply links the source');
+assert(followUpCardJson.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'a thread reply links the public channel');
+assert(!followUpCardJson.includes('Zapier API access not working after tenant migration'), 'a thread reply does not dump the Slack message');
 assert(!followUpCardJson.includes('*Research*'), 'a thread reply does not use a research heading');
 assert(!followUpCardJson.includes('*Still open*'), 'a thread reply does not list remaining steps');
 assert(!followUpCardJson.includes('*🔧 What you do*'), 'a thread reply does not restart the case card');
@@ -1940,8 +1965,11 @@ globalThis.fetch = async (url, opts) => {
     ok: true,
     messages: {
       matches: [
-        { permalink: 'https://slack.com/archives/C1/p123', channel: { name: 'integrations' }, text: 'Zapier issue resolved by enabling API' },
-        { permalink: 'https://slack.com/archives/C1/p124', channel: { name: 'support' }, text: 'Another Zapier thread' },
+        { permalink: 'https://slack.com/archives/C1/p123', channel: { name: 'integrations', is_private: false }, text: 'Zapier issue resolved by enabling API' },
+        { permalink: 'https://slack.com/archives/C1/p124', channel: { name: 'support', is_private: false }, text: 'Another Zapier thread' },
+        { permalink: 'https://slack.com/archives/G9/p9', channel: { name: 'private-eng', is_private: true }, text: 'Locked channel secret' },
+        { permalink: 'https://slack.com/archives/D1/p1', channel: { name: 'someone', is_im: true, is_private: false }, text: 'Direct message secret' },
+        { permalink: 'https://slack.com/archives/C0/p0', channel: { name: 'unknown-lock' }, text: 'Unmarked channel' },
       ],
     },
   }), { status: 200 });
@@ -1952,6 +1980,10 @@ assert(ok.refs.length === 2, 'returns two refs');
 assert(ok.refs[0].url === 'https://slack.com/archives/C1/p123', 'extracts permalink');
 assert(ok.refs[0].channel === '#integrations', 'prefixes channel with #');
 assert(ok.text.includes('integrations'), 'text contains channel');
+assert(!ok.text.includes('Locked channel secret') && !ok.text.includes('private-eng'), 'locked channels are not shared with the model');
+assert(!ok.text.includes('Direct message secret'), 'direct messages are not shared');
+assert(!ok.text.includes('Unmarked channel'), 'a channel with no public flag is not shared');
+assert(ok.refs.every((ref) => ref.is_private === false), 'shared Slack refs are marked public');
 
 // Empty matches → null
 globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, messages: { matches: [] } }), { status: 200 });
@@ -2000,7 +2032,7 @@ globalThis.fetch = async (url) => {
     return new Response(JSON.stringify({ issues: [{ key: 'JIRA-1', fields: { summary: 'Jira hit', status: { name: 'Open' } } }] }), { status: 200 });
   }
   if (u.includes('slack.com/api/search.messages')) {
-    return new Response(JSON.stringify({ ok: true, messages: { matches: [{ permalink: 'https://slack.com/archives/C1/p1', channel: { name: 'c' }, text: 'Slack hit' }] } }), { status: 200 });
+    return new Response(JSON.stringify({ ok: true, messages: { matches: [{ permalink: 'https://slack.com/archives/C1/p1', channel: { name: 'c', is_private: false }, text: 'Slack hit' }] } }), { status: 200 });
   }
   return new Response('{}', { status: 500 });
 };
@@ -2794,7 +2826,7 @@ globalThis.fetch = async (url, init) => {
   if (u.includes('slack.com/api/search.messages')) {
     return new Response(JSON.stringify({
       ok: true,
-      messages: { matches: [{ permalink: 'https://servicetitan.slack.com/archives/C1/p9', text: 'Enable the Zapier toggle', channel: { name: 'ask-integrations' } }] },
+      messages: { matches: [{ permalink: 'https://servicetitan.slack.com/archives/C1/p9', text: 'Enable the Zapier toggle', channel: { name: 'ask-integrations', is_private: false } }] },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -2862,9 +2894,10 @@ const allText = JSON.stringify(aaBlocks);
 assert(allText.includes('Zapier API access'), 'issue title rendered');
 assert(allText.includes('*Research*'), 'auto-answer card leads with the research summary');
 assert(allText.includes('API access disabled at backend.'), 'diagnosis is inside the research summary');
-assert(allText.includes('<https://servicetitan.slack.com/archives/C1/p1|Zapier thread>'), 'auto-answer card links the Slack source');
-assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Zapier guide>'), 'auto-answer card links the Confluence source');
-assert(allText.includes('Toggle API access before connecting.'), 'auto-answer card includes the Confluence excerpt');
+assert(allText.includes('<https://servicetitan.slack.com/archives/C1/p1|#ask-integrations>'), 'auto-answer card links the public Slack channel');
+assert(!allText.includes('Zapier thread'), 'auto-answer card does not dump the Slack message');
+assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Confluence: Zapier guide>'), 'auto-answer card links the Confluence source');
+assert(!allText.includes('Toggle API access before connecting.'), 'auto-answer card does not repeat the Confluence excerpt');
 assert(allText.includes('<https://help.servicetitan.com/zapier-setup|Zapier setup>'), 'auto-answer card links the KB source');
 assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
 assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
@@ -4919,7 +4952,7 @@ const followUpAnswerJson = JSON.stringify(followUpAnswer?.blocks ?? []);
 assert(!followUpAnswerJson.includes('*Still open*'), 'the thread reply does not list steps');
 assert(!followUpAnswerJson.includes('*Research*'), 'the thread reply is not a research card');
 assert(!followUpAnswerJson.includes('*🔧 What you do*'), 'the thread reply does not restart the first-answer steps heading');
-assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|Toggle thread>'), 'the thread reply links the source it found');
+assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|#ask-integrations>'), 'the thread reply links the public channel it found');
 assert((followUpAnswer?.blocks ?? []).every(b => b.type !== 'header' && b.type !== 'actions'), 'the thread reply has no card chrome');
 globalThis.fetch = followUpFetch;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
