@@ -41,7 +41,7 @@ function stripRetiredAndNonModelFields(resolver) {
 }
 
 function applyCappedFallback(answer) {
-  const missingCore = !answer.issue_title || !(answer.steps?.length);
+  const missingCore = !answer.issue_title || (!(answer.steps?.length) && !String(answer.diagnosis ?? '').trim());
   if (!missingCore) return;
 
   console.info('[pipeline] resolver missing required fields on a capped follow-up — coercing to best-effort/escalate');

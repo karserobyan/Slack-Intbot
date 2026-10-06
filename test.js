@@ -18,6 +18,7 @@ import {
   buildSourcesModal,
   buildChatResolutionBlocks,
   buildProgressBlocks,
+  buildThreadReplyBlocks,
 } from './src/slack/blocks.js';
 import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
@@ -55,6 +56,7 @@ import { join } from 'node:path';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan } from './src/claude/search-executor.js';
 import { runResolver, runReply } from './src/claude/answerer.js';
+import { RESOLVER_PROMPT } from './src/claude/prompts/resolver.js';
 import { classifySourceRef } from './src/slack/source-policy.js';
 import * as sourcePolicy from './src/slack/source-policy.js';
 import { missingResolverFields, retiredRoleFieldsIn, customerWasMentioned } from './src/claude/answer-schema.js';
@@ -573,18 +575,23 @@ assert(thinkingBlocks.length === 2, 'Thinking has 2 blocks');
 assert(thinkingBlocks[0].text.text.includes('Looking into this'), 'Thinking shows looking-into-this message');
 
 const followUpThinking = buildThinkingBlocks('Did the tenant toggle stick?', { followUp: true });
-assert(followUpThinking[0].text.text.includes('Checking your follow-up'), 'follow-up thinking continues the thread');
+assert(followUpThinking[0].text.text.includes('Replying'), 'follow-up thinking is a chat reply');
 assert(!JSON.stringify(followUpThinking).includes('Looking into this'), 'follow-up thinking does not open a new investigation');
-assert(followUpThinking[1].elements[0].text.includes('what this thread already found'), 'follow-up thinking says it is using the thread');
+assert(!JSON.stringify(followUpThinking).includes('Confluence'), 'follow-up thinking does not show the investigation checklist');
 
-const followUpCard = buildResponseBlocks(sampleJson, { followUp: true });
+const followUpCard = buildThreadReplyBlocks(sampleJson);
 const followUpCardJson = JSON.stringify(followUpCard);
-assert(followUpCardJson.includes('_Continuing this thread_'), 'follow-up card says it is continuing the thread');
-assert(followUpCardJson.includes('*Still open*'), 'follow-up steps are what is still open');
-assert(followUpCardJson.includes('*Research*'), 'follow-up card still leads with the research summary');
-assert(!followUpCardJson.includes('*🔧 What you do*'), 'follow-up card does not restart with What you do');
-assert(!followUpCardJson.includes('Zapier connection was reset'), 'follow-up card has no customer draft');
-assert(!followUpCardJson.includes('Looking into this'), 'follow-up card does not say it is looking into this');
+assert(followUpCard.length === 1, 'a thread reply is a single chat message');
+assert(followUpCard[0].type === 'section', 'a thread reply is a message, not a card');
+assert(followUpCardJson.includes('API access has not been enabled'), 'a thread reply is the summary');
+assert(followUpCardJson.includes('<https://servicetitan.slack.com/archives/C123/p456|Zapier API access not working after tenant migration>'), 'a thread reply links the source');
+assert(!followUpCardJson.includes('*Research*'), 'a thread reply does not use a research heading');
+assert(!followUpCardJson.includes('*Still open*'), 'a thread reply does not list remaining steps');
+assert(!followUpCardJson.includes('*🔧 What you do*'), 'a thread reply does not restart the case card');
+assert(!followUpCardJson.includes('Zapier API Access Not Enabled'), 'a thread reply does not repeat the case title');
+assert(!followUpCardJson.includes('Zapier connection was reset'), 'a thread reply has no customer draft');
+assert(followUpCard.every(b => b.type !== 'header' && b.type !== 'actions'), 'a thread reply has no card chrome');
+assert(RESOLVER_PROMPT.includes('chat turn'), 'follow-up diagnosis is written as a chat reply');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -1061,7 +1068,7 @@ assert(helpDetailBlocks.some(b => b.text?.text?.includes('Wrong Answer')), 'deta
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('diagnosis')), 'detail blocks mention diagnosis');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('linked sources')), 'detail blocks describe linked sources');
 assert(!helpDetailBlocks.some(b => b.text?.text?.toLowerCase().includes('draft')), 'detail blocks do not describe a customer draft');
-assert(helpDetailBlocks.some(b => b.text?.text?.includes('still open')), 'detail blocks say a follow-up answers what is still open');
+assert(helpDetailBlocks.some(b => b.text?.text?.includes('chat reply')), 'detail blocks say a follow-up is a chat reply');
 assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialist Detail')), 'detail blocks do not mention Specialist Detail');
 assert(!helpDetailBlocks.some(b => b.text?.text?.includes('Specialists only')), 'detail blocks do not mention Specialists only');
 assert(helpDetailBlocks.some(b => b.text?.text?.includes('Thread continuation')), 'detail blocks explain thread mode');
@@ -1811,9 +1818,10 @@ assert(progEmpty[0].text.type === 'mrkdwn', 'section uses mrkdwn');
 assert(progEmpty[0].text.text.includes('⚙️ Looking into this'), 'header includes ⚙️ Looking into this');
 assert(progEmpty[1].type === 'context', 'second block is context');
 
-const followUpProgress = buildProgressBlocks('Did the tenant toggle stick?', [], { followUp: true });
-assert(followUpProgress[0].text.text.includes('Checking your follow-up'), 'follow-up progress continues the thread');
-assert(!followUpProgress[0].text.text.includes('Looking into this'), 'follow-up progress does not open a new investigation');
+const followUpProgress = buildProgressBlocks('Did the tenant toggle stick?', [{ tool: 'confluence', phase: 'tool_start', count: null }], { followUp: true });
+assert(followUpProgress[0].text.text.includes('Replying'), 'follow-up progress stays a chat reply');
+assert(!JSON.stringify(followUpProgress).includes('Looking into this'), 'follow-up progress does not open a new investigation');
+assert(!JSON.stringify(followUpProgress).includes('Confluence'), 'follow-up progress hides the investigation checklist');
 
 // tool_start step → ⟳ Confluence  searching…
 const progStart = buildProgressBlocks('test', [
@@ -2680,6 +2688,22 @@ assert(!answererClarifyCapped.clarifying_question, 'resolver clarifying-only is 
 assert(answererClarifyCapped.issue_title === 'Not enough detail to resolve', 'capped clarifying-only coerces issue_title');
 assert(answererClarifyCapped.involvement?.needed === true, 'capped clarifying-only sets involvement.needed true');
 assert(answererClarifyCapped.involvement?.who === 'engineering', 'capped clarifying-only sets involvement.who to engineering');
+
+stepCounter = 0;
+sequenceResponses.length = 0;
+sequenceResponses.push(
+  anthropicMock('{"cleaned_question":"does apple calendar work too","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"apple calendar"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"apple calendar"}],"rationale":"r"}}'),
+  anthropicMock('{"sufficient":true,"rationale":"ok","refined_plan":null}'),
+  anthropicMock('{"issue_title":"Apple Calendar","integration_type":"Zapier","confidence":"medium","diagnosis":"Apple Calendar can go through Zapier too, using an iCal zap. There is still no native calendar sync.","steps":[],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+);
+globalThis.fetch = passThroughFetch;
+const chatFollowUp = await runPipeline({
+  rawQuery: 'does apple calendar work too?',
+  threadHistory: [{ role: 'user', content: 'google calendar sync' }, { role: 'assistant', content: 'Use Zapier for Google Calendar.' }],
+  allowClarify: false,
+});
+assert(chatFollowUp.diagnosis === 'Apple Calendar can go through Zapier too, using an iCal zap. There is still no native calendar sync.', 'a follow-up chat reply is kept');
+assert(chatFollowUp.steps.length === 0, 'a follow-up chat reply does not get replacement steps');
 
 const oldSlackUserToken = process.env.SLACK_USER_TOKEN;
 process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
@@ -4803,17 +4827,17 @@ await handleQuery({
     },
   },
 });
-const followUpPlaceholder = followUpPosts.find((payload) => payload.text === 'Checking your follow-up…');
-assert(followUpPlaceholder !== undefined, 'a thread follow-up posts a continuation placeholder');
+const followUpPlaceholder = followUpPosts.find((payload) => payload.text === 'Replying…');
+assert(followUpPlaceholder !== undefined, 'a thread follow-up posts a chat placeholder');
 assert(!JSON.stringify(followUpPlaceholder?.blocks ?? []).includes('Looking into this'), 'the follow-up placeholder does not say it is looking into this');
-const followUpAnswer = followUpUpdates.find((payload) => typeof payload.text === 'string' && payload.text.startsWith('Follow-up:'));
-assert(followUpAnswer !== undefined, 'the thread reply is delivered as a follow-up');
+const followUpAnswer = followUpUpdates.find((payload) => JSON.stringify(payload.blocks ?? []).includes('The tenant toggle is still off.'));
+assert(followUpAnswer !== undefined, 'the thread reply is the summary of the answer');
 const followUpAnswerJson = JSON.stringify(followUpAnswer?.blocks ?? []);
-assert(followUpAnswerJson.includes('_Continuing this thread_'), 'the thread reply says it is continuing');
-assert(followUpAnswerJson.includes('*Still open*'), 'the thread reply labels remaining steps as still open');
-assert(followUpAnswerJson.includes('*Research*'), 'the thread reply leads with the research summary');
-assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|Toggle thread>'), 'the thread reply links the source it found');
+assert(!followUpAnswerJson.includes('*Still open*'), 'the thread reply does not list steps');
+assert(!followUpAnswerJson.includes('*Research*'), 'the thread reply is not a research card');
 assert(!followUpAnswerJson.includes('*🔧 What you do*'), 'the thread reply does not restart the first-answer steps heading');
+assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|Toggle thread>'), 'the thread reply links the source it found');
+assert((followUpAnswer?.blocks ?? []).every(b => b.type !== 'header' && b.type !== 'actions'), 'the thread reply has no card chrome');
 globalThis.fetch = followUpFetch;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = followUpApiKey;

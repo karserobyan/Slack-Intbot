@@ -17,7 +17,7 @@ Do not add a button or action that calls `chat.postMessage` into a destination c
 
 Channel choice stays. Haiku reads the issue against `conversations.list`. One clear listed channel is `channel`, with `suggestions` empty. When several listed channels could receive it, `channel` is null and `suggestions` holds up to 3 of them. Unlisted names are dropped. A failed choice or no fit means both are empty. Channel names are not hardcoded.
 
-Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given. In the thread, the placeholder says it is checking the follow-up, and the card continues that case. It does not open like a new investigation.
+Follow-ups pass `[PRIOR CASE]` and must not repeat steps already given. The first answer is the case card. From the next message in that thread, the bot is a chat: one reply, the summary of the answer plus source links, with no new case card.
 
 Accounting stays a keyword redirect in the asking thread. The bot does not post into that channel.
 
@@ -45,7 +45,7 @@ Zero failures before a PR. `npm test` is the same command.
 4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name one listed channel, or up to 3 suggestions when no single channel owns the issue. A throw leaves both empty and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
 5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
-Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title` or `steps`, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. Channel stays null unless the handoff choice names a listed channel.
+Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title`, or has neither steps nor a diagnosis, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. A chat reply with a diagnosis and no new steps is kept. Channel stays null unless the handoff choice names a listed channel.
 
 Models already chosen:
 
@@ -74,7 +74,7 @@ Not model output: `customer_message` on the Resolver, `is_accounting_topic`, `cl
 
 ## Slack card
 
-`buildResponseBlocks(data, { isDm = false, followUp = false })` in `src/slack/blocks.js`. Order: header, research summary, steps (cap 20), involvement, actions. The research summary is the diagnosis plus Slack, Confluence, Jira, and KB sources as `safeSlackLink` hyperlinks when the host is allowlisted. The answer card and the auto-answer review card do not render `customer_message` or word-only source chips. Both lead with the research summary. Search hits are attached when the Resolver leaves that ref list empty. A follow-up adds `_Continuing this thread_`, labels steps `*Still open*`, and uses the placeholder `Checking your follow-up…`. Actions: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
+`buildResponseBlocks(data, { isDm = false })` in `src/slack/blocks.js` is the first answer. Order: header, research summary, steps (cap 20), involvement, actions. The research summary is the diagnosis plus Slack, Confluence, Jira, and KB sources as `safeSlackLink` hyperlinks when the host is allowlisted. The answer card and the auto-answer review card do not render `customer_message` or word-only source chips. Both lead with the research summary. Search hits are attached when the Resolver leaves that ref list empty. A follow-up uses `buildThreadReplyBlocks`: one section, the diagnosis written as a chat reply, then source links. No header, steps, or buttons. The placeholder is `Replying…`. Actions on the first card: Wrong Answer, Diagnosis + Sources when any refs exist, New chat in DMs. No button posts into another channel. No Show Specialist Detail. No role filter on sources. `filterRefsForRole` does not exist.
 
 Escape user and model text with `escapeMrkdwn`. Stay well under Slack's 50-block limit. Button values stay small.
 
