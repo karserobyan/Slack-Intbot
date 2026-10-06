@@ -7,6 +7,8 @@ description: Use when changing IntegrationsBot (this Slack bot), its pipeline, a
 
 Internal Slack bot for ServiceTitan integrations support people who own the case. One audience. There is no CSA mode and no Specialist mode.
 
+Product summary for a new chat: `docs/bot-briefing.md`.
+
 ## Standing plan
 
 Memorized 2026-10-02. Full writeup: `docs/superpowers/plans/2026-10-02-no-channel-posts.md`.
