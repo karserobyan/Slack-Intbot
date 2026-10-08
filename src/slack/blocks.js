@@ -46,39 +46,85 @@ function visibleSlackRefs(refs) {
   return (refs ?? []).filter((ref) => ref?.url && !isLockedSlackRef(ref));
 }
 
-function researchSourceLine(slackRefs, atlassianRefs, kbRefs) {
-  const parts = [];
+function shortLabel(label) {
+  const text = String(label ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+}
+
+function sourceEntries(slackRefs, atlassianRefs, kbRefs) {
+  const entries = [];
   const seenChannels = new Set();
   for (const ref of visibleSlackRefs(slackRefs)) {
     const channel = String(ref.channel ?? '').trim();
+    const label = shortLabel(channel || refTitle(ref));
     const key = channel || ref.url;
-    if (seenChannels.has(key)) continue;
+    if (!label || seenChannels.has(key)) continue;
     seenChannels.add(key);
-    parts.push(safeSlackLink(ref.url, channel || refTitle(ref)));
+    entries.push({ label, link: safeSlackLink(ref.url, label) });
     if (seenChannels.size >= 4) break;
   }
   for (const ref of (atlassianRefs ?? []).slice(0, 4)) {
     if (!ref?.url) continue;
     const kind = ref.type === 'jira' ? 'Jira' : ref.type === 'confluence' ? 'Confluence' : 'Atlassian';
-    parts.push(safeSlackLink(ref.url, `${kind}: ${refTitle(ref)}`));
+    const label = shortLabel(`${kind}: ${refTitle(ref)}`);
+    entries.push({ label, link: safeSlackLink(ref.url, label) });
   }
   for (const ref of (kbRefs ?? []).slice(0, 3)) {
     if (!ref?.url) continue;
-    parts.push(safeSlackLink(ref.url, refTitle(ref)));
+    const label = shortLabel(refTitle(ref));
+    entries.push({ label, link: safeSlackLink(ref.url, label) });
   }
-  return parts.join(' · ');
+  return entries;
+}
+
+function linkifySummary(text, entries) {
+  const used = new Set();
+  let out = text;
+  const sorted = [...entries].sort((a, b) => b.label.length - a.label.length);
+  for (const entry of sorted) {
+    const needle = escapeMrkdwn(entry.label);
+    if (!needle) continue;
+    const parts = out.split(/(<https?:\/\/[^|>]+\|[^>]*>)/g);
+    let hit = false;
+    const next = parts.map((part, index) => {
+      if (index % 2 === 1 || !part.includes(needle)) return part;
+      hit = true;
+      return part.split(needle).join(entry.link);
+    }).join('');
+    if (hit) {
+      used.add(entry);
+      out = next;
+    }
+  }
+  return { text: out, used };
+}
+
+function seeSentence(entries) {
+  if (!entries.length) return '';
+  const links = entries.map((entry) => entry.link);
+  if (links.length === 1) return `See ${links[0]}.`;
+  return `See ${links.slice(0, -1).join(', ')}, and ${links[links.length - 1]}.`;
 }
 
 function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
+  const entries = sourceEntries(slackRefs, atlassianRefs, kbRefs);
   const parts = [];
-  if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
-  const sources = researchSourceLine(slackRefs, atlassianRefs, kbRefs);
-  if (sources) {
-    if (parts.length) parts.push('');
-    parts.push(sources);
+  if (diagnosis) {
+    const linked = linkifySummary(escapeMrkdwn(diagnosis), entries);
+    parts.push(linked.text);
+    const see = seeSentence(entries.filter((entry) => !linked.used.has(entry)));
+    if (see) parts.push(see);
+  } else if (entries.length) {
+    parts.push(seeSentence(entries));
   }
   if (!parts.length) return '';
-  return clamp(`*Research*\n${parts.join('\n')}`);
+  return clamp(`*Research*\n${parts.join('\n\n')}`);
+}
+
+function referencesText(slackRefs, atlassianRefs, kbRefs) {
+  const entries = sourceEntries(slackRefs, atlassianRefs, kbRefs);
+  if (!entries.length) return '';
+  return clamp(`*References*\n${entries.map((entry) => `• ${entry.link}`).join('\n')}`);
 }
 
 /**
@@ -114,8 +160,14 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
 
 export function buildThreadReplyBlocks(data) {
   const reply = String(data?.diagnosis ?? '').trim() || String(data?.issue_title ?? '').trim() || 'I need a bit more detail to answer that.';
-  const sources = researchSourceLine(data?.slack_refs ?? [], data?.atlassian_refs ?? [], data?.kb_refs ?? []);
-  const text = sources ? `${escapeMrkdwn(reply)}\n\n${sources}` : escapeMrkdwn(reply);
+  const slackRefs = data?.slack_refs ?? [];
+  const atlassianRefs = data?.atlassian_refs ?? [];
+  const kbRefs = data?.kb_refs ?? [];
+  const entries = sourceEntries(slackRefs, atlassianRefs, kbRefs);
+  const linked = linkifySummary(escapeMrkdwn(reply), entries);
+  const see = seeSentence(entries.filter((entry) => !linked.used.has(entry)));
+  const references = referencesText(slackRefs, atlassianRefs, kbRefs);
+  const text = [linked.text, see, references].filter(Boolean).join('\n\n');
   return [{
     type: 'section',
     text: { type: 'mrkdwn', text: clamp(text) },
@@ -142,6 +194,13 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: summary },
+    });
+  }
+  const references = referencesText(slackRefs, atlassianRefs, kbRefs);
+  if (references) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: references },
     });
   }
 
@@ -703,6 +762,13 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: summary },
+    });
+  }
+  const references = referencesText(result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
+  if (references) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: references },
     });
   }
 

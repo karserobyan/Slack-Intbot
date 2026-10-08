@@ -439,7 +439,12 @@ assert(!researchText.includes('Zapier API access not working after tenant migrat
 assert(researchText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
 assert(!researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is not repeated under the summary');
 assert(researchText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the research summary');
-assert(!researchText.includes('\n• '), 'sources sit on one line under the summary');
+assert(researchText.includes('See '), 'the summary includes the sources as links');
+assert(!researchText.includes('\n• '), 'the summary keeps the links in the sentence');
+const referencesIdx = blockTexts.findIndex(t => typeof t === 'string' && t.startsWith('*References*'));
+assert(referencesIdx !== -1 && researchIdx < referencesIdx && referencesIdx < stepsHeadingIdx, 'sources are listed again under the summary');
+assert(blockTexts[referencesIdx].includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'the reference list links the public channel');
+assert(!blockTexts[referencesIdx].includes('Zapier API access not working after tenant migration'), 'the reference list does not dump the Slack message');
 assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
 const lockedSourceBlocks = buildResponseBlocks({
   ...sampleJson,
