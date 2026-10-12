@@ -46,7 +46,7 @@ function stripHtml(html) {
 
 export async function searchConfluence(query, { signal: externalSignal } = {}) {
   const auth = getAuth();
-  if (!auth) return null;
+  if (!auth) return { text: null, refs: [], status: 'off' };
 
   const localController = new AbortController();
   const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
@@ -56,7 +56,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
 
   try {
     const phrase = searchPhrase(query);
-    if (!phrase) return { text: null, refs: [] };
+    if (!phrase) return { text: null, refs: [], status: 'empty' };
     const cql = `text ~ "${escapeQuery(phrase)}" AND type = page`;
     const url = `${siteBase()}/wiki/rest/api/search?` + new URLSearchParams({ cql, limit: '5' });
 
@@ -68,12 +68,12 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     if (!res.ok) {
       const body = await res.text();
       console.warn(`[atlassian] Confluence search HTTP ${res.status}: ${body.slice(0, 200)}`);
-      return null;
+      return { text: null, refs: [], status: res.status === 401 || res.status === 403 ? 'refused' : 'error' };
     }
 
     const data = await res.json();
     const results = data.results ?? [];
-    if (results.length === 0) return { text: null, refs: [] };
+    if (results.length === 0) return { text: null, refs: [], status: 'empty' };
 
     const base = siteBase();
     const refs = results.map(r => {
@@ -96,7 +96,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     }).filter(r => r.url);
 
     const text = refs.map(r => `[Confluence] ${r.title}\n${r.excerpt}\n${r.url}`).join('\n\n');
-    return { text, refs };
+    return { text, refs, status: 'ok' };
   } catch (err) {
     if (localController.signal.aborted) {
       console.warn('[atlassian] Confluence search timed out');
@@ -105,7 +105,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     } else {
       console.warn('[atlassian] Confluence search error:', err.message);
     }
-    return null;
+    return { text: null, refs: [], status: 'error' };
   } finally {
     clearTimeout(timer);
   }
@@ -113,7 +113,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
 
 export async function searchJira(query, { signal: externalSignal } = {}) {
   const auth = getAuth();
-  if (!auth) return null;
+  if (!auth) return { text: null, refs: [], status: 'off' };
 
   const localController = new AbortController();
   const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
@@ -123,7 +123,7 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
 
   try {
     const phrase = searchPhrase(query);
-    if (!phrase) return { text: null, refs: [] };
+    if (!phrase) return { text: null, refs: [], status: 'empty' };
     const jql = `text ~ "${escapeQuery(phrase)}" ORDER BY updated DESC`;
     const url = `${siteBase()}/rest/api/3/search/jql`;
 
@@ -141,12 +141,12 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     if (!res.ok) {
       const body = await res.text();
       console.warn(`[atlassian] Jira search HTTP ${res.status}: ${body.slice(0, 200)}`);
-      return null;
+      return { text: null, refs: [], status: res.status === 401 || res.status === 403 ? 'refused' : 'error' };
     }
 
     const data = await res.json();
     const issues = data.issues ?? [];
-    if (issues.length === 0) return { text: null, refs: [] };
+    if (issues.length === 0) return { text: null, refs: [], status: 'empty' };
 
     const refs = issues.map(i => ({
       type: 'jira',
@@ -156,7 +156,7 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     }));
 
     const text = refs.map(r => `[Jira] ${r.title} [${r.status}]\n${r.url}`).join('\n\n');
-    return { text, refs };
+    return { text, refs, status: 'ok' };
   } catch (err) {
     if (localController.signal.aborted) {
       console.warn('[atlassian] Jira search timed out');
@@ -165,7 +165,7 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     } else {
       console.warn('[atlassian] Jira search error:', err.message);
     }
-    return null;
+    return { text: null, refs: [], status: 'error' };
   } finally {
     clearTimeout(timer);
   }
