@@ -1,23 +1,69 @@
 import 'dotenv/config';
 
 const TIMEOUT_MS = 8000;
+const API_GATEWAY = 'https://api.atlassian.com';
 let missingAuthWarned = false;
+let cloudIdCache = null;
+
+export function clearAtlassianCloudId() {
+  cloudIdCache = null;
+}
+
+export function isScopedAtlassianToken(token) {
+  return String(token ?? '').startsWith('ATATT');
+}
 
 function siteBase() {
   return (process.env.ATLASSIAN_BASE_URL ?? 'https://servicetitan.atlassian.net').replace(/\/$/, '');
 }
 
-function getAuth() {
+function credentials(product) {
   const email = process.env.ATLASSIAN_EMAIL;
-  const token = process.env.ATLASSIAN_API_TOKEN;
+  const token = (product === 'confluence'
+    ? process.env.ATLASSIAN_CONFLUENCE_API_TOKEN
+    : process.env.ATLASSIAN_JIRA_API_TOKEN) || process.env.ATLASSIAN_API_TOKEN;
   if (!email || !token) {
     if (!missingAuthWarned) {
       missingAuthWarned = true;
-      console.warn('[atlassian] ATLASSIAN_EMAIL or ATLASSIAN_API_TOKEN is missing — Confluence and Jira search is off');
+      console.warn('[atlassian] ATLASSIAN_EMAIL or an Atlassian API token is missing — Confluence and Jira search is off');
     }
     return null;
   }
-  return 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64');
+  return {
+    token,
+    header: 'Basic ' + Buffer.from(`${email}:${token}`).toString('base64'),
+  };
+}
+
+async function cloudId(signal) {
+  const configured = process.env.ATLASSIAN_CLOUD_ID?.trim();
+  if (configured) return configured;
+  if (cloudIdCache) return cloudIdCache;
+  const res = await fetch(`${siteBase()}/_edge/tenant_info`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`tenant info HTTP ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  if (!data.cloudId) throw new Error('tenant info has no cloudId');
+  cloudIdCache = data.cloudId;
+  return cloudIdCache;
+}
+
+export async function atlassianResourceUrl(product, token, path, signal) {
+  const resource = String(path ?? '').replace(/^\//, '');
+  if (!isScopedAtlassianToken(token)) {
+    const root = product === 'confluence' ? `${siteBase()}/wiki` : siteBase();
+    return `${root}/${resource}`;
+  }
+  const id = await cloudId(signal);
+  const root = product === 'confluence'
+    ? `${API_GATEWAY}/ex/confluence/${id}/wiki`
+    : `${API_GATEWAY}/ex/jira/${id}`;
+  return `${root}/${resource}`;
 }
 
 function searchPhrase(query) {
@@ -45,8 +91,8 @@ function stripHtml(html) {
 }
 
 export async function searchConfluence(query, { signal: externalSignal } = {}) {
-  const auth = getAuth();
-  if (!auth) return null;
+  const creds = credentials('confluence');
+  if (!creds) return null;
 
   const localController = new AbortController();
   const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
@@ -58,10 +104,10 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     const phrase = searchPhrase(query);
     if (!phrase) return { text: null, refs: [] };
     const cql = `text ~ "${escapeQuery(phrase)}" AND type = page`;
-    const url = `${siteBase()}/wiki/rest/api/search?` + new URLSearchParams({ cql, limit: '5' });
+    const url = await atlassianResourceUrl('confluence', creds.token, `rest/api/search?${new URLSearchParams({ cql, limit: '5' })}`, signal);
 
     const res = await fetch(url, {
-      headers: { Authorization: auth, Accept: 'application/json' },
+      headers: { Authorization: creds.header, Accept: 'application/json' },
       signal,
     });
 
@@ -112,8 +158,8 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
 }
 
 export async function searchJira(query, { signal: externalSignal } = {}) {
-  const auth = getAuth();
-  if (!auth) return null;
+  const creds = credentials('jira');
+  if (!creds) return null;
 
   const localController = new AbortController();
   const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
@@ -125,11 +171,11 @@ export async function searchJira(query, { signal: externalSignal } = {}) {
     const phrase = searchPhrase(query);
     if (!phrase) return { text: null, refs: [] };
     const jql = `text ~ "${escapeQuery(phrase)}" ORDER BY updated DESC`;
-    const url = `${siteBase()}/rest/api/3/search/jql`;
+    const url = await atlassianResourceUrl('jira', creds.token, 'rest/api/3/search/jql', signal);
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { Authorization: auth, Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: { Authorization: creds.header, Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         jql,
         maxResults: 5,

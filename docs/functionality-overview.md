@@ -267,12 +267,13 @@ All three live in `data/` and are **gitignored**.
 
 ### Recommended
 - `SLACK_USER_TOKEN` — enables Slack MCP search (else Research has no live Slack tool)
-- `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` — Confluence + Jira REST (Basic Auth)
+- `ATLASSIAN_EMAIL`, `ATLASSIAN_CONFLUENCE_API_TOKEN`, `ATLASSIAN_JIRA_API_TOKEN` — one scoped token per app. Confluence search needs `search:confluence` (or granular `read:content-details:confluence`). Jira enhanced search needs `read:issue-details:jira`, `read:field.default-value:jira`, `read:field.option:jira`, `read:field:jira`, and `read:group:jira`. `ATLASSIAN_API_TOKEN` is only a fallback.
 - `FEEDBACK_REVIEW_CHANNEL_ID` — moderation queue channel
 
 ### Optional
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
+- `ATLASSIAN_CLOUD_ID` — site cloud id for a scoped token; looked up from the site when unset
 - `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
 
 ---
