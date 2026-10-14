@@ -434,13 +434,22 @@ assert(researchIdx !== -1, 'Research summary present');
 assert(stepsHeadingIdx !== -1, 'Steps section header renders as "What to do"');
 assert(researchIdx !== -1 && researchIdx < stepsHeadingIdx, 'research summary before the steps heading');
 assert(!responseJson.includes('Zapier connection was reset'), 'customer draft is not on the answer card');
-assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'Slack source is the public channel');
+assert(!researchText.includes('#ask-integrations'), 'the research paragraph does not hold the source list');
 assert(!researchText.includes('Zapier API access not working after tenant migration'), 'the summary does not dump the Slack message');
-assert(researchText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
 assert(!researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is not repeated under the summary');
-assert(researchText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the research summary');
-assert(!researchText.includes('\n• '), 'sources sit on one line under the summary');
-assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
+const sourcesIdx = blockTexts.findIndex(t => typeof t === 'string' && t.startsWith('*Sources*'));
+const sourcesText = sourcesIdx === -1 ? '' : blockTexts[sourcesIdx];
+assert(sourcesIdx !== -1 && researchIdx < sourcesIdx && sourcesIdx < stepsHeadingIdx, 'sources are a labeled list under the summary');
+assert(sourcesText.includes('• *Slack*'), 'a Slack source is labeled Slack');
+assert(sourcesText.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'Slack source is the public channel');
+assert(sourcesText.includes('• *Confluence*'), 'a Confluence source is labeled Confluence');
+assert(sourcesText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the source list');
+assert(sourcesText.includes('• *Jira*'), 'a Jira source is labeled Jira');
+assert(sourcesText.includes('INT-4821'), 'a Jira source shows the issue key');
+assert(sourcesText.includes('• *Help center*'), 'a help-center source is labeled Help center');
+assert(sourcesText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
+assert(!sourcesText.includes(' · '), 'source rows are not joined into one line');
+assert(!sourcesText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
 const lockedSourceBlocks = buildResponseBlocks({
   ...sampleJson,
   diagnosis: 'The public thread in #ask-integrations has the toggle.',
@@ -452,11 +461,11 @@ const lockedSourceBlocks = buildResponseBlocks({
   atlassian_refs: [],
   kb_refs: [],
 });
-const lockedSummary = lockedSourceBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'))?.text?.text ?? '';
-assert(lockedSummary.includes('#ask-integrations'), 'the summary names the public channel');
-assert(!lockedSummary.includes('private-eng') && !lockedSummary.includes('Secret thread'), 'a locked channel is not on the card');
-assert(!lockedSummary.includes('Public thread') && !lockedSummary.includes('Same channel again'), 'message text is not repeated after the summary');
-assert(!lockedSummary.includes('/p10'), 'the same public channel is named once');
+const lockedSources = lockedSourceBlocks.find(b => b.text?.text?.startsWith('*Sources*'))?.text?.text ?? '';
+assert(lockedSources.includes('#ask-integrations'), 'the source list names the public channel');
+assert(!lockedSources.includes('private-eng') && !lockedSources.includes('Secret thread'), 'a locked channel is not on the card');
+assert(!lockedSources.includes('Public thread') && !lockedSources.includes('Same channel again'), 'message text is not repeated in the source list');
+assert(!lockedSources.includes('/p10'), 'the same public channel is named once');
 const lockedCardText = JSON.stringify(lockedSourceBlocks);
 assert(!lockedCardText.includes('private-eng') && !lockedCardText.includes('Secret thread'), 'a locked channel is not stored on the card');
 const lockedButton = lockedSourceBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
@@ -522,12 +531,13 @@ const sensitiveData = {
 
 const sensBlocks = buildResponseBlocks(sensitiveData);
 const sensResearch = sensBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
-const sensResearchText = sensResearch?.text?.text ?? '';
+const sensSources = sensBlocks.find(b => b.text?.text?.startsWith('*Sources*'));
+const sensSourceText = sensSources?.text?.text ?? '';
 assert(sensResearch !== undefined, 'sensitivity: research summary shown for sensitive payload');
-assert(sensResearchText.includes('<https://servicetitan.slack.com/archives/C1/p1|#escalations>'), 'sensitivity: a public Slack channel stays in the summary');
-assert(!sensResearchText.includes('Internal escalation notes'), 'sensitivity: the Slack message is not dumped under the summary');
-assert(sensResearchText.includes('Internal runbook'), 'sensitivity: sensitive Confluence title is in the summary');
-assert(!sensResearchText.includes('specialist-only'), 'sensitivity: no specialist-only hint');
+assert(sensSourceText.includes('<https://servicetitan.slack.com/archives/C1/p1|#escalations>'), 'sensitivity: a public Slack channel stays in the source list');
+assert(!sensSourceText.includes('Internal escalation notes'), 'sensitivity: the Slack message is not dumped in the source list');
+assert(sensSourceText.includes('Internal runbook'), 'sensitivity: sensitive Confluence title is in the source list');
+assert(!sensSourceText.includes('specialist-only'), 'sensitivity: no specialist-only hint');
 const sensSrcBtn = sensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(sensSrcBtn !== undefined, 'sensitivity: sources button present');
 const sensSrcVal = JSON.parse(sensSrcBtn.value);
@@ -609,6 +619,7 @@ const followUpCardJson = JSON.stringify(followUpCard);
 assert(followUpCard.length === 1, 'a thread reply is a single chat message');
 assert(followUpCard[0].type === 'section', 'a thread reply is a message, not a card');
 assert(followUpCardJson.includes('API access has not been enabled'), 'a thread reply is the summary');
+assert(followUpCardJson.includes('• *Slack*'), 'a thread reply labels the Slack source');
 assert(followUpCardJson.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'a thread reply links the public channel');
 assert(!followUpCardJson.includes('Zapier API access not working after tenant migration'), 'a thread reply does not dump the Slack message');
 assert(!followUpCardJson.includes('*Research*'), 'a thread reply does not use a research heading');
@@ -1792,9 +1803,10 @@ assert((diagBlock?.text?.text ?? '').includes('Zapier integration is failing'), 
 
 // Sources stay when diagnosis is missing; the diagnosis sentence does not
 const noDiagBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined });
-const noDiagResearch = noDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
-assert(noDiagResearch !== undefined, 'research summary still lists sources when diagnosis is missing');
-assert(!(noDiagResearch?.text?.text ?? '').includes('Zapier integration is failing'), 'missing diagnosis is not invented');
+const noDiagSources = noDiagBlocks.find(b => b.text?.text?.startsWith('*Sources*'));
+assert(noDiagSources !== undefined, 'sources still list when diagnosis is missing');
+assert(noDiagBlocks.find(b => b.text?.text?.includes('*Research*')) === undefined, 'missing diagnosis does not open a research section');
+assert(!(noDiagSources?.text?.text ?? '').includes('Zapier integration is failing'), 'missing diagnosis is not invented');
 
 // No research block when there is nothing to summarize
 const noResearchBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined, slack_refs: [], atlassian_refs: [], kb_refs: [] });
@@ -2955,8 +2967,10 @@ assert(allText.includes('*Research*'), 'auto-answer card leads with the research
 assert(allText.includes('API access disabled at backend.'), 'diagnosis is inside the research summary');
 assert(allText.includes('<https://servicetitan.slack.com/archives/C1/p1|#ask-integrations>'), 'auto-answer card links the public Slack channel');
 assert(!allText.includes('Zapier thread'), 'auto-answer card does not dump the Slack message');
-assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Confluence: Zapier guide>'), 'auto-answer card links the Confluence source');
+assert(allText.includes('• *Confluence*'), 'auto-answer card labels the Confluence source');
+assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Zapier guide>'), 'auto-answer card links the Confluence source');
 assert(!allText.includes('Toggle API access before connecting.'), 'auto-answer card does not repeat the Confluence excerpt');
+assert(allText.includes('• *Help center*'), 'auto-answer card labels the help-center source');
 assert(allText.includes('<https://help.servicetitan.com/zapier-setup|Zapier setup>'), 'auto-answer card links the KB source');
 assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
 assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
