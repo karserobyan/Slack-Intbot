@@ -27,7 +27,7 @@ const tests = [];
 if (confluenceToken) {
   tests.push(
     { name: 'whoami', product: 'confluence', token: confluenceToken, path: 'rest/api/user/current' },
-    { name: 'confluence', product: 'confluence', token: confluenceToken, path: `rest/api/search?cql=${encodeURIComponent('text ~ "integration" AND type = page')}&limit=2` },
+    { name: 'confluence', product: 'confluence', token: confluenceToken, path: `rest/api/search?cql=${encodeURIComponent('space = "IPD" AND type = page AND text ~ "integration"')}&limit=2` },
   );
 }
 if (jiraToken) {

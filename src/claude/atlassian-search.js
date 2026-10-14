@@ -1,6 +1,7 @@
 import 'dotenv/config';
 
 const TIMEOUT_MS = 8000;
+const CONFLUENCE_SPACE_KEY = 'IPD';
 const API_GATEWAY = 'https://api.atlassian.com';
 let missingAuthWarned = false;
 let cloudIdCache = null;
@@ -79,6 +80,11 @@ function escapeQuery(str) {
   return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function confluenceSpaceKey(url) {
+  const match = String(url ?? '').match(/\/spaces\/([^/]+)\//i);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 function stripHtml(html) {
   return (html ?? '')
     .replace(/<[^>]+>/g, ' ')
@@ -103,7 +109,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
   try {
     const phrase = searchPhrase(query);
     if (!phrase) return { text: null, refs: [] };
-    const cql = `text ~ "${escapeQuery(phrase)}" AND type = page`;
+    const cql = `space = "${CONFLUENCE_SPACE_KEY}" AND type = page AND text ~ "${escapeQuery(phrase)}"`;
     const url = await atlassianResourceUrl('confluence', creds.token, `rest/api/search?${new URLSearchParams({ cql, limit: '5' })}`, signal);
 
     const res = await fetch(url, {
@@ -139,7 +145,8 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
         url: pageUrl,
         excerpt: stripHtml(r.excerpt ?? '').slice(0, 300),
       };
-    }).filter(r => r.url);
+    }).filter(r => r.url && confluenceSpaceKey(r.url).toUpperCase() === CONFLUENCE_SPACE_KEY);
+    if (!refs.length) return { text: null, refs: [] };
 
     const text = refs.map(r => `[Confluence] ${r.title}\n${r.excerpt}\n${r.url}`).join('\n\n');
     return { text, refs };
