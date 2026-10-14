@@ -33,11 +33,11 @@
 1. The bot answers in the thread or DM where someone asked.
 2. The bot does not post a handoff, a draft, or any other message into a different channel.
 3. The card names the channel, or up to three suggestions when no single channel owns the issue. A person posts there.
-4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given. The first answer is the case card. The next message in that thread is a chat reply: the summary only, with source links, and no new case card.
+4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given. The first answer is the case card. The next message in that thread is a chat reply: the summary, then a short sentence naming the sources that shaped it, and no new case card.
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.
 7. Parked, and not to be started from this plan: audit logs, CSA roles, and step-level source lines. If Reply fails before the 60s cap, the Resolver answer is kept and the customer draft is omitted.
-8. The answer card and the auto-answer review card lead with a research summary. Source names are hyperlinks inside that summary, and the same sources are listed again under References. Slack sources are public channel names. Locked channels (private, DM, or unmarked) are not searched into the answer and are not shown. Message text and excerpts stay off both places. Neither card shows a customer draft or word-only source chips. Every question searches Confluence, Jira, Slack, and the help center. Found refs are merged onto the answer by URL, including when the Resolver already cited one.
+8. The answer card and the auto-answer review card lead with a research summary. The summary names only the sources that changed the answer, and those names are links when the host is allowlisted. The Sources button stores every link. Slack sources are public channel names. Locked channels (private, DM, or unmarked) are not searched into the answer and are not shown. Message text and excerpts stay off the card. Neither card shows a customer draft or word-only source chips. Every question searches Confluence, Jira, Slack, and the help center. Found refs are merged onto the answer by URL, including when the Resolver already cited one.
 9. The card is written for anyone. Steps are plain language under *What to do*, without internal tag codes. A finished answer has no role line. When another team should take the issue, the card says which channel.
 
 ## Task 1: Remove the posting actions
