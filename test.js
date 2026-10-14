@@ -673,6 +673,7 @@ assert(followUpCard.every(b => b.type !== 'header' && b.type !== 'actions'), 'a 
 assert(RESOLVER_PROMPT.includes('chat turn'), 'follow-up diagnosis is written as a chat reply');
 assert(RESOLVER_PROMPT.includes('According to'), 'the answer names the sources that shaped it');
 assert(RESOLVER_PROMPT.includes('did not change the answer'), 'the answer leaves out sources that did not shape it');
+assert(RESOLVER_PROMPT.includes('Internal Product Documentation'), 'Confluence results are the Internal Product Documentation space');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -2169,7 +2170,10 @@ globalThis.fetch = async (url, init) => {
   const u = String(url);
   if (u.includes('/wiki/rest/api/search')) {
     return new Response(JSON.stringify({
-      results: [{ title: '@@@hl@@@Zapier@@@endhl@@@ calendar', url: '/spaces/INT/pages/1/Zapier', excerpt: 'Two-way sync' }],
+      results: [
+        { title: 'Engineering notes', url: '/spaces/ENG/pages/3/Notes', excerpt: 'Backend table' },
+        { title: '@@@hl@@@Zapier@@@endhl@@@ workflow', url: '/spaces/IPD/pages/9/Zapier-workflow', excerpt: 'Enable API access' },
+      ],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   if (u.includes('/rest/api/3/search/jql')) {
@@ -2182,9 +2186,12 @@ globalThis.fetch = async (url, init) => {
 const confluenceHit = await searchConfluence('Apple/Google calendar sync?');
 const confluenceUrl = new URL(atlassianCalls.find(c => c.url.includes('/wiki/rest/api/search')).url);
 const confluenceCql = confluenceUrl.searchParams.get('cql');
+assert(confluenceCql.includes('space = "IPD"'), 'Confluence search stays in Internal Product Documentation');
 assert(!confluenceCql.includes('?') && !confluenceCql.includes('/'), 'Confluence query drops characters that break CQL');
-assert(confluenceHit.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1/Zapier', 'Confluence ref is a site page link');
-assert(confluenceHit.refs[0].title === 'Zapier calendar', 'Confluence title drops highlight markers');
+assert(confluenceHit.refs.length === 1, 'a page outside Internal Product Documentation is dropped');
+assert(confluenceHit.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/IPD/pages/9/Zapier-workflow', 'Confluence ref is a page in Internal Product Documentation');
+assert(confluenceHit.refs[0].title === 'Zapier workflow', 'Confluence title drops highlight markers');
+assert(!confluenceHit.text.includes('Engineering notes') && !confluenceHit.text.includes('/spaces/ENG/'), 'an engineering page is not passed to the answer');
 const jiraHit = await searchJira('Apple/Google calendar sync?');
 const jiraCall = atlassianCalls.find(c => c.url.includes('/rest/api/3/search/jql'));
 assert(jiraCall.init?.method === 'POST', 'Jira search uses the JQL POST endpoint');
@@ -2213,7 +2220,7 @@ globalThis.fetch = async (url, init) => {
   }
   if (u.includes('/ex/confluence/cloud-1/wiki/rest/api/search')) {
     return new Response(JSON.stringify({
-      results: [{ title: 'Scoped page', url: '/spaces/INT/pages/2/Scoped', excerpt: 'Visible page' }],
+      results: [{ title: 'Scoped page', url: '/spaces/IPD/pages/2/Scoped', excerpt: 'Visible page' }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   if (u.includes('/ex/jira/cloud-1/rest/api/3/search/jql')) {
@@ -2227,7 +2234,7 @@ const scopedConfluence = await searchConfluence('calendar sync');
 assert(scopedCalls.some(c => c.url === 'https://servicetitan.atlassian.net/_edge/tenant_info'), 'a scoped token looks up the site cloud id');
 assert(scopedCalls.some(c => c.url.startsWith('https://api.atlassian.com/ex/confluence/cloud-1/wiki/rest/api/search')), 'a scoped Confluence token calls the Atlassian API');
 assert(!scopedCalls.some(c => c.url.includes('servicetitan.atlassian.net/wiki/rest/api/search')), 'a scoped Confluence token does not call the site search URL');
-assert(scopedConfluence.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/2/Scoped', 'a scoped Confluence hit still links the ServiceTitan page');
+assert(scopedConfluence.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/IPD/pages/2/Scoped', 'a scoped Confluence hit still links the ServiceTitan page');
 const scopedJira = await searchJira('calendar sync');
 const scopedJiraCall = scopedCalls.find(c => c.url === 'https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/search/jql');
 assert(scopedJiraCall?.init?.method === 'POST', 'a scoped Jira token calls the Atlassian API');

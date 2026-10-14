@@ -8,7 +8,7 @@ Repo: `karserobyan/Slack-Intbot`. Tests: `node test.js`. Zero failures before a 
 
 Internal Slack bot for ServiceTitan integrations support people who own the case. One audience. There is no CSA mode and no Specialist mode.
 
-Someone mentions `@IntegrationsBot` in a channel, or DMs the bot. The bot answers in that same thread or DM. It searches Slack history, Confluence, Jira, and the ServiceTitan help center, then returns a card: diagnosis, steps, whether another team should take it, a customer draft only when a customer was mentioned, and sources.
+Someone mentions `@IntegrationsBot` in a channel, or DMs the bot. The bot answers in that same thread or DM. It searches Slack history, the Internal Product Documentation space in Confluence, Jira, and the ServiceTitan help center, then returns a card: diagnosis, steps, whether another team should take it, a customer draft only when a customer was mentioned, and sources.
 
 ## How a question runs
 
