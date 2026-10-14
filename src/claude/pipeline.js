@@ -219,6 +219,10 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     // including when the Resolver already cited one. Auto-save new KB articles
     // so the team knowledge file keeps growing.
     mergeFoundRefs(answer, searchResults);
+    answer.source_status = {
+      confluence: searchResults.confluence?.status ?? null,
+      jira: searchResults.jira?.status ?? null,
+    };
     if (searchResults.kb?.refs?.length > 0) {
       const integration = answer.integration_type || 'General';
       for (const ref of searchResults.kb.refs) {

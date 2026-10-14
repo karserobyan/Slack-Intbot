@@ -121,10 +121,47 @@ function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
   return clamp(`*Research*\n${parts.join('\n\n')}`);
 }
 
-function referencesText(slackRefs, atlassianRefs, kbRefs) {
+function atlassianListed(refs) {
+  const listed = { confluence: false, jira: false };
+  for (const ref of refs ?? []) {
+    const type = ref?.type;
+    const url = String(ref?.url ?? '');
+    if (type === 'confluence' || url.includes('/wiki/')) listed.confluence = true;
+    if (type === 'jira' || url.includes('/browse/')) listed.jira = true;
+  }
+  return listed;
+}
+
+function searchGap(name, status, emptyText) {
+  if (!status || status === 'ok') return '';
+  if (status === 'off') return `${name} search is off`;
+  if (status === 'empty') return `${name}: ${emptyText}`;
+  if (status === 'refused') return `${name} search was refused`;
+  if (status === 'error') return `${name} search failed`;
+  return '';
+}
+
+function referenceNotes(atlassianRefs, sourceStatus) {
+  if (!sourceStatus) return [];
+  const listed = atlassianListed(atlassianRefs);
+  const confluence = listed.confluence ? null : sourceStatus.confluence;
+  const jira = listed.jira ? null : sourceStatus.jira;
+  if (confluence === 'off' && jira === 'off') return ['Confluence and Jira search is off'];
+  return [
+    searchGap('Confluence', confluence, 'no matching page'),
+    searchGap('Jira', jira, 'no matching issue'),
+  ].filter(Boolean);
+}
+
+function referencesText(slackRefs, atlassianRefs, kbRefs, sourceStatus) {
   const entries = sourceEntries(slackRefs, atlassianRefs, kbRefs);
-  if (!entries.length) return '';
-  return clamp(`*References*\n${entries.map((entry) => `• ${entry.link}`).join('\n')}`);
+  const notes = referenceNotes(atlassianRefs, sourceStatus);
+  if (!entries.length && !notes.length) return '';
+  const lines = [
+    ...entries.map((entry) => `• ${entry.link}`),
+    ...notes.map((note) => `_${note}_`),
+  ];
+  return clamp(`*References*\n${lines.join('\n')}`);
 }
 
 /**
@@ -166,7 +203,7 @@ export function buildThreadReplyBlocks(data) {
   const entries = sourceEntries(slackRefs, atlassianRefs, kbRefs);
   const linked = linkifySummary(escapeMrkdwn(reply), entries);
   const see = seeSentence(entries.filter((entry) => !linked.used.has(entry)));
-  const references = referencesText(slackRefs, atlassianRefs, kbRefs);
+  const references = referencesText(slackRefs, atlassianRefs, kbRefs, data?.source_status);
   const text = [linked.text, see, references].filter(Boolean).join('\n\n');
   return [{
     type: 'section',
@@ -196,7 +233,7 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       text: { type: 'mrkdwn', text: summary },
     });
   }
-  const references = referencesText(slackRefs, atlassianRefs, kbRefs);
+  const references = referencesText(slackRefs, atlassianRefs, kbRefs, data.source_status);
   if (references) {
     blocks.push({
       type: 'section',
@@ -764,7 +801,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
       text: { type: 'mrkdwn', text: summary },
     });
   }
-  const references = referencesText(result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
+  const references = referencesText(result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? [], result.source_status);
   if (references) {
     blocks.push({
       type: 'section',

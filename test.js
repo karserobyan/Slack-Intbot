@@ -445,6 +445,38 @@ const referencesIdx = blockTexts.findIndex(t => typeof t === 'string' && t.start
 assert(referencesIdx !== -1 && researchIdx < referencesIdx && referencesIdx < stepsHeadingIdx, 'sources are listed again under the summary');
 assert(blockTexts[referencesIdx].includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'the reference list links the public channel');
 assert(!blockTexts[referencesIdx].includes('Zapier API access not working after tenant migration'), 'the reference list does not dump the Slack message');
+assert(!responseJson.includes('search is off'), 'a card without a search status does not invent one');
+const offBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+  source_status: { confluence: 'off', jira: 'off' },
+});
+const offReferences = offBlocks.find(b => b.text?.text?.startsWith('*References*'))?.text?.text ?? '';
+assert(offReferences.includes('Confluence and Jira search is off'), 'missing Atlassian credentials are named under References');
+assert(!offReferences.includes('no matching'), 'a search that is off is not described as an empty result');
+const emptyConfluenceBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [],
+  kb_refs: [],
+  atlassian_refs: [{ type: 'jira', url: 'https://servicetitan.atlassian.net/browse/INT-9', title: 'INT-9 — Calendar' }],
+  source_status: { confluence: 'empty', jira: 'ok' },
+});
+const emptyConfluenceReferences = emptyConfluenceBlocks.find(b => b.text?.text?.startsWith('*References*'))?.text?.text ?? '';
+assert(emptyConfluenceReferences.includes('Confluence: no matching page'), 'an empty Confluence search is named under References');
+assert(emptyConfluenceReferences.includes('INT-9'), 'a found Jira issue stays in the reference list');
+assert(!emptyConfluenceReferences.includes('Jira: no matching'), 'a found Jira issue is not also called a miss');
+const failedSearchBlocks = buildResponseBlocks({
+  ...sampleJson,
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+  source_status: { confluence: 'refused', jira: 'error' },
+});
+const failedSearchReferences = failedSearchBlocks.find(b => b.text?.text?.startsWith('*References*'))?.text?.text ?? '';
+assert(failedSearchReferences.includes('Confluence search was refused'), 'a refused Confluence search is named under References');
+assert(failedSearchReferences.includes('Jira search failed'), 'a failed Jira search is named under References');
 assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
 const lockedSourceBlocks = buildResponseBlocks({
   ...sampleJson,
@@ -2151,6 +2183,9 @@ assert(merged.atlassian_refs.length === 2, 'found Confluence pages are added eve
 delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.ATLASSIAN_BASE_URL;
+const confluenceOff = await searchConfluence('calendar sync');
+const jiraOff = await searchJira('calendar sync');
+assert(confluenceOff?.status === 'off' && jiraOff?.status === 'off', 'Confluence and Jira search report that they are off without credentials');
 
 // ── answerer (resolver + reply) ───────────────────────────────────────────────
 console.log('\n🔹 answerer');
@@ -2838,6 +2873,7 @@ const filled = await runPipeline({ rawQuery: 'Zapier toggle is off' });
 assert(filled.slack_refs?.[0]?.url === 'https://servicetitan.slack.com/archives/C1/p9', 'empty resolver slack refs are filled from the search');
 assert(filled.slack_refs?.[0]?.title === 'Enable the Zapier toggle', 'filled slack ref keeps the message text');
 assert(filled.slack_refs?.[0]?.channel === '#ask-integrations', 'filled slack ref keeps the channel');
+assert(filled.source_status?.confluence === 'off' && filled.source_status?.jira === 'off', 'a pipeline answer records that Confluence and Jira search is off');
 if (oldSlackUserToken === undefined) delete process.env.SLACK_USER_TOKEN;
 else process.env.SLACK_USER_TOKEN = oldSlackUserToken;
 
