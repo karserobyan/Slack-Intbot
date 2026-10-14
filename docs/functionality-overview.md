@@ -89,7 +89,7 @@ Both entry points funnel into the shared query flow (see §13).
 - **What it does:** Intake builds a search plan; Research runs each source in parallel, then an evaluator may refine the plan once
 - **Sources:**
   - **KB (Anthropic `web_search`, scoped to `help.servicetitan.com`)** — `src/claude/kb-search.js`
-  - **Confluence (REST)** — `src/claude/atlassian-search.js`
+  - **Confluence (REST)** — `src/claude/atlassian-search.js`. Search is limited to the Internal Product Documentation space (`IPD`).
   - **Jira (REST)** — `src/claude/atlassian-search.js`
   - **Team knowledge** — `data/knowledge.md` via `src/slack/knowledge.js` (5-min cache)
   - **Slack** — via search executor / optional Slack MCP (`SLACK_USER_TOKEN`)
