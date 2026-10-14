@@ -34,10 +34,6 @@ function encodeActionText(value) {
   return encodeURIComponent(String(value ?? ''));
 }
 
-function refTitle(ref) {
-  return ref?.title || ref?.url || 'Source';
-}
-
 function isLockedSlackRef(ref) {
   return ref?.is_private === true || ref?.is_im === true || ref?.is_mpim === true || ref?.is_group === true;
 }
@@ -46,60 +42,83 @@ function visibleSlackRefs(refs) {
   return (refs ?? []).filter((ref) => ref?.url && !isLockedSlackRef(ref));
 }
 
-function shortLabel(text, max = 70) {
-  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
-  if (clean.length <= max) return clean;
-  return `${clean.slice(0, max - 1)}…`;
+function cleanLabel(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
 }
 
-function jiraLabel(title) {
-  const text = String(title ?? '').replace(/\s+/g, ' ').trim();
-  const match = text.match(/^([A-Z][A-Z0-9]+-\d+)\s*[—–-]\s*(.*)$/);
-  if (!match) return shortLabel(text) || 'Issue';
-  const summary = shortLabel(match[2], 48);
-  return summary ? `${match[1]}  ${summary}` : match[1];
+function isLabelChar(ch) {
+  return /[A-Za-z0-9_#-]/.test(ch ?? '');
 }
 
-function sourceLines(slackRefs, atlassianRefs, kbRefs) {
-  const lines = [];
-  const seenChannels = new Set();
+function citationTargets(slackRefs, atlassianRefs, kbRefs) {
+  const targets = [];
   for (const ref of visibleSlackRefs(slackRefs)) {
-    const channel = String(ref.channel ?? '').trim();
-    const key = channel || ref.url;
-    if (seenChannels.has(key)) continue;
-    seenChannels.add(key);
-    lines.push(`• *Slack*  ${safeSlackLink(ref.url, channel || shortLabel(refTitle(ref)))}`);
-    if (seenChannels.size >= 4) break;
+    const channel = cleanLabel(ref.channel);
+    if (channel) targets.push({ label: channel, url: ref.url });
   }
-  const seenAtlassian = new Set();
   for (const ref of atlassianRefs ?? []) {
-    if (!ref?.url || seenAtlassian.has(ref.url)) continue;
-    seenAtlassian.add(ref.url);
-    const kind = ref.type === 'jira' ? 'Jira' : ref.type === 'confluence' ? 'Confluence' : 'Atlassian';
-    const label = kind === 'Jira' ? jiraLabel(refTitle(ref)) : shortLabel(refTitle(ref));
-    lines.push(`• *${kind}*  ${safeSlackLink(ref.url, label)}`);
-    if (seenAtlassian.size >= 4) break;
+    if (!ref?.url) continue;
+    const title = cleanLabel(ref.title);
+    if (ref.type === 'jira') {
+      const key = title.match(/^([A-Z][A-Z0-9]+-\d+)/)?.[1];
+      if (title) targets.push({ label: title, url: ref.url });
+      if (key) targets.push({ label: key, url: ref.url });
+    } else if (title) {
+      targets.push({ label: title, url: ref.url });
+    }
   }
-  const seenKb = new Set();
   for (const ref of kbRefs ?? []) {
-    if (!ref?.url || seenKb.has(ref.url)) continue;
-    seenKb.add(ref.url);
-    lines.push(`• *Help center*  ${safeSlackLink(ref.url, shortLabel(refTitle(ref)))}`);
-    if (seenKb.size >= 3) break;
+    if (!ref?.url) continue;
+    const title = cleanLabel(ref.title);
+    if (title) targets.push({ label: title, url: ref.url });
   }
-  return lines;
+  targets.sort((a, b) => b.label.length - a.label.length);
+  const seen = new Set();
+  return targets.filter((target) => {
+    if (target.label.length < 3 || seen.has(target.label)) return false;
+    seen.add(target.label);
+    return true;
+  });
 }
 
-function sourcesText(slackRefs, atlassianRefs, kbRefs) {
-  const lines = sourceLines(slackRefs, atlassianRefs, kbRefs);
-  if (!lines.length) return '';
-  return clamp(`*Sources*\n${lines.join('\n')}`);
+function replaceBounded(text, label, replacement) {
+  let out = '';
+  let cursor = 0;
+  while (cursor < text.length) {
+    const at = text.indexOf(label, cursor);
+    if (at === -1) return out + text.slice(cursor);
+    const before = at > 0 ? text[at - 1] : '';
+    const after = text[at + label.length] ?? '';
+    if (isLabelChar(before) || isLabelChar(after)) {
+      out += text.slice(cursor, at + 1);
+      cursor = at + 1;
+      continue;
+    }
+    out += text.slice(cursor, at) + replacement;
+    cursor = at + label.length;
+  }
+  return out;
 }
 
-function researchSummaryText(diagnosis) {
+function linkifyCitations(text, slackRefs, atlassianRefs, kbRefs) {
+  let linked = escapeMrkdwn(text);
+  for (const target of citationTargets(slackRefs, atlassianRefs, kbRefs)) {
+    const label = escapeMrkdwn(target.label);
+    const replacement = safeSlackLink(target.url, target.label);
+    if (!label || label === replacement) continue;
+    const parts = linked.split(/(<https?:\/\/[^|>]+\|[^>]*>)/g);
+    for (let i = 0; i < parts.length; i += 2) {
+      parts[i] = replaceBounded(parts[i], label, replacement);
+    }
+    linked = parts.join('');
+  }
+  return linked;
+}
+
+function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
   const text = String(diagnosis ?? '').trim();
   if (!text) return '';
-  return clamp(`*Research*\n${escapeMrkdwn(text)}`);
+  return clamp(`*Research*\n${linkifyCitations(text, slackRefs, atlassianRefs, kbRefs)}`);
 }
 
 /**
@@ -135,8 +154,7 @@ function _buildSourcesButtonValue(slack_refs, atlassian_refs, kb_refs, diagnosis
 
 export function buildThreadReplyBlocks(data) {
   const reply = String(data?.diagnosis ?? '').trim() || String(data?.issue_title ?? '').trim() || 'I need a bit more detail to answer that.';
-  const sources = sourcesText(data?.slack_refs ?? [], data?.atlassian_refs ?? [], data?.kb_refs ?? []);
-  const text = sources ? `${escapeMrkdwn(reply)}\n\n${sources}` : escapeMrkdwn(reply);
+  const text = linkifyCitations(reply, data?.slack_refs ?? [], data?.atlassian_refs ?? [], data?.kb_refs ?? []);
   return [{
     type: 'section',
     text: { type: 'mrkdwn', text: clamp(text) },
@@ -158,18 +176,11 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   });
   blocks.push({ type: 'divider' });
 
-  const summary = researchSummaryText(data.diagnosis);
+  const summary = researchSummaryText(data.diagnosis, slackRefs, atlassianRefs, kbRefs);
   if (summary) {
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: summary },
-    });
-  }
-  const sources = sourcesText(slackRefs, atlassianRefs, kbRefs);
-  if (sources) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: sources },
     });
   }
 
@@ -726,18 +737,11 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
   });
 
-  const summary = researchSummaryText(result.diagnosis);
+  const summary = researchSummaryText(result.diagnosis, result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
   if (summary) {
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: summary },
-    });
-  }
-  const sources = sourcesText(result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
-  if (sources) {
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: sources },
     });
   }
 

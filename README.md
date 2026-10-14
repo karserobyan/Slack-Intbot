@@ -14,8 +14,8 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Resolver** — produces diagnosis, steps, and involvement
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
 4. The placeholder is replaced with a structured Block Kit response:
-   - **Research** — the diagnosis. **Sources** lists each public Slack channel, Confluence page, Jira issue, and help-center article on its own labeled line. Locked channels are not shown.
-   - **What to do** — the next actions, in plain language. A follow-up in the same thread is a chat reply: the summary only, with source links, and no new card
+   - **Research** — the diagnosis: the summary, then a short sentence naming the pages, tickets, and public channels that shaped it. The 🔍 Sources button stores every link. Locked channels are not shown.
+   - **What to do** — the next actions, in plain language. A follow-up in the same thread is a chat reply: the summary, then the sources that shaped that reply, and no new card
    - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to. The bot does not post into those channels. A person posts there.
 
 Anyone can ask. The answer is the same for every role. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
