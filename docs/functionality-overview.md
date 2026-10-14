@@ -155,7 +155,7 @@ Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is no
 - **Files:** `src/slack/blocks.js:buildResponseBlocks()`
 - **Pieces of the response card:**
   1. Header with issue title and confidence icon
-  2. Research summary: diagnosis, then Slack, Confluence, Jira, and KB sources as links when the host is allowlisted
+  2. Research summary: the diagnosis names the sources that shaped it and links them when the host is allowlisted. The Sources button stores every link
   3. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate). A thread follow-up labels these "Still open"
   4. Involvement (who / channel / reason) when another team is needed
   5. Action buttons: **Wrong Answer**, **Sources** when refs exist, **New chat** in DMs

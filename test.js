@@ -434,18 +434,59 @@ assert(researchIdx !== -1, 'Research summary present');
 assert(stepsHeadingIdx !== -1, 'Steps section header renders as "What to do"');
 assert(researchIdx !== -1 && researchIdx < stepsHeadingIdx, 'research summary before the steps heading');
 assert(!responseJson.includes('Zapier connection was reset'), 'customer draft is not on the answer card');
-assert(researchText.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'Slack source is the public channel');
+assert(!researchText.includes('#ask-integrations'), 'an unnamed channel stays out of the summary');
 assert(!researchText.includes('Zapier API access not working after tenant migration'), 'the summary does not dump the Slack message');
-assert(researchText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'KB source is a hyperlink');
 assert(!researchText.includes('Enable API access in the ST admin portal before connecting Zapier.'), 'KB snippet is not repeated under the summary');
-assert(researchText.includes('Zapier Integration Setup Guide'), 'Confluence title is in the research summary');
-assert(researchText.includes('See '), 'the summary includes the sources as links');
-assert(!researchText.includes('\n• '), 'the summary keeps the links in the sentence');
-const referencesIdx = blockTexts.findIndex(t => typeof t === 'string' && t.startsWith('*References*'));
-assert(referencesIdx !== -1 && researchIdx < referencesIdx && referencesIdx < stepsHeadingIdx, 'sources are listed again under the summary');
-assert(blockTexts[referencesIdx].includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'the reference list links the public channel');
-assert(!blockTexts[referencesIdx].includes('Zapier API access not working after tenant migration'), 'the reference list does not dump the Slack message');
-assert(!researchText.includes('<https://company.atlassian.net'), 'non-allowlisted Atlassian hosts are not linked');
+assert(!researchText.includes('Zapier Integration Setup Guide'), 'an unnamed page stays out of the summary');
+assert(!researchText.includes('See '), 'unnamed sources are not appended to the summary');
+assert(!blockTexts.some(t => typeof t === 'string' && (t.startsWith('*References*') || t.startsWith('*Sources*'))), 'the answer does not add a sources list');
+const storedSources = responseBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
+assert(storedSources !== undefined, 'every ref stays on the Sources button');
+const storedSourceRefs = JSON.parse(storedSources.value);
+assert(storedSourceRefs.slack_refs.length === 1, 'the Sources button keeps the Slack ref');
+assert(storedSourceRefs.atlassian_refs.length === 2, 'the Sources button keeps the Atlassian refs');
+assert(storedSourceRefs.kb_refs.length === 1, 'the Sources button keeps the help-center ref');
+const citedBlocks = buildResponseBlocks({
+  ...sampleJson,
+  diagnosis: 'API access is off for this tenant. According to Zapier Integration Setup Guide, Jira INT-4821, and the thread in #ask-integrations, the toggle lives in the admin portal. Setting up Zapier with ServiceTitan says the same. Old meeting notes did not change this.',
+  atlassian_refs: [
+    { type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/zapier', title: 'Zapier Integration Setup Guide' },
+    { type: 'jira', url: 'https://servicetitan.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting for tenant' },
+    { type: 'confluence', url: 'https://company.atlassian.net/wiki/old', title: 'Old meeting notes' },
+  ],
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/zapier-setup', title: 'Setting up Zapier with ServiceTitan' },
+    { url: 'https://help.servicetitan.com/unrelated', title: 'Unrelated article' },
+  ],
+});
+const citedResearch = citedBlocks.find(b => b.text?.text?.includes('*Research*'))?.text?.text ?? '';
+assert(citedResearch.includes('API access is off for this tenant.'), 'the answer leads with the summary');
+assert(citedResearch.includes('<https://servicetitan.atlassian.net/wiki/zapier|Zapier Integration Setup Guide>'), 'a named Confluence page is linked in the answer');
+assert(citedResearch.includes('<https://servicetitan.atlassian.net/browse/INT-4821|INT-4821>'), 'a named Jira key is linked in the answer');
+assert(citedResearch.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'a named public channel is linked in the answer');
+assert(citedResearch.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'a named help-center article is linked in the answer');
+assert(citedResearch.includes('Old meeting notes') && !citedResearch.includes('<https://company.atlassian.net'), 'a named page on another host stays plain text');
+assert(!citedResearch.includes('Unrelated article'), 'a source the answer does not name stays out of the text');
+assert(!citedResearch.includes('See '), 'named sources stay in the sentence');
+assert(!citedBlocks.some(b => {
+  const text = b.text?.text ?? '';
+  return text.startsWith('*References*') || text.startsWith('*Sources*');
+}), 'named sources do not also become a list');
+const titledJira = buildResponseBlocks({
+  ...sampleJson,
+  diagnosis: 'According to INT-4821 — Zapier not connecting for tenant, API access is off.',
+  slack_refs: [],
+  atlassian_refs: [
+    { type: 'jira', url: 'https://servicetitan.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting for tenant' },
+  ],
+  kb_refs: [],
+});
+const titledResearch = titledJira.find(b => b.text?.text?.includes('*Research*'))?.text?.text ?? '';
+assert(titledResearch.includes('<https://servicetitan.atlassian.net/browse/INT-4821|INT-4821 — Zapier not connecting for tenant>'), 'a named Jira title is linked once');
+assert(!titledResearch.includes('|INT-4821>'), 'the issue key inside that title is not linked again');
+const citedButton = JSON.parse(citedBlocks.find(b => b.type === 'actions').elements.find(e => e.action_id === 'view_sources_modal').value);
+assert(citedButton.atlassian_refs.length === 3, 'the Sources button still stores the page that did not shape the answer');
+assert(citedButton.kb_refs.some(ref => ref.title.startsWith('Unrelated')), 'the Sources button still stores the article the answer did not name');
 const lockedSourceBlocks = buildResponseBlocks({
   ...sampleJson,
   diagnosis: 'The public thread in #ask-integrations has the toggle.',
@@ -458,7 +499,7 @@ const lockedSourceBlocks = buildResponseBlocks({
   kb_refs: [],
 });
 const lockedSummary = lockedSourceBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'))?.text?.text ?? '';
-assert(lockedSummary.includes('#ask-integrations'), 'the summary names the public channel');
+assert(lockedSummary.includes('<https://servicetitan.slack.com/archives/C9/p9|#ask-integrations>'), 'the answer links the public channel it names');
 assert(!lockedSummary.includes('private-eng') && !lockedSummary.includes('Secret thread'), 'a locked channel is not on the card');
 assert(!lockedSummary.includes('Public thread') && !lockedSummary.includes('Same channel again'), 'message text is not repeated after the summary');
 assert(!lockedSummary.includes('/p10'), 'the same public channel is named once');
@@ -529,9 +570,9 @@ const sensBlocks = buildResponseBlocks(sensitiveData);
 const sensResearch = sensBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
 const sensResearchText = sensResearch?.text?.text ?? '';
 assert(sensResearch !== undefined, 'sensitivity: research summary shown for sensitive payload');
-assert(sensResearchText.includes('<https://servicetitan.slack.com/archives/C1/p1|#escalations>'), 'sensitivity: a public Slack channel stays in the summary');
-assert(!sensResearchText.includes('Internal escalation notes'), 'sensitivity: the Slack message is not dumped under the summary');
-assert(sensResearchText.includes('Internal runbook'), 'sensitivity: sensitive Confluence title is in the summary');
+assert(!sensResearchText.includes('#escalations'), 'sensitivity: an unnamed channel stays out of the summary');
+assert(!sensResearchText.includes('Internal escalation notes'), 'sensitivity: the Slack message is not dumped in the summary');
+assert(!sensResearchText.includes('Internal runbook'), 'sensitivity: an unnamed page stays out of the summary');
 assert(!sensResearchText.includes('specialist-only'), 'sensitivity: no specialist-only hint');
 const sensSrcBtn = sensBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'view_sources_modal');
 assert(sensSrcBtn !== undefined, 'sensitivity: sources button present');
@@ -614,8 +655,15 @@ const followUpCardJson = JSON.stringify(followUpCard);
 assert(followUpCard.length === 1, 'a thread reply is a single chat message');
 assert(followUpCard[0].type === 'section', 'a thread reply is a message, not a card');
 assert(followUpCardJson.includes('API access has not been enabled'), 'a thread reply is the summary');
-assert(followUpCardJson.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'a thread reply links the public channel');
+assert(!followUpCardJson.includes('#ask-integrations'), 'a thread reply does not attach a channel the reply did not name');
+assert(!followUpCardJson.includes('*References*') && !followUpCardJson.includes('See '), 'a thread reply does not add a sources list');
 assert(!followUpCardJson.includes('Zapier API access not working after tenant migration'), 'a thread reply does not dump the Slack message');
+const citedReply = buildThreadReplyBlocks({
+  ...sampleJson,
+  diagnosis: 'That matches the thread in #ask-integrations.',
+});
+assert(citedReply[0].text.text.includes('<https://servicetitan.slack.com/archives/C123/p456|#ask-integrations>'), 'a thread reply links the channel it names');
+assert(!citedReply[0].text.text.includes('*References*'), 'a cited thread reply does not add a sources list');
 assert(!followUpCardJson.includes('*Research*'), 'a thread reply does not use a research heading');
 assert(!followUpCardJson.includes('*Still open*'), 'a thread reply does not list remaining steps');
 assert(!followUpCardJson.includes('*🔧 What you do*'), 'a thread reply does not restart the case card');
@@ -623,6 +671,8 @@ assert(!followUpCardJson.includes('Zapier API Access Not Enabled'), 'a thread re
 assert(!followUpCardJson.includes('Zapier connection was reset'), 'a thread reply has no customer draft');
 assert(followUpCard.every(b => b.type !== 'header' && b.type !== 'actions'), 'a thread reply has no card chrome');
 assert(RESOLVER_PROMPT.includes('chat turn'), 'follow-up diagnosis is written as a chat reply');
+assert(RESOLVER_PROMPT.includes('According to'), 'the answer names the sources that shaped it');
+assert(RESOLVER_PROMPT.includes('did not change the answer'), 'the answer leaves out sources that did not shape it');
 
 // Error blocks
 const errorBlocks = buildErrorBlocks('test query');
@@ -1795,11 +1845,11 @@ const diagBlock = withDiagBlocks.find(b => b.type === 'section' && b.text?.text?
 assert(diagBlock !== undefined, 'research summary present when diagnosis set');
 assert((diagBlock?.text?.text ?? '').includes('Zapier integration is failing'), 'diagnosis text is from diagnosis field');
 
-// Sources stay when diagnosis is missing; the diagnosis sentence does not
+// Refs stay on the button when diagnosis is missing; the diagnosis sentence does not
 const noDiagBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined });
-const noDiagResearch = noDiagBlocks.find(b => b.type === 'section' && b.text?.text?.includes('*Research*'));
-assert(noDiagResearch !== undefined, 'research summary still lists sources when diagnosis is missing');
-assert(!(noDiagResearch?.text?.text ?? '').includes('Zapier integration is failing'), 'missing diagnosis is not invented');
+assert(noDiagBlocks.find(b => b.text?.text?.includes('*Research*')) === undefined, 'a missing diagnosis does not open a research section');
+assert(noDiagBlocks.find(b => b.type === 'actions')?.elements?.some(e => e.action_id === 'view_sources_modal'), 'refs stay on the Sources button when the diagnosis is missing');
+assert(!JSON.stringify(noDiagBlocks).includes('Zapier integration is failing'), 'missing diagnosis is not invented');
 
 // No research block when there is nothing to summarize
 const noResearchBlocks = buildResponseBlocks({ ...sampleJson, diagnosis: undefined, slack_refs: [], atlassian_refs: [], kb_refs: [] });
@@ -2958,11 +3008,21 @@ const allText = JSON.stringify(aaBlocks);
 assert(allText.includes('Zapier API access'), 'issue title rendered');
 assert(allText.includes('*Research*'), 'auto-answer card leads with the research summary');
 assert(allText.includes('API access disabled at backend.'), 'diagnosis is inside the research summary');
-assert(allText.includes('<https://servicetitan.slack.com/archives/C1/p1|#ask-integrations>'), 'auto-answer card links the public Slack channel');
+assert(!allText.includes('#ask-integrations'), 'auto-answer does not attach a channel the diagnosis did not name');
 assert(!allText.includes('Zapier thread'), 'auto-answer card does not dump the Slack message');
-assert(allText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Confluence: Zapier guide>'), 'auto-answer card links the Confluence source');
+assert(!allText.includes('*References*') && !allText.includes('See '), 'auto-answer does not list every source');
 assert(!allText.includes('Toggle API access before connecting.'), 'auto-answer card does not repeat the Confluence excerpt');
-assert(allText.includes('<https://help.servicetitan.com/zapier-setup|Zapier setup>'), 'auto-answer card links the KB source');
+const citedAuto = buildAutoAnswerBlocks({
+  query: 'Customer says Zapier broke after migration',
+  result: {
+    ...sampleResult,
+    diagnosis: 'API access is off. According to Zapier guide and the thread in #ask-integrations, turn the toggle on.',
+  },
+});
+const citedAutoText = JSON.stringify(citedAuto);
+assert(citedAutoText.includes('<https://servicetitan.atlassian.net/wiki/zapier|Zapier guide>'), 'auto-answer links the page the diagnosis names');
+assert(citedAutoText.includes('<https://servicetitan.slack.com/archives/C1/p1|#ask-integrations>'), 'auto-answer links the channel the diagnosis names');
+assert(!citedAutoText.includes('Zapier setup'), 'auto-answer leaves out the article the diagnosis did not name');
 assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
 assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
 assert(allText.includes('What to do'), 'steps section rendered');
@@ -5016,7 +5076,8 @@ const followUpAnswerJson = JSON.stringify(followUpAnswer?.blocks ?? []);
 assert(!followUpAnswerJson.includes('*Still open*'), 'the thread reply does not list steps');
 assert(!followUpAnswerJson.includes('*Research*'), 'the thread reply is not a research card');
 assert(!followUpAnswerJson.includes('*🔧 What you do*'), 'the thread reply does not restart the first-answer steps heading');
-assert(followUpAnswerJson.includes('<https://servicetitan.slack.com/archives/C9/p9|#ask-integrations>'), 'the thread reply links the public channel it found');
+assert(!followUpAnswerJson.includes('#ask-integrations'), 'the thread reply does not attach a channel the reply did not name');
+assert(!followUpAnswerJson.includes('*References*'), 'the thread reply does not add a sources list');
 assert((followUpAnswer?.blocks ?? []).every(b => b.type !== 'header' && b.type !== 'actions'), 'the thread reply has no card chrome');
 globalThis.fetch = followUpFetch;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
