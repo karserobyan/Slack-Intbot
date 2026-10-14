@@ -97,9 +97,12 @@ npm start
 | `SLACK_SIGNING_SECRET` | ✅ | From Basic Information |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API key |
 | `SLACK_APP_TOKEN` | Socket Mode only | App-level token (`xapp-...`) |
-| `ATLASSIAN_EMAIL` | Recommended | Atlassian account email — paired with `ATLASSIAN_API_TOKEN` for Basic Auth |
-| `ATLASSIAN_API_TOKEN` | Recommended | Atlassian API token for Confluence/Jira REST search (from `id.atlassian.com/manage-profile/security/api-tokens`) |
-| `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`) |
+| `ATLASSIAN_EMAIL` | Recommended | Atlassian account email paired with the API token |
+| `ATLASSIAN_API_TOKEN` | Recommended | Scoped API token from `id.atlassian.com/manage-profile/security/api-tokens`. Confluence needs `search:confluence`. Jira needs `read:jira-work` and `read:jira-user`. A token starting with `ATATT` is called at `api.atlassian.com`. |
+| `ATLASSIAN_CONFLUENCE_API_TOKEN` | Optional | Scoped token for Confluence when each app has its own token. Overrides `ATLASSIAN_API_TOKEN` for Confluence. |
+| `ATLASSIAN_JIRA_API_TOKEN` | Optional | Scoped token for Jira when each app has its own token. Overrides `ATLASSIAN_API_TOKEN` for Jira. |
+| `ATLASSIAN_BASE_URL` | Optional | Atlassian site URL (default: `https://servicetitan.atlassian.net`). Page and issue links use this site. |
+| `ATLASSIAN_CLOUD_ID` | Optional | Site cloud id. When unset, a scoped token looks it up from the site. |
 | `SLACK_USER_TOKEN` | Recommended | User token (`xoxp-...`) for Slack MCP history search |
 | `AUTO_ANSWER_ENABLED` | Optional | Set to `true` to enable the channel-watcher that auto-drafts answers for new posts in `AUTO_ANSWER_SOURCE_CHANNEL`. Default off. |
 | `AUTO_ANSWER_SOURCE_CHANNEL` | If auto-answer enabled | Channel ID the bot watches (e.g. `C0123ABCD`). Bot must be a member. |

@@ -55,7 +55,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { searchSlackMessages } from './src/slack/search-client.js';
 import { executeSearchPlan, ensureSourceCoverage } from './src/claude/search-executor.js';
-import { searchConfluence, searchJira } from './src/claude/atlassian-search.js';
+import { searchConfluence, searchJira, clearAtlassianCloudId } from './src/claude/atlassian-search.js';
 import { mergeFoundRefs } from './src/claude/pipeline.js';
 import { INTERPRETER_PROMPT } from './src/claude/prompts/interpreter.js';
 import { runResolver, runReply } from './src/claude/answerer.js';
@@ -2143,9 +2143,70 @@ const merged = mergeFoundRefs(
   { slack: null, kb: null, jira: null, confluence: { refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1/Zapier', title: 'Zapier calendar' }] } },
 );
 assert(merged.atlassian_refs.length === 2, 'found Confluence pages are added even when the model already cited one');
+
+process.env.ATLASSIAN_API_TOKEN = 'ATATT3shared';
+delete process.env.ATLASSIAN_CONFLUENCE_API_TOKEN;
+delete process.env.ATLASSIAN_JIRA_API_TOKEN;
+delete process.env.ATLASSIAN_CLOUD_ID;
+clearAtlassianCloudId();
+const scopedCalls = [];
+globalThis.fetch = async (url, init) => {
+  scopedCalls.push({ url: String(url), init });
+  const u = String(url);
+  if (u.endsWith('/_edge/tenant_info')) {
+    return new Response(JSON.stringify({ cloudId: 'cloud-1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('/ex/confluence/cloud-1/wiki/rest/api/search')) {
+    return new Response(JSON.stringify({
+      results: [{ title: 'Scoped page', url: '/spaces/INT/pages/2/Scoped', excerpt: 'Visible page' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('/ex/jira/cloud-1/rest/api/3/search/jql')) {
+    return new Response(JSON.stringify({
+      issues: [{ key: 'INT-2', fields: { summary: 'Scoped issue', status: { name: 'Open' } } }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('{}', { status: 500 });
+};
+const scopedConfluence = await searchConfluence('calendar sync');
+assert(scopedCalls.some(c => c.url === 'https://servicetitan.atlassian.net/_edge/tenant_info'), 'a scoped token looks up the site cloud id');
+assert(scopedCalls.some(c => c.url.startsWith('https://api.atlassian.com/ex/confluence/cloud-1/wiki/rest/api/search')), 'a scoped Confluence token calls the Atlassian API');
+assert(!scopedCalls.some(c => c.url.includes('servicetitan.atlassian.net/wiki/rest/api/search')), 'a scoped Confluence token does not call the site search URL');
+assert(scopedConfluence.refs[0].url === 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/2/Scoped', 'a scoped Confluence hit still links the ServiceTitan page');
+const scopedJira = await searchJira('calendar sync');
+const scopedJiraCall = scopedCalls.find(c => c.url === 'https://api.atlassian.com/ex/jira/cloud-1/rest/api/3/search/jql');
+assert(scopedJiraCall?.init?.method === 'POST', 'a scoped Jira token calls the Atlassian API');
+assert(scopedJira.refs[0].url === 'https://servicetitan.atlassian.net/browse/INT-2', 'a scoped Jira hit still links the ServiceTitan issue');
+assert(scopedCalls.filter(c => c.url.endsWith('/_edge/tenant_info')).length === 1, 'the site cloud id is looked up once');
+
+process.env.ATLASSIAN_CONFLUENCE_API_TOKEN = 'ATATT3conf';
+process.env.ATLASSIAN_JIRA_API_TOKEN = 'ATATT3jira';
+const appCalls = [];
+globalThis.fetch = async (url, init) => {
+  appCalls.push({ url: String(url), init });
+  const u = String(url);
+  if (u.includes('/ex/confluence/cloud-1/wiki/rest/api/search')) {
+    return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('/ex/jira/cloud-1/rest/api/3/search/jql')) {
+    return new Response(JSON.stringify({ issues: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('{}', { status: 500 });
+};
+await searchConfluence('calendar sync');
+await searchJira('calendar sync');
+const confluenceAuth = appCalls.find(c => c.url.includes('/ex/confluence/'))?.init?.headers?.Authorization;
+const jiraAuth = appCalls.find(c => c.url.includes('/ex/jira/'))?.init?.headers?.Authorization;
+assert(confluenceAuth === 'Basic ' + Buffer.from('a@b.c:ATATT3conf').toString('base64'), 'Confluence uses its own scoped token');
+assert(jiraAuth === 'Basic ' + Buffer.from('a@b.c:ATATT3jira').toString('base64'), 'Jira uses its own scoped token');
+assert(confluenceAuth !== jiraAuth, 'each Atlassian app can use a different token');
+delete process.env.ATLASSIAN_CONFLUENCE_API_TOKEN;
+delete process.env.ATLASSIAN_JIRA_API_TOKEN;
 delete process.env.ATLASSIAN_EMAIL;
 delete process.env.ATLASSIAN_API_TOKEN;
 delete process.env.ATLASSIAN_BASE_URL;
+delete process.env.ATLASSIAN_CLOUD_ID;
+clearAtlassianCloudId();
 
 // ── answerer (resolver + reply) ───────────────────────────────────────────────
 console.log('\n🔹 answerer');
