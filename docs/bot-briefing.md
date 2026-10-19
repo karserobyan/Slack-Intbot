@@ -26,9 +26,9 @@ Accounting (QuickBooks, Sage Intacct, NetSuite, Xero, Viewpoint Vista, and the o
 
 ## The card
 
-Order: title, diagnosis, steps (action, backend, verify, escalate), involvement, customer draft when present, source chips, buttons.
+Order: title, diagnosis, steps (action, backend, verify, escalate), where it belongs, a draft to paste, buttons.
 
-Buttons: Wrong Answer, Diagnosis + Sources when there are references, and New chat in DMs. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
+Buttons: Wrong Answer, Sources when there are references, and New chat in DMs. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
 
 Involvement:
 
@@ -37,7 +37,7 @@ Involvement:
 - Several listed channels could receive it and none is clearly the one: the card says “Could go to” up to three of them. It does not collapse those into one guess.
 - Nothing on the list fits, or the choice fails: the card names no channel.
 
-A person posts into the channel. The bot does not.
+When another team should take it, one *Draft* under that line holds the diagnosis, the steps, and the customer message when a customer was mentioned. The same draft is what they paste if the card lists a few channels. A person posts it. The bot does not.
 
 ## What still posts
 
@@ -54,10 +54,6 @@ Wrong-answer feedback and `knowledge.md` nominations stay human-approved (Stewar
 - Audit logs are parked. The old Kibana writeup is not the plan. It routes every mention through buttons and calls `query.js`, which is gone. Reserved and unread: `ES_MCP_URL` (`https://es-aux-mcp.st.dev/mcp`) and `ES_MCP_TOKEN`.
 - Step-level source lines under each step are parked. Do not build them unless asked again.
 - Quality-shadow sources that used to be `specialist_only` are `internal`. They still show on the card. They do not become customer-facing knowledge by themselves.
-
-## Next change, not started
-
-The card names where to post and does not post. A person still has to write the message. The next change is one copyable block on the card: the diagnosis, the steps already tried, and the customer draft when there is one. If the card lists a few channels, that same block is what they paste into whichever they choose.
 
 ## Where the code lives
 

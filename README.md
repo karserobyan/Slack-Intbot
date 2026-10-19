@@ -16,7 +16,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
 4. The placeholder is replaced with a structured Block Kit response:
    - **Research** — the diagnosis: the summary, then a short sentence naming the pages, tickets, and public channels that shaped it. The 🔍 Sources button stores every link. Locked channels are not shown.
    - **What to do** — the next actions, in plain language. A follow-up in the same thread is a chat reply: the summary, then the sources that shaped that reply, and no new card
-   - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to. The bot does not post into those channels. A person posts there.
+   - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to, and gives one draft to paste: the diagnosis, the steps, and the customer message when there is one. The bot does not post into those channels. A person posts the draft.
 
 Anyone can ask. The answer is the same for every role. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
 
@@ -208,7 +208,7 @@ Resolver returns a structured JSON object. Reply adds `customer_message` only wh
 }
 ```
 
-When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`. `channel` is the one listed workspace channel for this issue, or null. `suggestions` holds up to 3 listed channels when no single channel owns it. Channel names are not stored in the bot. The card shows them. The bot does not post the handoff.
+When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or `leads`. `channel` is the one listed workspace channel for this issue, or null. `suggestions` holds up to 3 listed channels when no single channel owns it. Channel names are not stored in the bot. The card shows them and a draft to paste. The bot does not post the handoff.
 
 ---
 

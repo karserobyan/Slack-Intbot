@@ -125,6 +125,24 @@ function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
   return clamp(`*Research*\n${linkifyCitations(text, slackRefs, atlassianRefs, kbRefs)}`);
 }
 
+function handoffDraftText(data) {
+  const parts = [];
+  const diagnosis = String(data.diagnosis ?? '').trim();
+  if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
+  const stepLines = (data.steps ?? []).slice(0, 20).map((step) => {
+    const title = escapeMrkdwn(String(step.title ?? '').trim());
+    const detail = escapeMrkdwn(String(step.detail ?? '').trim());
+    if (!title && !detail) return '';
+    const head = [step.num != null && step.num !== '' ? `${step.num}.` : '', title].filter(Boolean).join(' ');
+    return detail ? (head ? `${head} — ${detail}` : detail) : head;
+  }).filter(Boolean);
+  if (stepLines.length) parts.push(stepLines.join('\n'));
+  const customer = String(data.customer_message ?? '').trim();
+  if (customer) parts.push(escapeMrkdwn(customer));
+  if (!parts.length) return '';
+  return clamp(`*Draft*\n${parts.join('\n\n')}`);
+}
+
 /**
  * Builds the Block Kit payload for a successful (non-accounting) response.
  * Stays well under Slack's 50-block limit by capping steps and refs.
@@ -223,6 +241,13 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: handoff }],
     });
+    const draft = handoffDraftText(data);
+    if (draft) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: draft },
+      });
+    }
   }
 
   // 7. Action buttons
