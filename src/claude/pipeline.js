@@ -7,6 +7,7 @@ import { getKnowledge } from '../slack/knowledge.js';
 import { getRelevantFeedback } from '../slack/feedback.js';
 import { appendKbArticle } from '../slack/knowledge-writer.js';
 import { listPostableChannels, settleInvolvement } from '../slack/handoff-channels.js';
+import { applyGrounding, evidenceWords } from './grounding.js';
 
 const HARD_CAP_MS = 60000;
 
@@ -190,6 +191,8 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     if (!allowClarify) {
       applyCappedFallback(answer);
     }
+
+    applyGrounding(answer, evidenceWords(searchResults, teamKnowledge, threadHistory));
 
     const handoffContext = [rawQuery, interp.cleaned_question, answer.issue_title, answer.diagnosis, answer.integration_type].filter(Boolean).join('\n');
     answer.involvement = await settleInvolvement(answer.involvement, handoffContext, handoffChannels, { signal });
