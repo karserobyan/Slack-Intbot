@@ -2738,6 +2738,7 @@ assert(handoffText.includes('From <#C123>'), 'handoff message points back at the
 console.log('\n🔹 pipeline');
 
 import { runPipeline } from './src/claude/pipeline.js';
+import { answerIsGrounded, evidenceWords } from './src/claude/grounding.js';
 
 const origFetchPipe = globalThis.fetch;
 process.env.ANTHROPIC_API_KEY = 'test';
@@ -2801,6 +2802,21 @@ const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke' });
 assert(okPipeResult.issue_title === 'T', 'Resolver ran');
 assert(okPipeResult.customer_message === undefined, 'customer_mentioned false → no customer_message even if resolver mock planted one');
 assert(stepCounter === 3, 'Interpreter + Evaluator + Resolver (no reply) for slack-only plan');
+assert(okPipeResult.confidence === 'low', 'a diagnosis the research does not support is not high confidence');
+assert(okPipeResult.diagnosis === 'Root cause unclear — no direct match found. Escalate for investigation.', 'an unsupported diagnosis is replaced with the honest line');
+assert(okPipeResult.steps.length === 1 && okPipeResult.steps[0].tag === 'escalate', 'an unsupported answer does not keep an invented step');
+assert(okPipeResult.steps[0].detail === 'I searched but couldn\'t find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.', 'the replacement step does not invent a fix');
+const supportedWords = evidenceWords({
+  slack: { text: 'API off. Enable the toggle on the backend.', refs: [] },
+}, null);
+assert(answerIsGrounded({
+  diagnosis: 'API off.',
+  steps: [{ title: 'Enable', detail: 'Toggle the backend.', tag: 'backend' }],
+}, supportedWords), 'a diagnosis whose words are in the research is kept');
+assert(!answerIsGrounded({
+  diagnosis: 'API access is likely off.',
+  steps: [{ title: 'Enable', detail: 'Toggle the backend.', tag: 'backend' }],
+}, supportedWords), 'a hedged diagnosis is not treated as fact');
 
 // Test B2: customer_mentioned true → fourth reply call
 stepCounter = 0;
@@ -2822,13 +2838,13 @@ sequenceResponses.length = 0;
 sequenceResponses.push(
   anthropicMock('{"cleaned_question":"q","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":true,"symptom":"x"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"q"}],"rationale":"r"}}'),
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
-  anthropicMock('{"issue_title":"T","integration_type":"Zapier","confidence":"high","diagnosis":"API off","steps":[{"num":1,"title":"Enable","detail":"Toggle","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  anthropicMock('{"issue_title":"T","integration_type":"Zapier","confidence":"high","diagnosis":"Enable Zapier API access on the backend for the tenant.","steps":[{"num":1,"title":"Enable API access","detail":"Enable Zapier API access on the backend for the tenant.","tag":"backend"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
   new Response('upstream down', { status: 500, headers: { 'content-type': 'text/plain' } }),
 );
 globalThis.fetch = passThroughFetch;
 const replyFailedResult = await runPipeline({ rawQuery: 'Zapier broke for Acme' });
 assert(replyFailedResult.issue_title === 'T', 'reply failure still returns the resolver diagnosis');
-assert(replyFailedResult.diagnosis === 'API off', 'reply failure keeps resolver diagnosis text');
+assert(replyFailedResult.diagnosis === 'Enable Zapier API access on the backend for the tenant.', 'reply failure keeps resolver diagnosis text');
 assert(replyFailedResult.customer_message === undefined, 'reply failure does not attach a customer draft');
 assert(stepCounter === 4, 'reply failure still attempts the reply call');
 
@@ -2918,7 +2934,7 @@ sequenceResponses.length = 0;
 sequenceResponses.push(
   anthropicMock('{"cleaned_question":"does apple calendar work too","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"apple calendar"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"slack","priority":"high","query":"apple calendar"}],"rationale":"r"}}'),
   anthropicMock('{"sufficient":true,"rationale":"ok","refined_plan":null}'),
-  anthropicMock('{"issue_title":"Apple Calendar","integration_type":"Zapier","confidence":"medium","diagnosis":"Apple Calendar can go through Zapier too, using an iCal zap. There is still no native calendar sync.","steps":[],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
+  anthropicMock('{"issue_title":"Apple Calendar","integration_type":"Zapier","confidence":"medium","diagnosis":"Use Zapier for Google Calendar.","steps":[],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 );
 globalThis.fetch = passThroughFetch;
 const chatFollowUp = await runPipeline({
@@ -2926,7 +2942,7 @@ const chatFollowUp = await runPipeline({
   threadHistory: [{ role: 'user', content: 'google calendar sync' }, { role: 'assistant', content: 'Use Zapier for Google Calendar.' }],
   allowClarify: false,
 });
-assert(chatFollowUp.diagnosis === 'Apple Calendar can go through Zapier too, using an iCal zap. There is still no native calendar sync.', 'a follow-up chat reply is kept');
+assert(chatFollowUp.diagnosis === 'Use Zapier for Google Calendar.', 'a follow-up chat reply is kept when the prior case supports it');
 assert(chatFollowUp.steps.length === 0, 'a follow-up chat reply does not get replacement steps');
 
 const oldSlackUserToken = process.env.SLACK_USER_TOKEN;
@@ -5046,11 +5062,19 @@ const followUpResponses = [
   anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
   anthropicMock('{"issue_title":"Zapier toggle","integration_type":"Zapier","confidence":"medium","diagnosis":"The tenant toggle is still off.","steps":[{"num":1,"title":"Recheck the toggle","detail":"Confirm Zapier API access is on for this tenant.","tag":"verify"}],"involvement":{"needed":false,"who":null,"reason":null,"channel":null},"slack_refs":[{"url":"https://servicetitan.slack.com/archives/C9/p9","channel":"#ask-integrations","title":"Toggle thread"}],"atlassian_refs":[],"kb_refs":[],"sources_used":["slack"]}'),
 ];
+const followUpSlackToken = process.env.SLACK_USER_TOKEN;
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
   if (u.includes('anthropic.com')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return followUpResponses[followUpStep++];
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({
+      ok: true,
+      messages: { matches: [{ text: 'The tenant toggle is still off. Recheck the toggle. Confirm Zapier API access is on for this tenant.', permalink: 'https://servicetitan.slack.com/archives/C9/p9', channel: { name: 'ask-integrations', is_private: false } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
   }
   return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
@@ -5087,6 +5111,8 @@ assert(!followUpAnswerJson.includes('#ask-integrations'), 'the thread reply does
 assert(!followUpAnswerJson.includes('*References*'), 'the thread reply does not add a sources list');
 assert((followUpAnswer?.blocks ?? []).every(b => b.type !== 'header' && b.type !== 'actions'), 'the thread reply has no card chrome');
 globalThis.fetch = followUpFetch;
+if (followUpSlackToken === undefined) delete process.env.SLACK_USER_TOKEN;
+else process.env.SLACK_USER_TOKEN = followUpSlackToken;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = followUpApiKey;
 
