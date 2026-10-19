@@ -157,7 +157,7 @@ Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is no
   1. Header with issue title and confidence icon
   2. Research summary: the diagnosis names the sources that shaped it and links them when the host is allowlisted. The Sources button stores every link
   3. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate). A thread follow-up labels these "Still open"
-  4. Involvement (who / channel / reason) when another team is needed
+  4. Where it belongs, then one draft to paste (diagnosis, steps, and the customer message when one exists), only when another team is needed
   5. Action buttons: **Wrong Answer**, **Sources** when refs exist, **New chat** in DMs
   7. Nomination suggestion if the response qualifies for the knowledge base
 

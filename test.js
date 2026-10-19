@@ -547,6 +547,34 @@ assert(suggestionLine.elements[0].text.includes('#ask-pricebook') && suggestionL
 assert(!suggestionLine.elements[0].text.includes(' in #'), 'suggestions are not presented as the one channel');
 const cpBtnNeeded = escalateRoutingBlocks.find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
 assert(cpBtnNeeded === undefined, 'the bot does not offer a button that posts the handoff');
+const handoffDraft = escalateRoutingBlocks.find(b => b.type === 'section' && b.text?.text?.startsWith('*Draft*'));
+assert(handoffDraft !== undefined, 'a handoff includes one draft to paste');
+assert(handoffDraft.text.text.includes('API access has not been enabled'), 'the draft includes the diagnosis');
+assert(handoffDraft.text.text.includes('1. Check tenant Zapier config — Go to Admin &gt; Integrations &gt; Zapier'), 'the draft includes the steps');
+assert(handoffDraft.text.text.includes('Hi [Name], I can see exactly what happened'), 'the draft includes the customer message when one exists');
+assert(!handoffDraft.text.text.includes('`action`') && !handoffDraft.text.text.includes('`backend`'), 'the draft does not show internal step tags');
+assert(!handoffDraft.text.text.includes('<https://'), 'the draft stays plain text so it can be pasted');
+const suggestionDraft = suggestionBlocks.find(b => b.type === 'section' && b.text?.text?.startsWith('*Draft*'));
+assert(suggestionDraft.text.text.includes('API access has not been enabled'), 'the same draft is used whichever suggested channel they choose');
+const noCustomerDraft = buildResponseBlocks({
+  ...sampleJson,
+  customer_message: undefined,
+  involvement: { needed: true, who: 'engineering', reason: 'Needs backend access', channel: '#ask-integrations' },
+}).find(b => b.type === 'section' && b.text?.text?.startsWith('*Draft*'));
+assert(noCustomerDraft.text.text.includes('API access has not been enabled'), 'the draft still includes the diagnosis without a customer message');
+assert(!noCustomerDraft.text.text.includes('Hi [Name]'), 'a missing customer message is not invented in the draft');
+const emptyHandoff = buildResponseBlocks({
+  issue_title: 'Unknown',
+  confidence: 'low',
+  diagnosis: '   ',
+  steps: [{ num: 1, title: '   ', detail: '', tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', reason: 'No fit', channel: null, suggestions: [] },
+  customer_message: '  ',
+});
+assert(emptyHandoff.find(b => b.text?.text?.includes('*Draft*')) === undefined, 'an empty handoff does not add a blank draft');
+assert(JSON.stringify(emptyHandoff).includes('Someone else needs to take this'), 'the card still says where it should go when no channel fits');
+assert(!JSON.stringify(buildResponseBlocks(sampleJson)).includes('*Draft*'), 'a case the person can finish has no handoff draft');
+assert(!JSON.stringify(buildResponseBlocks(sampleJson)).includes('Hi [Name]'), 'the customer message stays off the card until another team should take it');
 
 // No channel post when involvement.needed false
 const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
