@@ -32,7 +32,7 @@
 
 1. The bot answers in the thread or DM where someone asked.
 2. The bot does not post a handoff, a draft, or any other message into a different channel.
-3. The card names the channel, or up to three suggestions when no single channel owns the issue, and gives one draft to paste: the diagnosis, the steps, and the customer message when there is one. A person posts that draft.
+3. The card names the channel, or up to three suggestions when no single channel owns the issue, and gives one draft to paste: the diagnosis, the steps, and the customer message when there is one. When nothing matched, the card says "No direct match found." and the draft is the question. A person posts that draft.
 4. Follow-ups pass `[PRIOR CASE]` and do not repeat steps already given. The first answer is the case card. The next message in that thread is a chat reply: the summary, then a short sentence naming the sources that shaped it, and no new case card.
 5. Accounting stays a keyword redirect. The reply tells the person the accounting channel. The bot does not post into it.
 6. Auto-answer may still post a private draft into `AUTO_ANSWER_TARGET_CHANNEL`, because that channel was configured for review. It must not post into the original thread.

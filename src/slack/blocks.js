@@ -1,3 +1,4 @@
+import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from '../claude/grounding.js';
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
 
@@ -125,7 +126,19 @@ function researchSummaryText(diagnosis, slackRefs, atlassianRefs, kbRefs) {
   return clamp(`*Research*\n${linkifyCitations(text, slackRefs, atlassianRefs, kbRefs)}`);
 }
 
+function isHonestHandoff(data) {
+  const steps = data?.steps ?? [];
+  return String(data?.diagnosis ?? '').trim() === UNGROUNDED_DIAGNOSIS
+    && steps.length === 1
+    && String(steps[0]?.detail ?? '').trim() === UNGROUNDED_STEP;
+}
+
 function handoffDraftText(data) {
+  if (isHonestHandoff(data)) {
+    const question = String(data._originalQuery ?? data.issue_title ?? '').trim();
+    if (!question) return '';
+    return clamp(`*Draft*\n${escapeMrkdwn(question)}`);
+  }
   const parts = [];
   const diagnosis = String(data.diagnosis ?? '').trim();
   if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
@@ -198,7 +211,10 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   });
   blocks.push({ type: 'divider' });
 
-  const summary = researchSummaryText(data.diagnosis, slackRefs, atlassianRefs, kbRefs);
+  const honestHandoff = isHonestHandoff(data);
+  const summary = honestHandoff
+    ? '*Research*\nNo direct match found.'
+    : researchSummaryText(data.diagnosis, slackRefs, atlassianRefs, kbRefs);
   if (summary) {
     blocks.push({
       type: 'section',
@@ -207,7 +223,7 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   }
 
   // 3. Steps
-  const steps = (data.steps ?? []).slice(0, 20);
+  const steps = honestHandoff ? [] : (data.steps ?? []).slice(0, 20);
   if (steps.length > 0) {
     blocks.push({
       type: 'section',
@@ -766,7 +782,10 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     text: { type: 'mrkdwn', text: `*${escapeMrkdwn(result.issue_title ?? 'New question')}*\n_"${escapeMrkdwn(qTrim)}"_` },
   });
 
-  const summary = researchSummaryText(result.diagnosis, result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
+  const honestHandoff = isHonestHandoff(result);
+  const summary = honestHandoff
+    ? '*Research*\nNo direct match found.'
+    : researchSummaryText(result.diagnosis, result.slack_refs ?? [], result.atlassian_refs ?? [], result.kb_refs ?? []);
   if (summary) {
     blocks.push({
       type: 'section',
@@ -774,7 +793,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     });
   }
 
-  const steps = Array.isArray(result.steps) ? result.steps.slice(0, 8) : [];
+  const steps = honestHandoff ? [] : (Array.isArray(result.steps) ? result.steps.slice(0, 8) : []);
   if (steps.length > 0) {
     blocks.push({ type: 'divider' });
     blocks.push({

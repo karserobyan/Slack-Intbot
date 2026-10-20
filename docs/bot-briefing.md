@@ -37,7 +37,7 @@ Involvement:
 - Several listed channels could receive it and none is clearly the one: the card says “Could go to” up to three of them. It does not collapse those into one guess.
 - Nothing on the list fits, or the choice fails: the card names no channel.
 
-When another team should take it, one *Draft* under that line holds the diagnosis, the steps, and the customer message when a customer was mentioned. The same draft is what they paste if the card lists a few channels. A person posts it. The bot does not.
+When another team should take it, one *Draft* under that line holds the diagnosis, the steps, and the customer message when a customer was mentioned. The same draft is what they paste if the card lists a few channels. When nothing matched, the card says "No direct match found.", skips that step, and the draft is the question. A person posts it. The bot does not.
 
 ## What still posts
 
