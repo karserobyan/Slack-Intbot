@@ -575,6 +575,37 @@ assert(emptyHandoff.find(b => b.text?.text?.includes('*Draft*')) === undefined, 
 assert(JSON.stringify(emptyHandoff).includes('Someone else needs to take this'), 'the card still says where it should go when no channel fits');
 assert(!JSON.stringify(buildResponseBlocks(sampleJson)).includes('*Draft*'), 'a case the person can finish has no handoff draft');
 assert(!JSON.stringify(buildResponseBlocks(sampleJson)).includes('Hi [Name]'), 'the customer message stays off the card until another team should take it');
+const noMatchBlocks = buildResponseBlocks({
+  issue_title: 'Unknown integration',
+  confidence: 'low',
+  diagnosis: 'Root cause unclear — no direct match found. Escalate for investigation.',
+  steps: [{
+    num: 1,
+    title: 'Hand off the question',
+    detail: "I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.",
+    tag: 'escalate',
+  }],
+  involvement: {
+    needed: true,
+    who: 'engineering',
+    reason: 'Root cause unclear — no direct match found. Escalate for investigation.',
+    channel: '#ask-dev',
+  },
+  _originalQuery: 'Customer cannot connect the new booking widget',
+  slack_refs: [],
+  atlassian_refs: [],
+  kb_refs: [],
+});
+const noMatchText = JSON.stringify(noMatchBlocks);
+assert(noMatchText.includes('No direct match found.'), 'a no-match card says that once');
+assert((noMatchText.match(/No direct match found\./g) ?? []).length === 1, 'the no-match line is not repeated');
+assert(!noMatchText.includes('Escalate for investigation'), 'a no-match card does not add an escalate sentence');
+assert(!noMatchText.includes('Hand off the question'), 'a no-match card does not add a step that repeats the channel');
+assert(!noMatchText.includes('*What to do*'), 'a no-match card has no steps section');
+assert(noMatchText.includes('This belongs in #ask-dev'), 'a no-match card still names the channel');
+const noMatchDraft = noMatchBlocks.find(b => b.type === 'section' && b.text?.text?.startsWith('*Draft*'));
+assert(noMatchDraft.text.text.includes('Customer cannot connect the new booking widget'), 'the draft is the question to paste');
+assert(!noMatchDraft.text.text.includes('Root cause unclear'), 'the draft does not repeat the research line');
 
 // No channel post when involvement.needed false
 const noCpOwner = buildResponseBlocks(sampleJson).find(b => b.type === 'actions')?.elements?.find(e => e.action_id === 'send_handoff');
@@ -3076,6 +3107,24 @@ assert(citedAutoText.includes('<https://servicetitan.slack.com/archives/C1/p1|#a
 assert(!citedAutoText.includes('Zapier setup'), 'auto-answer leaves out the article the diagnosis did not name');
 assert(!allText.includes('Draft email'), 'auto-answer card does not show the email draft');
 assert(!allText.includes('Hi customer, here is the fix.'), 'customer draft text is not on the auto-answer card');
+const noMatchAuto = buildAutoAnswerBlocks({
+  query: 'Customer cannot connect the new booking widget',
+  result: {
+    issue_title: 'Unknown integration',
+    confidence: 'low',
+    diagnosis: 'Root cause unclear — no direct match found. Escalate for investigation.',
+    steps: [{
+      num: 1,
+      title: 'Hand off the question',
+      detail: "I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.",
+      tag: 'escalate',
+    }],
+  },
+});
+const noMatchAutoText = JSON.stringify(noMatchAuto);
+assert(noMatchAutoText.includes('No direct match found.'), 'auto-answer says there was no match');
+assert(!noMatchAutoText.includes('Hand off the question'), 'auto-answer does not repeat the handoff as a step');
+assert(!noMatchAutoText.includes('Escalate for investigation'), 'auto-answer does not add an escalate sentence');
 assert(allText.includes('What to do'), 'steps section rendered');
 assert(allText.includes('Enable API access'), 'first step rendered');
 assert(allText.includes('High confidence'), 'confidence rendered');
