@@ -16,7 +16,7 @@ Hard cap is 60 seconds. One abort covers the whole run. Model calls do not use S
 
 1. **Intake** (Haiku). Understands the question and builds a search plan. On a first message it may ask one clarifying question when confidence is low. On a follow-up it does not ask again.
 2. **Research.** Searches the plan. An evaluator may refine the search once.
-3. **Resolver** (Sonnet, or `ANTHROPIC_MODEL`). Diagnosis, steps, confidence, and whether another team is needed. It does not write the customer draft, and it does not pick the channel.
+3. **Resolver** (Sonnet, or `ANTHROPIC_MODEL`). Diagnosis, steps, confidence, and whether another team is needed. A plain-language reading of the research is kept. A step that is not about that research is dropped. A diagnosis about a different product is replaced with no direct match. It does not write the customer draft, and it does not pick the channel.
 4. **Handoff channel** (Haiku), only when another team is needed and Slack returned a channel list. It reads the issue against every channel from `conversations.list` (name, purpose, topic). Channel names are not stored in the bot.
 5. **Reply** (Sonnet), only when Intake set `entities.customer_mentioned` to true. It writes `customer_message` from facts the Resolver and research already produced. If Reply fails before the 60-second cap, the diagnosis and steps still come back and the customer draft is omitted. If the cap has already fired, the request fails.
 

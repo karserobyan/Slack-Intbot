@@ -20,19 +20,28 @@ const STOP = new Set([
   'why', 'how', 'can', 'may', 'all', 'any', 'out',
 ]);
 
+const BOILERPLATE = new Set([
+  'according', 'confluence', 'page', 'pages', 'thread', 'threads', 'jira',
+  'guide', 'article', 'articles', 'documentation', 'source', 'sources',
+  'slack', 'ticket', 'issue', 'help', 'center',
+]);
+
 function words(text) {
   return String(text ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
 function contentWords(text) {
-  return words(text).filter((word) => word.length >= 3 && !STOP.has(word));
+  return words(text).filter((word) => word.length >= 3 && !STOP.has(word) && !BOILERPLATE.has(word));
 }
 
-function covers(text, evidenceWords) {
+function covers(text, evidence) {
   const needed = contentWords(text);
   if (!needed.length) return false;
-  const hits = needed.filter((word) => evidenceWords.has(word)).length;
-  return hits >= Math.ceil(needed.length * 0.6);
+  const hits = needed.filter((word) => evidence.has(word));
+  if (needed.length <= 4) return hits.length >= Math.ceil(needed.length * 0.6);
+  const distinctiveHits = hits.filter((word) => word.length >= 5).length;
+  if (distinctiveHits >= 2 && hits.length >= Math.ceil(needed.length * 0.34)) return true;
+  return hits.length >= Math.ceil(needed.length * 0.4);
 }
 
 function hedges(text) {
@@ -56,20 +65,26 @@ export function evidenceWords(searchResults, teamKnowledge, threadHistory = []) 
 
 export function answerIsGrounded(answer, knownWords) {
   if (hedges(answer?.diagnosis)) return false;
-  if (!covers(answer?.diagnosis, knownWords)) return false;
-  return (answer?.steps ?? []).every((step) => covers(`${step?.title ?? ''} ${step?.detail ?? ''}`, knownWords));
+  return covers(answer?.diagnosis, knownWords);
 }
 
 export function applyGrounding(answer, knownWords) {
-  if (answerIsGrounded(answer, knownWords)) return false;
-  answer.confidence = 'low';
-  answer.diagnosis = UNGROUNDED_DIAGNOSIS;
-  answer.steps = [{ num: 1, title: 'Hand off the question', detail: UNGROUNDED_STEP, tag: 'escalate' }];
-  answer.involvement = {
-    needed: true,
-    who: 'engineering',
-    reason: UNGROUNDED_DIAGNOSIS,
-    channel: null,
-  };
-  return true;
+  if (!answerIsGrounded(answer, knownWords)) {
+    answer.confidence = 'low';
+    answer.diagnosis = UNGROUNDED_DIAGNOSIS;
+    answer.steps = [{ num: 1, title: 'Hand off the question', detail: UNGROUNDED_STEP, tag: 'escalate' }];
+    answer.involvement = {
+      needed: true,
+      who: 'engineering',
+      reason: UNGROUNDED_DIAGNOSIS,
+      channel: null,
+    };
+    return true;
+  }
+  const steps = Array.isArray(answer.steps) ? answer.steps : [];
+  const kept = steps.filter((step) => covers(`${step?.title ?? ''} ${step?.detail ?? ''}`, knownWords));
+  if (kept.length !== steps.length) {
+    answer.steps = kept.map((step, index) => ({ ...step, num: index + 1 }));
+  }
+  return false;
 }

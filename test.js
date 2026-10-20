@@ -2797,7 +2797,7 @@ assert(handoffText.includes('From <#C123>'), 'handoff message points back at the
 console.log('\n🔹 pipeline');
 
 import { runPipeline } from './src/claude/pipeline.js';
-import { answerIsGrounded, evidenceWords } from './src/claude/grounding.js';
+import { answerIsGrounded, applyGrounding, evidenceWords } from './src/claude/grounding.js';
 
 const origFetchPipe = globalThis.fetch;
 process.env.ANTHROPIC_API_KEY = 'test';
@@ -2876,6 +2876,29 @@ assert(!answerIsGrounded({
   diagnosis: 'API access is likely off.',
   steps: [{ title: 'Enable', detail: 'Toggle the backend.', tag: 'backend' }],
 }, supportedWords), 'a hedged diagnosis is not treated as fact');
+const angiEvidence = evidenceWords({
+  confluence: {
+    text: 'Angi Leads setup. Check booking provider IDs and job type mapping under Settings > Integrations > Marketing Integrations > Angi.',
+    refs: [{ title: 'Angi Leads setup', excerpt: 'Check booking provider IDs and job type mapping.' }],
+  },
+}, null);
+const mediumAnswer = {
+  confidence: 'medium',
+  diagnosis: 'Angi leads are not creating jobs because the booking provider ID or the job type mapping is missing. According to the Confluence page Angi Leads setup, check that mapping.',
+  steps: [
+    { num: 1, title: 'Check the booking provider', detail: 'Compare the booking provider ID with the lead source under Marketing Integrations.', tag: 'action' },
+    { num: 2, title: 'Restart the worker', detail: 'Restart the kubernetes deployment so the pod picks up the change.', tag: 'backend' },
+  ],
+  involvement: { needed: false, who: null, reason: null, channel: null },
+};
+assert(answerIsGrounded(mediumAnswer, angiEvidence), 'a plain-language reading of the research is kept');
+assert(applyGrounding(mediumAnswer, angiEvidence) === false, 'a supported answer is not replaced with the no-match handoff');
+assert(mediumAnswer.diagnosis.includes('booking provider'), 'the diagnosis stays');
+assert(mediumAnswer.steps.length === 1 && mediumAnswer.steps[0].title === 'Check the booking provider', 'an invented step is dropped and the supported step stays');
+assert(!answerIsGrounded({
+  diagnosis: 'The QuickBooks sync token expired after the OAuth refresh window closed. According to the Confluence page Invoice Export, regenerate the realm id.',
+  steps: [{ title: 'Regenerate the realm', detail: 'Open the QuickBooks connector and refresh the OAuth token.', tag: 'backend' }],
+}, angiEvidence), 'an answer about a different product is not treated as supported');
 
 // Test B2: customer_mentioned true → fourth reply call
 stepCounter = 0;
