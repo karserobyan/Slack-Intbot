@@ -2259,6 +2259,33 @@ assert(Array.isArray(jiraBody.fields) && jiraBody.fields.includes('summary'), 'J
 assert(!jiraBody.jql.includes('?') && !jiraBody.jql.includes('/'), 'Jira query drops characters that break JQL');
 assert(jiraHit.refs[0].url === 'https://servicetitan.atlassian.net/browse/INT-9', 'Jira ref links the issue');
 assert(jiraHit.refs[0].title === 'INT-9 — Calendar zap', 'Jira ref keeps the issue summary');
+const pageCalls = [];
+globalThis.fetch = async (url) => {
+  pageCalls.push(String(url));
+  const u = String(url);
+  if (u.includes('/wiki/rest/api/search')) {
+    return new Response(JSON.stringify({
+      results: [{
+        title: 'Zapier workflow',
+        content: { id: '9' },
+        url: '/spaces/IPD/pages/9/Zapier-workflow',
+        excerpt: 'Enable API access',
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (u.includes('/wiki/rest/api/content/9')) {
+    return new Response(JSON.stringify({
+      body: { storage: { value: '<p>Open Admin and enable the tenant Zapier API access toggle.</p><p>Then reconnect the zap.</p>' } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response('{}', { status: 500 });
+};
+const readPage = await searchConfluence('zapier workflow');
+assert(pageCalls.some(u => u.includes('/wiki/rest/api/content/9') && u.includes('expand=body.storage')), 'Confluence opens the Internal Product Documentation page');
+assert(readPage.text.includes('Open Admin and enable the tenant Zapier API access toggle'), 'the answer receives the page, not only the search excerpt');
+assert(readPage.text.includes('Then reconnect the zap'), 'the answer receives the rest of the page');
+assert(readPage.refs[0].excerpt === 'Enable API access', 'the short search clip stays on the ref');
+assert(!JSON.stringify(readPage.refs).includes('Then reconnect the zap'), 'the page body is not copied onto the card ref');
 const merged = mergeFoundRefs(
   { slack_refs: [], atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/old', title: 'Old page' }], kb_refs: [] },
   { slack: null, kb: null, jira: null, confluence: { refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/spaces/INT/pages/1/Zapier', title: 'Zapier calendar' }] } },
