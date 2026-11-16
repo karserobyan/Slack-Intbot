@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { searchKnowledgeBase } from '../src/claude/kb-search.js';
+import { messagesUrl, HAIKU_MODEL } from '../src/claude/anthropic-config.js';
 
 const query = process.argv[2] ?? 'ServiceTitan QuickBooks integration setup';
 const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -23,7 +24,7 @@ console.log(`ANTHROPIC_API_KEY: ${apiKey ? apiKey.slice(0, 10) + '…' + apiKey.
 if (!apiKey) {
   fail(
     'ANTHROPIC_API_KEY is missing from .env',
-    'Add the API key from https://console.anthropic.com/settings/keys to .env'
+    'Put the AI Gateway token in ANTHROPIC_API_KEY'
   );
 }
 
@@ -31,7 +32,7 @@ console.log('\n--- raw Anthropic API call ---');
 
 let res;
 try {
-  res = await fetch('https://api.anthropic.com/v1/messages', {
+  res = await fetch(messagesUrl(), {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -39,7 +40,7 @@ try {
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: HAIKU_MODEL,
       max_tokens: 1024,
       tools: [{
         type: 'web_search_20250305',
@@ -54,7 +55,7 @@ try {
 } catch (err) {
   fail(
     `Network error: ${err.message}`,
-    'Check internet connection and that api.anthropic.com is reachable from this machine'
+    'Check that this machine can reach the AI Gateway'
   );
 }
 
@@ -66,36 +67,36 @@ console.log(`status: ${res.status} ${res.statusText || ''}`.trim());
 
 if (res.status === 401) {
   fail(
-    'Anthropic API key is invalid or has been revoked',
-    'Regenerate the key at https://console.anthropic.com/settings/keys and update ANTHROPIC_API_KEY in .env'
+    'The gateway rejected ANTHROPIC_API_KEY',
+    'Use the token issued for this gateway, then update ANTHROPIC_API_KEY in .env'
   );
 }
 
 if (res.status === 403 && /web_search|tool.*not.*enabled|not.*available/i.test(errMsg)) {
   fail(
-    'web_search tool is not enabled for this Anthropic account/workspace',
-    'Visit https://console.anthropic.com/settings → enable web_search tool for the workspace, or contact Anthropic support'
+    'web_search is not enabled for this gateway model',
+    'Ask the gateway owners to enable web_search on haiku-5-5'
   );
 }
 
 if (res.status === 429 || errType === 'rate_limit_error') {
   fail(
     `Anthropic rate limit hit: ${errMsg || '(no message)'}`,
-    'Wait a minute and retry, or check usage at https://console.anthropic.com/settings/limits'
+    'Wait a minute and retry. The gateway default is 60 requests a minute.'
   );
 }
 
 if (res.status === 400 && /credit|balance|billing/i.test(errMsg)) {
   fail(
     'Anthropic account has no credit / billing issue',
-    'Add credits at https://console.anthropic.com/settings/billing'
+    'Check the virtual-account budget with the gateway owners'
   );
 }
 
 if (!res.ok) {
   fail(
     `Unexpected ${res.status} from Anthropic API: ${errMsg || '(no message)'}`,
-    `Full error type: ${errType}. Check https://console.anthropic.com for account status.`
+    `Full error type: ${errType}. Check the gateway token, base URL, and model id.`
   );
 }
 

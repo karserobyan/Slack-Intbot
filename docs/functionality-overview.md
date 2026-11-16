@@ -7,7 +7,7 @@ An internal Slack bot for ServiceTitan integrations support people who own the c
 ## Quick facts
 
 - **Entry points:** `src/index.js` (Bolt app startup) + `src/handlers/mention.js` (shared query handler)
-- **Model:** `claude-sonnet-4-6` (override via `ANTHROPIC_MODEL`)
+- **Model:** `sonnet-5-5` for Resolver and Reply (override via `ANTHROPIC_MODEL`); `haiku-5-5` for Intake, evaluator, handoff choice, and KB search. Calls go to `https://servicetitanint.truefoundry.cloud/api/llm/v1/messages`.
 - **Stack:** Node.js ESM, `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
 - **Search sources:** Confluence REST, Jira REST, Slack MCP (optional), Anthropic `web_search` scoped to `help.servicetitan.com` (KB), local `data/knowledge.md`
 - **In scope:** Zapier, Angi, Reserve with Google, ServiceChannel, Thumbtack, Procore, Chat-to-Text, generic webhooks/API

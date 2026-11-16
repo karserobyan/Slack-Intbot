@@ -94,9 +94,11 @@ import {
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
+import { messagesUrl, HAIKU_MODEL, SONNET_MODEL } from './src/claude/anthropic-config.js';
 
 let passed = 0;
 let failed = 0;
+
 const DANGEROUS_TEXT = 'A&B <@U123> <https://evil.test|click>';
 const DANGEROUS_ESCAPED = 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;';
 
@@ -118,6 +120,11 @@ assert.deepEqual = (actual, expected, label) => {
     assert(false, label);
   }
 };
+
+console.log('\n🔹 Model gateway');
+assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'model calls go to the ServiceTitan gateway');
+assert(HAIKU_MODEL === 'haiku-5-5', 'intake uses the live haiku model');
+assert(SONNET_MODEL === 'sonnet-5-5', 'the answer uses the live sonnet model');
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');
@@ -2129,7 +2136,7 @@ const origFetchSE = globalThis.fetch;
 // Helper fetch returns a per-URL fixture
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('api.anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{
         type: 'web_search_tool_result',
@@ -2185,7 +2192,7 @@ assert(partial.jira === null, 'jira stays null');
 // One failing source does not break others
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('api.anthropic.com')) throw new Error('boom');
+  if (u.includes('truefoundry.cloud')) throw new Error('boom');
   if (u.includes('atlassian.net/wiki')) {
     return new Response(JSON.stringify({ results: [{ title: 'OK', url: '/x', excerpt: '' }] }), { status: 200 });
   }
@@ -2350,7 +2357,7 @@ const RESOLVER_MOCK = {
 };
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     lastAnthropicBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       id: 'msg_test',
@@ -2423,7 +2430,7 @@ assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback add
 // runReply returns only { customer_message }
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     lastAnthropicBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"customer_message":"Hi there, we are fixing this.","extra":"drop"}' }],
@@ -2460,7 +2467,7 @@ const origFetchInt = globalThis.fetch;
 let lastInterpreterBody;
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     lastInterpreterBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"cleaned_question":"Zapier stopped syncing","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"stopped syncing"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"confluence","priority":"high","query":"Zapier sync"}],"rationale":"r"}}' }],
@@ -2475,7 +2482,7 @@ const okInterp = await runInterpreter('Zapier stopped syncing');
 assert(okInterp.cleaned_question === 'Zapier stopped syncing', 'parses cleaned_question');
 assert(okInterp.intent === 'troubleshooting', 'parses intent');
 assert(okInterp.question_confidence === 'high', 'parses question_confidence');
-assert(lastInterpreterBody.model === 'claude-haiku-4-5-20251001' || lastInterpreterBody.model.includes('haiku'), 'uses Haiku model');
+assert(lastInterpreterBody.model === 'haiku-5-5', 'uses the gateway Haiku model');
 
 await runInterpreter('still not working', { threadHistory: [
   { role: 'user', content: 'My Zapier broke' },
@@ -2488,7 +2495,7 @@ assert(lastMsg.includes('Zapier broke'), 'includes prior thread history');
 
 let attempts = 0;
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     attempts++;
     if (attempts === 1) return new Response('upstream error', { status: 503 });
     return new Response(JSON.stringify({
@@ -2504,7 +2511,7 @@ assert(retried.question_confidence === 'low', 'got the eventual response');
 
 attempts = 0;
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     attempts++;
     return new Response('boom', { status: 503 });
   }
@@ -2528,7 +2535,7 @@ import { runEvaluator } from './src/claude/evaluator.js';
 const origFetchEv = globalThis.fetch;
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"sufficient":true,"rationale":"good","refined_plan":null}' }],
       stop_reason: 'end_turn',
@@ -2547,7 +2554,7 @@ assert(suff.sufficient === true, 'parses sufficient: true');
 assert(suff.refined_plan === null, 'refined_plan null when sufficient');
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"sufficient":false,"rationale":"results off-topic","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"better keywords"}]}}' }],
       stop_reason: 'end_turn',
@@ -2830,7 +2837,7 @@ function emptyHelpCenterResponse() {
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 }
 async function passThroughFetch(url, init) {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return nextResponse();
   }
@@ -2940,7 +2947,7 @@ sequenceResponses.push(
 );
 const priorBodies = [];
 globalThis.fetch = async (url, init) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     priorBodies.push(JSON.parse(init.body).messages?.[0]?.content ?? '');
     return nextResponse();
@@ -3038,7 +3045,7 @@ const fillResponses = [
 ];
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return fillResponses[fillStep++];
   }
@@ -3193,7 +3200,7 @@ const draftResponses = [
 ];
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return draftResponses[draftStep++];
   }
@@ -5104,7 +5111,7 @@ const mentionResponses = [
 ];
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(opts)) return emptyHelpCenterResponse();
     return mentionResponses[mentionStepCounter++];
   }
@@ -5166,7 +5173,7 @@ const followUpSlackToken = process.env.SLACK_USER_TOKEN;
 process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return followUpResponses[followUpStep++];
   }
