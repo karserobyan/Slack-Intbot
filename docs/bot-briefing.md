@@ -70,7 +70,7 @@ Wrong-answer feedback and `knowledge.md` nominations stay human-approved (Stewar
 
 Node.js ESM. No CommonJS. No comments unless the reason is non-obvious. Block Kit stays well under 50 blocks. Escape model text with `escapeMrkdwn`.
 
-Models already chosen: Intake, evaluator, handoff choice, and KB web search use `claude-haiku-4-5-20251001`. Resolver and Reply use `ANTHROPIC_MODEL` or `claude-sonnet-4-6`. Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
+Models already chosen: Intake, evaluator, handoff choice, and KB web search use `haiku-5-5`. Resolver and Reply use `ANTHROPIC_MODEL` or `sonnet-5-5`. Calls go to the AI Gateway at `https://servicetitanint.truefoundry.cloud/api/llm` (`/v1/messages`). Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
 
 ## Recent merges
 

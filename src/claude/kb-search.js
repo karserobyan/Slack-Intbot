@@ -7,9 +7,10 @@
  * dependency of the bot, so this collapses one failure mode.
  */
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+import { messagesUrl, HAIKU_MODEL } from './anthropic-config.js';
+
 const KB_DOMAIN = 'help.servicetitan.com';
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = HAIKU_MODEL;
 // Top-5 relevance-ranked results per source (same cap across slack/confluence/
 // jira/kb). Each hit's text is injected into the answerer prompt, so this bounds
 // prompt token cost + latency — search is ~half of total pipeline time. Revisit
@@ -47,7 +48,7 @@ export async function searchKnowledgeBase(query, { signal: externalSignal } = {}
       : localAbort.signal;
     let response;
     try {
-      response = await fetch(ANTHROPIC_API_URL, {
+      response = await fetch(messagesUrl(), {
         method: 'POST',
         headers: {
           'x-api-key': apiKey,

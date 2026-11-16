@@ -44,15 +44,16 @@ Zero failures before a PR. `npm test` is the same command.
 1. **Intake** — `runInterpreter` (Haiku). May return a clarifying question only when `allowClarify` is true and `question_confidence` is `low`.
 2. **Research** — `executeSearchPlan`, then `runEvaluator`. At most one refined search. The first plan always includes Confluence, Jira, Slack, and the help center, even when Intake omitted one. Confluence search is the Internal Product Documentation space (`IPD`) only. A page from another space is dropped. A token starting with `ATATT` is scoped: that call goes to `api.atlassian.com` with the site cloud id. `ATLASSIAN_CONFLUENCE_API_TOKEN` and `ATLASSIAN_JIRA_API_TOKEN` override `ATLASSIAN_API_TOKEN` for that app. Page and issue links stay on the ServiceTitan site.
 3. **Resolver** — `runResolver`. Diagnosis, steps, confidence, involvement. It sets `channel` to null. The diagnosis is kept when it is about the same subject as the research, including a plain-language reading of that research. A step that does not touch the research is dropped. A diagnosis about a different product, or one that hedges with "likely", "probably", "may be", or "could be", is replaced with the honest low-confidence handoff before Reply runs.
-4. **Handoff channel** — one Haiku call (`claude-haiku-4-5-20251001`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name one listed channel, or up to 3 suggestions when no single channel owns the issue. A throw leaves both empty and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
+4. **Handoff channel** — one Haiku call (`haiku-5-5`, 15s, `maxRetries: 0`) reads the issue against every channel `conversations.list` returned. It may name one listed channel, or up to 3 suggestions when no single channel owns the issue. A throw leaves both empty and does not fail the request. The call shares the pipeline abort signal. It runs only when involvement is needed and the channel list is non-empty.
 5. **Reply** — `runReply` only when `customerWasMentioned(interpreterResult)` is true (`entities.customer_mentioned === true`). Reply emits `customer_message` only, and only from facts Resolver and Research already produced. If Reply fails and the 60s cap has not fired, return the Resolver answer with no customer draft. If the cap has fired, the request still fails.
 
 Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole run. Each model call uses `AbortSignal.any` with its own timeout. Anthropic clients set `maxRetries: 0`. Resolver may retry once on a transient error if the pipeline signal is still live. Follow-ups pass `allowClarify: false`. If that capped Resolver is missing `issue_title`, or has neither steps nor a diagnosis, coerce to issue title `Not enough detail to resolve`, confidence `low`, one escalate step, and involvement engineering. A chat reply with a diagnosis and no new steps is kept. Channel stays null unless the handoff choice names a listed channel.
 
 Models already chosen:
 
-- Interpreter, evaluator, handoff channel, KB web search: `claude-haiku-4-5-20251001`
-- Resolver and Reply: `process.env.ANTHROPIC_MODEL` or `claude-sonnet-4-6`
+- Interpreter, evaluator, handoff channel, KB web search: `haiku-5-5`
+- Resolver and Reply: `process.env.ANTHROPIC_MODEL` or `sonnet-5-5`
+- Every call goes to `ANTHROPIC_BASE_URL` (default `https://servicetitanint.truefoundry.cloud/api/llm`) plus `/v1/messages`, with `ANTHROPIC_API_KEY` as `x-api-key`.
 
 Do not switch these to Opus, adaptive thinking, or streaming unless the task says so. Do not add SDK retries. KB search calls the Messages API with `web_search_20250305` scoped to `help.servicetitan.com`; leave that tool type unless a task is specifically about KB search.
 
