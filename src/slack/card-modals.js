@@ -1,4 +1,4 @@
-import { getCachedById } from './cache.js';
+import { getCardById } from './card-store.js';
 import { buildFullStepsModal, buildDraftModal, buildExpiredModal } from './blocks.js';
 
 const BUILDERS = { steps: buildFullStepsModal, draft: buildDraftModal };
@@ -6,6 +6,6 @@ const BUILDERS = { steps: buildFullStepsModal, draft: buildDraftModal };
 export function cardModalView(kind, rawValue) {
   let id;
   try { id = JSON.parse(rawValue)?.id; } catch { /* a bad button value shows the expired modal */ }
-  const cached = typeof id === 'string' ? getCachedById(id) : null;
+  const cached = typeof id === 'string' ? getCardById(id) : null;
   return cached ? BUILDERS[kind](cached) : buildExpiredModal();
 }

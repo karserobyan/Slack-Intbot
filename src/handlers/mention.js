@@ -12,6 +12,7 @@ import {
   buildProgressBlocks,
 } from '../slack/blocks.js';
 import { getCached, setCachedMulti, cacheStats } from '../slack/cache.js';
+import { rememberCard } from '../slack/card-store.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { runPipeline } from '../claude/pipeline.js';
@@ -72,6 +73,7 @@ async function deliverPipelineResult({
   delete pipelineResult._cleanedQuestion;
 
   const view = withRequestContext(pipelineResult, { query, threadTs, channelId });
+  if (!followUp) rememberCard(query, stripTransient(view));
   const blocks = followUp ? buildThreadReplyBlocks(view) : buildResponseBlocks(view, { isDm });
   const fallbackText = followUp
     ? String(view.diagnosis ?? view.issue_title ?? query).slice(0, 200)
@@ -259,6 +261,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
     const cachedView = withRequestContext(cached, { query, threadTs, channelId });
+    rememberCard(query, stripTransient(cachedView));
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,

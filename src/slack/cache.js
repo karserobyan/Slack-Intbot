@@ -61,19 +61,6 @@ export function shortId(query) {
 }
 
 /**
- * Retrieves a cached response by its short id, or null if missing/expired.
- * @param {string} id
- * @returns {object|null}
- */
-export function getCachedById(id) {
-  for (const key of store.keys()) {
-    if (shortId(key) === id) return lookup(key);
-  }
-  _misses++;
-  return null;
-}
-
-/**
  * Stores a response in the cache.
  * Evicts the oldest entry if the store is at capacity.
  * @param {string} query

@@ -821,7 +821,7 @@ export function buildDraftModal(data) {
 
 export function buildExpiredModal() {
   return cardModal('answer_expired_view', 'Answer expired', [
-    textSection('This answer is no longer stored (it expired, or it was marked wrong). Ask again to get a fresh one.'),
+    textSection('This answer is no longer stored (it expired, or the bot restarted). Ask again to get a fresh one.'),
   ]);
 }
 
