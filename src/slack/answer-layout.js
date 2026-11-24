@@ -34,12 +34,13 @@ function splitSentences(text) {
   return text.split(SENTENCE_BOUNDARY);
 }
 
-export function trimToSentences(text, maxSentences, { keepLast = false } = {}) {
+export function trimToSentences(text, maxSentences, { keepLast = false, keep = null } = {}) {
   if (typeof text !== 'string' || !text) return '';
   const sentences = splitSentences(text);
   if (sentences.length <= maxSentences) return text;
+  const tail = keep ? sentences.slice(maxSentences - 1).find(keep) : undefined;
   const kept = keepLast
-    ? [...sentences.slice(0, maxSentences - 1), sentences[sentences.length - 1]]
+    ? [...sentences.slice(0, maxSentences - 1), tail ?? sentences[sentences.length - 1]]
     : sentences.slice(0, maxSentences);
   return kept.join(' ');
 }

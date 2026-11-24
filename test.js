@@ -866,6 +866,22 @@ assert(!JSON.stringify(answerCard).includes('*Start here*'), 'answer: no *Start 
 assert(!JSON.stringify(answerCard).includes('*Research*'), 'answer: no *Research* paragraph');
 assert(cardSections(buildResponseBlocks({ ...intentBase, _intent: 'policy' }))[0].startsWith('*Answer*\n'), 'policy uses the answer layout');
 
+const answerLead = (diagnosis) => cardSections(buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting', diagnosis }))
+  .find(t => t.startsWith('*Answer*\n')).replace('*Answer*\n', '');
+const leadSentences = (text) => text.split(/(?<=[.!?])\s+(?=[A-Z<])/);
+const kbLink = '<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>';
+const midCited = answerLead('Zapier uses the API. API access must be on. According to the help center article Setting up Zapier with ServiceTitan, enable it first. The toggle resets after migration. Ask the customer to retry.');
+assert(midCited.includes(kbLink), 'answer: a citation in sentence 3 of 5 keeps its link');
+assert(leadSentences(midCited).length <= 3, 'answer: a mid-paragraph citation still gives at most 3 sentences');
+assert(!midCited.includes('Ask the customer to retry'), 'answer: the cited sentence replaces the last sentence');
+const earlyCited = answerLead('According to Setting up Zapier with ServiceTitan, API access must be on. Zapier uses the API. The toggle is in admin. It resets after migration. Ask the customer to retry.');
+assert(earlyCited.includes(kbLink), 'answer: a citation in sentence 1 is still shown');
+assert(leadSentences(earlyCited).at(-1) === 'Ask the customer to retry.', 'answer: with an early citation the third kept sentence is the last one');
+const uncited = answerLead('Zapier uses the API. API access must be on. The toggle is in admin. It resets after migration. Ask the customer to retry.');
+assert(leadSentences(uncited).at(-1) === 'Ask the customer to retry.' && leadSentences(uncited).length === 3, 'answer: with no citation the last sentence is kept');
+const twoCited = answerLead('Zapier uses the API. API access must be on. The toggle is in admin. See Setting up Zapier with ServiceTitan for the toggle. Ask #ask-integrations if Zapier with ServiceTitan still fails.');
+assert(twoCited.includes(kbLink) && !twoCited.includes('Ask '), 'answer: with two later citations the first one is kept');
+
 // Legacy
 const legacyNoIntent = buildResponseBlocks(sampleJson);
 const legacyUnclear = buildResponseBlocks({ ...sampleJson, _intent: 'unclear' });
@@ -5553,6 +5569,22 @@ assert(
 assert(
   trimToSentences('Open <https://a.test/x|the page>. <https://b.test|Then> save. Finally check.', 2) === 'Open <https://a.test/x|the page>. <https://b.test|Then> save.',
   'trimToSentences splits before a Slack link and keeps link text intact',
+);
+assert(
+  trimToSentences('One. Two. Cited here. Four. Five.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'One. Two. Cited here.',
+  'trimToSentences with keep keeps the first later sentence the predicate accepts instead of the last',
+);
+assert(
+  trimToSentences('One. Two. Three. Cited a. Cited b.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'One. Two. Cited a.',
+  'trimToSentences with keep picks the first of several accepted later sentences',
+);
+assert(
+  trimToSentences('One. Two. Three. Four. Five.', 3, { keepLast: true, keep: () => false }) === 'One. Two. Five.',
+  'trimToSentences with keep falls back to the last sentence when none is accepted',
+);
+assert(
+  trimToSentences('Cited one. Two. Three. Four.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'Cited one. Two. Four.',
+  'trimToSentences with keep ignores accepted sentences already in the leading set',
 );
 assert(
   trimToSentences('One. Two. Three.', 2, { keepLast: true }) === 'One. Three.',

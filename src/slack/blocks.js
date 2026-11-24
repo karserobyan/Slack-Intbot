@@ -346,7 +346,8 @@ function buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm
     if (guide) section(`*Start here*\n${safeSlackLink(guide.url, guide.title)}`);
     if (diagnosis) expandable = true;
   } else if (diagnosis) {
-    const lead = trimToSentences(diagnosis, 3, { keepLast: true });
+    const cites = (sentence) => linkifyCitations(sentence, slackRefs, atlassianRefs, kbRefs).includes('<http');
+    const lead = trimToSentences(diagnosis, 3, { keepLast: true, keep: cites });
     const text = `*Answer*\n${linkifyCitations(lead, slackRefs, atlassianRefs, kbRefs)}`;
     if (lead !== diagnosis || text.length > SECTION_MAX) expandable = true;
     section(clamp(text));
