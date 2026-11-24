@@ -117,6 +117,7 @@
   - Answer: `_intent: 'troubleshooting'` gives an `*Answer*` section with at most 3 sentences that still contains the citation link when the diagnosis cites one; at most 3 step blocks.
   - Legacy: no `_intent`, and `_intent: 'unclear'`, render exactly as before (existing tests keep passing; add one equality check against the unmodified builder output for `sampleJson`).
   - Buttons: `Full steps` exists only when steps were cut; `Draft` exists only when `involvement.needed` and a draft exists; order is Full steps, Draft, Sources, Wrong Answer, New chat.
+  - Review Focus 3: store a view with `_intent: 'how-to'` through `stripTransient`, `setCached` and `getCached`, then `buildResponseBlocks` of the retrieved copy still has the `*Start here*` layout.
   - Review Focus 1: guide intent with only Jira and Slack refs has no `*Start here*` and still has steps.
   - Review Focus 2: empty diagnosis and a one-sentence diagnosis produce no section with empty text.
   - Review Focus 4: refs exist but the diagnosis has no citation label, so the card has a `Sources:` context block with at most 3 links.
