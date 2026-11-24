@@ -6071,6 +6071,36 @@ for (const intent of ['how-to', 'troubleshooting']) {
 }
 forgetCard(roundTripId);
 
+// ── step numbers are escaped on every card and modal ────────────────────────
+const hostileNumSteps = [
+  { num: '<!channel>', title: 'Ping everyone', detail: 'Open the admin portal. Then save.', tag: 'action' },
+  { num: undefined, title: 'No number', detail: 'Confirm the change. Then tell the customer.', tag: 'verify' },
+  { title: 'Missing number', detail: 'Reconnect Zapier.', tag: 'backend' },
+];
+const hostileNumView = {
+  ...intentBase,
+  steps: hostileNumSteps,
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+};
+const hostileNumRenders = {
+  'compact guide card': buildResponseBlocks({ ...hostileNumView, _intent: 'how-to' }),
+  'compact answer card': buildResponseBlocks({ ...hostileNumView, _intent: 'troubleshooting' }),
+  'legacy card': buildResponseBlocks({ ...hostileNumView, _intent: undefined }),
+  'Full steps modal': buildFullStepsModal(hostileNumView),
+  'Draft modal': buildDraftModal(hostileNumView),
+  'auto-answer card': buildAutoAnswerBlocks({ originalUrl: 'https://servicetitan.slack.com/archives/C1/p1', sourceChannelId: 'C1', originalUserId: 'U1', query: 'q', result: hostileNumView }),
+};
+for (const [label, rendered] of Object.entries(hostileNumRenders)) {
+  const json = JSON.stringify(rendered);
+  assert(!json.includes('<!channel>'), `${label}: a model-supplied step number cannot ping the channel`);
+  assert(!json.includes('undefined.'), `${label}: a missing step number never renders as undefined.`);
+}
+for (const label of ['compact guide card', 'compact answer card', 'legacy card', 'Full steps modal', 'Draft modal']) {
+  const json = JSON.stringify(hostileNumRenders[label]);
+  assert(json.includes('&lt;!channel&gt;'), `${label}: the hostile step number is shown escaped`);
+  assert(json.includes('2. No number') && json.includes('3. Missing number'), `${label}: a missing step number falls back to its position`);
+}
+
 for (const view of [stepsModal, draftModal, expiredModal, bareSteps, bareDraft, honestSteps, honestDraft, hugeSteps25, hugeDraft]) {
   assert(view.title.text.length <= 24, `modal title "${view.title.text}" is at most 24 characters`);
 }

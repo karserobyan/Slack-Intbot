@@ -134,6 +134,12 @@ function isHonestHandoff(data) {
     && String(steps[0]?.detail ?? '').trim() === UNGROUNDED_STEP;
 }
 
+// The model chooses step.num and reads attacker-writable Slack text, so it is escaped like any model text.
+function stepNum(step, index) {
+  const num = step.num == null || step.num === '' ? index + 1 : step.num;
+  return escapeMrkdwn(String(num));
+}
+
 function handoffDraftText(data) {
   if (isHonestHandoff(data)) {
     const question = String(data._originalQuery ?? data.issue_title ?? '').trim();
@@ -143,11 +149,11 @@ function handoffDraftText(data) {
   const parts = [];
   const diagnosis = String(data.diagnosis ?? '').trim();
   if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
-  const stepLines = (data.steps ?? []).slice(0, 20).map((step) => {
+  const stepLines = (data.steps ?? []).slice(0, 20).map((step, i) => {
     const title = escapeMrkdwn(String(step.title ?? '').trim());
     const detail = escapeMrkdwn(String(step.detail ?? '').trim());
     if (!title && !detail) return '';
-    const head = [step.num != null && step.num !== '' ? `${step.num}.` : '', title].filter(Boolean).join(' ');
+    const head = [`${stepNum(step, i)}.`, title].filter(Boolean).join(' ');
     return detail ? (head ? `${head} — ${detail}` : detail) : head;
   }).filter(Boolean);
   if (stepLines.length) parts.push(stepLines.join('\n'));
@@ -198,9 +204,9 @@ export function buildThreadReplyBlocks(data) {
 }
 
 function buildStepBlocks(steps) {
-  return steps.map((step) => {
+  return steps.map((step, i) => {
     const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-    const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
+    const prefix = `${circle} *${stepNum(step, i)}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
     const detailRaw = escapeMrkdwn(step.detail);
     const budget = 2900 - prefix.length;
     const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
@@ -299,11 +305,12 @@ const COMPACT_LAYOUT = {
 };
 const COMPACT_TITLE_MAX = 120;
 
-function compactStepLine(step) {
+function compactStepLine(step, index) {
   const title = String(step.title ?? '').trim();
+  const num = stepNum(step, index);
   const head = title
-    ? `*${step.num}. ${escapeMrkdwn(clamp(title, COMPACT_TITLE_MAX))}*`
-    : `*${step.num}.*`;
+    ? `*${num}. ${escapeMrkdwn(clamp(title, COMPACT_TITLE_MAX))}*`
+    : `*${num}.*`;
   const line = oneLineStep(step);
   return `${TAG_CIRCLE[step.tag] ?? '⚪'} ${head}${line ? ` — ${escapeMrkdwn(line)}` : ''}`;
 }
@@ -949,7 +956,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const num = step.num ? `${step.num}. ` : '';
+      const num = step.num ? `${escapeMrkdwn(String(step.num))}. ` : '';
       const title = step.title ? `*${num}${escapeMrkdwn(step.title)}*` : `*${num}${escapeMrkdwn(step.tag ?? 'step')}*`;
       const detail = step.detail ? `\n${escapeMrkdwn(step.detail)}` : '';
       blocks.push({
