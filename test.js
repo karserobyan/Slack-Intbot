@@ -810,6 +810,200 @@ assert(dmActions.elements.at(-1).text.text === '💬 New chat', 'New chat button
 const nonDmActions = responseBlocks.find(b => b.type === 'actions');
 assert(!nonDmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: false (default) has no new_chat button');
 
+// ── 3a. Intent-driven card ───────────────────────────────────────────────────
+console.log('\n🔹 Intent-driven card');
+
+const STEP_LINE = /^(🔵|🟠|🟢|🔴|⚪) /u;
+const cardSections = (blocks) => blocks.filter(b => b.type === 'section').map(b => b.text.text);
+const cardStepLines = (blocks) => cardSections(blocks).flatMap(t => t.split('\n')).filter(l => STEP_LINE.test(l));
+const cardActionIds = (blocks) => blocks.find(b => b.type === 'actions').elements.map(e => e.action_id);
+const cardButton = (blocks, id) => blocks.find(b => b.type === 'actions').elements.find(e => e.action_id === id);
+const cardHasEmptyText = (blocks) => blocks.some(b =>
+  (b.type === 'section' && !String(b.text?.text ?? '').trim())
+  || (b.type === 'context' && b.elements.some(e => !String(e.text ?? '').trim())));
+
+const intentQuery = 'How do I set up Zapier for a tenant?';
+const intentDiagnosis = 'API access is off for this tenant. Zapier needs it before any zap can run. The toggle lives in the admin portal. It resets after a tenant migration. According to the help center article Setting up Zapier with ServiceTitan, enable API access before connecting.';
+const intentSteps = Array.from({ length: 7 }, (_, i) => ({
+  num: i + 1,
+  title: `Step title ${i + 1}`,
+  detail: `Open the Zapier settings for step ${i + 1}. Then confirm the change saved. Finally tell the customer.`,
+  tag: ['action', 'backend', 'verify', 'escalate', 'mystery', 'action', 'verify'][i],
+}));
+const intentBase = { ...sampleJson, diagnosis: intentDiagnosis, steps: intentSteps, _originalQuery: intentQuery };
+
+// Guide layout
+const guideCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to' });
+const guideJson = JSON.stringify(guideCard);
+const startHere = cardSections(guideCard).find(t => t.startsWith('*Start here*'));
+assert(startHere !== undefined, 'guide: a *Start here* section is shown');
+assert(startHere?.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'guide: *Start here* links the KB guide');
+assert(!guideJson.includes('*Research*'), 'guide: no *Research* paragraph');
+assert(!guideJson.includes('*Draft*'), 'guide: no inline *Draft*');
+assert(!guideJson.includes('*What to do*'), 'guide: no legacy steps heading');
+assert(cardSections(guideCard).some(t => t.startsWith('*Steps*\n')), 'guide: one *Steps* section');
+assert(cardStepLines(guideCard).length === 5, `guide: at most 5 step lines (got ${cardStepLines(guideCard).length})`);
+assert(cardStepLines(guideCard).every(l => (l.split(' — ').slice(1).join(' — ')).length <= 140), 'guide: each step detail part is at most 140 characters');
+assert(cardStepLines(guideCard)[0] === '🔵 *1. Step title 1* — Open the Zapier settings for step 1.', 'guide: a step line is the dot, bold title and first sentence');
+assert(cardStepLines(guideCard)[4].startsWith('⚪ '), 'guide: an unknown tag falls back to the white dot');
+assert(guideCard.filter(b => b.type === 'section').length === 2, 'guide: steps render as one section, not one block per step');
+assert(guideCard[0].type === 'header' && guideCard[1].type === 'divider' && guideCard.at(-1).type === 'divider', 'guide: header, divider, ..., divider');
+assert(!guideCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'guide: no Sources line when *Start here* already links a source');
+
+const integrationSetupCard = buildResponseBlocks({ ...intentBase, _intent: 'integration-setup' });
+assert(cardSections(integrationSetupCard)[0].startsWith('*Start here*'), 'integration-setup uses the guide layout');
+
+// Answer layout
+const answerCard = buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting' });
+const answerText = cardSections(answerCard).find(t => t.startsWith('*Answer*\n'));
+assert(answerText !== undefined, 'answer: an *Answer* section is shown');
+assert(answerText.replace('*Answer*\n', '').split(/(?<=[.!?])\s+(?=[A-Z<])/).length <= 3, 'answer: at most 3 sentences');
+assert(answerText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'answer: the cited guide sentence is kept and linked');
+assert(answerText.startsWith('*Answer*\nAPI access is off for this tenant.'), 'answer: the lead sentence comes first');
+assert(cardSections(answerCard).some(t => t.startsWith('*Next steps*\n')), 'answer: a *Next steps* section');
+assert(cardStepLines(answerCard).length === 3, `answer: at most 3 step lines (got ${cardStepLines(answerCard).length})`);
+assert(!JSON.stringify(answerCard).includes('*Start here*'), 'answer: no *Start here* section');
+assert(!JSON.stringify(answerCard).includes('*Research*'), 'answer: no *Research* paragraph');
+assert(cardSections(buildResponseBlocks({ ...intentBase, _intent: 'policy' }))[0].startsWith('*Answer*\n'), 'policy uses the answer layout');
+
+// Legacy
+const legacyNoIntent = buildResponseBlocks(sampleJson);
+const legacyUnclear = buildResponseBlocks({ ...sampleJson, _intent: 'unclear' });
+let legacySame = true;
+try { deepEqual(legacyUnclear, legacyNoIntent); } catch { legacySame = false; }
+assert(legacySame, 'legacy: _intent unclear renders exactly like a missing intent');
+assert(JSON.stringify(legacyNoIntent).includes('*Research*') && JSON.stringify(legacyNoIntent).includes('*What to do*'), 'legacy: keeps *Research* and *What to do*');
+let legacyUnknownSame = true;
+try { deepEqual(buildResponseBlocks({ ...sampleJson, _intent: 'nonsense' }), legacyNoIntent); } catch { legacyUnknownSame = false; }
+assert(legacyUnknownSame, 'legacy: an unknown intent renders exactly like a missing intent');
+
+// Buttons
+const fullyCutCard = buildResponseBlocks({
+  ...intentBase,
+  _intent: 'how-to',
+  involvement: { needed: true, who: 'Integrations Engineering', channel: '#ask-integrations' },
+}, { isDm: true });
+assert(
+  JSON.stringify(cardActionIds(fullyCutCard)) === JSON.stringify(['view_full_steps_modal', 'view_draft_modal', 'view_sources_modal', 'wrong_answer_modal', 'new_chat']),
+  `buttons: order is Full steps, Draft, Sources, Wrong Answer, New chat (got ${cardActionIds(fullyCutCard).join(',')})`,
+);
+assert(cardButton(fullyCutCard, 'view_full_steps_modal').text.text === '📋 Full steps', 'buttons: Full steps label');
+assert(cardButton(fullyCutCard, 'view_draft_modal').text.text === '📝 Draft', 'buttons: Draft label');
+for (const id of ['view_full_steps_modal', 'view_draft_modal']) {
+  const value = JSON.parse(cardButton(fullyCutCard, id).value);
+  assert(/^[0-9a-f]{12}$/.test(value.id) && Object.keys(value).length === 1, `buttons: ${id} value is { id: <12 hex> }`);
+  assert(value.id === shortId(intentQuery), `buttons: ${id} id is shortId of the original query`);
+}
+assert(fullyCutCard.find(b => b.type === 'actions').elements.every(e => e.value.length < 2000), 'buttons: every value is under 2000 characters');
+assert(JSON.stringify(fullyCutCard).includes('This belongs in #ask-integrations'), 'guide: the handoff line is kept when another team is needed');
+assert(!JSON.stringify(fullyCutCard).includes('*Draft*'), 'guide: the draft is behind the button, not inline');
+
+const shortSteps = [
+  { num: 1, title: 'Toggle API access', detail: 'Turn on Zapier API access.', tag: 'backend' },
+  { num: 2, title: 'Reconnect', detail: 'Ask the customer to reconnect Zapier.', tag: 'verify' },
+];
+const nothingCutGuide = buildResponseBlocks({ ...intentBase, _intent: 'how-to', diagnosis: '', steps: shortSteps });
+assert(!cardActionIds(nothingCutGuide).includes('view_full_steps_modal'), 'buttons: no Full steps on a guide card when nothing was cut');
+assert(!cardActionIds(nothingCutGuide).includes('view_draft_modal'), 'buttons: no Draft when no other team is needed');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'how-to', steps: shortSteps })).includes('view_full_steps_modal'), 'buttons: Full steps on a guide card when the research is hidden');
+const nothingCutAnswer = buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: 'API access must stay on for Zapier.', steps: shortSteps });
+assert(!cardActionIds(nothingCutAnswer).includes('view_full_steps_modal'), 'buttons: no Full steps on an answer card when nothing was cut');
+assert(cardActionIds(answerCard).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when steps were cut');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', steps: shortSteps })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when the answer was cut');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: 'Short.', steps: [{ ...shortSteps[0], detail: 'One. Two.' }] })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when a step detail was cut');
+const noQueryCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _originalQuery: undefined, involvement: { needed: true, channel: '#ask-integrations' } });
+assert(!cardActionIds(noQueryCard).includes('view_full_steps_modal') && !cardActionIds(noQueryCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted without an original query');
+assert(
+  JSON.stringify(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting' }))) === JSON.stringify(['view_full_steps_modal', 'view_sources_modal', 'wrong_answer_modal']),
+  'buttons: a channel answer card has Full steps, Sources, Wrong Answer',
+);
+
+// Review Focus 3: a cached view keeps its layout
+setCached('intent card cache replay', stripTransient({ ...intentBase, _intent: 'how-to' }));
+const replayed = getCached('intent card cache replay');
+assert(replayed?._intent === 'how-to', 'cache replay: _intent survives stripTransient and the cache');
+deleteCache('intent card cache replay');
+const replayedCard = buildResponseBlocks({ ...replayed, _originalQuery: 'intent card cache replay' });
+assert(cardSections(replayedCard)[0]?.startsWith('*Start here*'), 'cache replay: the retrieved copy still renders *Start here*');
+
+// Review Focus 1: no guide refs
+const noGuideCard = buildResponseBlocks({
+  ...intentBase,
+  _intent: 'how-to',
+  kb_refs: [],
+  atlassian_refs: [{ type: 'jira', url: 'https://servicetitan.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting' }],
+});
+assert(!JSON.stringify(noGuideCard).includes('*Start here*'), 'no guide refs: no *Start here* section');
+assert(cardStepLines(noGuideCard).length === 5, 'no guide refs: steps still render');
+
+// Review Focus 2: no empty-text blocks
+for (const intent of ['how-to', 'troubleshooting']) {
+  for (const diagnosis of ['', 'API access is off for this tenant.']) {
+    const card = buildResponseBlocks({ ...intentBase, _intent: intent, diagnosis });
+    assert(!cardHasEmptyText(card), `${intent} with ${diagnosis ? 'a one-sentence' : 'an empty'} diagnosis has no empty-text block`);
+  }
+  const bare = buildResponseBlocks({ issue_title: 'Bare', _intent: intent, diagnosis: '', steps: [{ num: 1, title: '', detail: '' }], _originalQuery: 'bare' });
+  assert(!cardHasEmptyText(bare), `${intent} with no diagnosis and a blank step has no empty-text block`);
+  assert(!bare.some(b => b.type === 'section'), `${intent} with nothing to say has no section at all`);
+}
+assert(!cardSections(buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: '' })).some(t => t.startsWith('*Answer*')), 'answer: an empty diagnosis omits the *Answer* section');
+
+// Review Focus 4: Sources fallback
+const uncitedRefs = {
+  ...intentBase,
+  _intent: 'troubleshooting',
+  diagnosis: 'API access is off for this tenant.',
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/a', title: 'KB A' },
+    { url: 'https://help.servicetitan.com/b', title: 'KB B' },
+  ],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/c', title: 'Wiki C' }],
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Thread D' }],
+};
+const uncitedCard = buildResponseBlocks(uncitedRefs);
+const sourcesLine = uncitedCard.find(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: '))?.elements[0].text;
+assert(sourcesLine !== undefined, 'sources fallback: a Sources: line when no link is on the card');
+assert((sourcesLine?.match(/<https:/g) ?? []).length === 3, 'sources fallback: at most 3 links');
+assert(sourcesLine === 'Sources: <https://help.servicetitan.com/a|KB A> · <https://help.servicetitan.com/b|KB B> · <https://servicetitan.atlassian.net/wiki/c|Wiki C>', 'sources fallback: KB first, then Confluence, joined with a dot');
+assert(!answerCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'sources fallback: no Sources line when the answer already links a source');
+const blockedHostCard = buildResponseBlocks({
+  ...uncitedRefs,
+  kb_refs: [{ url: 'https://evil.test/a', title: 'Evil' }],
+  atlassian_refs: [],
+  slack_refs: [],
+});
+assert(!blockedHostCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'sources fallback: omitted when no ref yields a real link');
+const slackOnlyCard = buildResponseBlocks({ ...uncitedRefs, kb_refs: [], atlassian_refs: [] });
+assert(slackOnlyCard.some(b => b.type === 'context' && b.elements[0].text === 'Sources: <https://servicetitan.slack.com/archives/C1/p1|Thread D>'), 'sources fallback: a Slack ref links when it is the only source');
+
+// Review Focus 5: size limits and honest handoff
+const hugeSteps = Array.from({ length: 20 }, (_, i) => ({ num: i + 1, title: 'T'.repeat(500), detail: 'D'.repeat(500), tag: 'action' }));
+for (const intent of ['how-to', 'troubleshooting']) {
+  const huge = buildResponseBlocks({ ...intentBase, _intent: intent, steps: hugeSteps, diagnosis: 'X'.repeat(5000), involvement: { needed: true, channel: '#ask-integrations' } }, { isDm: true });
+  assert(huge.length < 50, `${intent}: 20 huge steps stay under 50 blocks (got ${huge.length})`);
+  assert(huge.filter(b => b.type === 'section').every(b => b.text.text.length <= 2900), `${intent}: every section text is at most 2900 characters`);
+  assertWithinSlackLimits(huge, `${intent} huge card`);
+}
+const honestHandoffData = {
+  issue_title: 'Unknown integration',
+  confidence: 'low',
+  diagnosis: 'Root cause unclear — no direct match found. Escalate for investigation.',
+  steps: [{ num: 1, title: 'Hand off the question', detail: "I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.", tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', channel: '#ask-dev' },
+  _originalQuery: 'Customer cannot connect the new booking widget',
+  slack_refs: [], atlassian_refs: [], kb_refs: [],
+};
+for (const intent of ['how-to', 'troubleshooting']) {
+  const card = buildResponseBlocks({ ...honestHandoffData, _intent: intent });
+  const json = JSON.stringify(card);
+  assert(cardSections(card).includes('*Answer*\nNo direct match found.'), `${intent} honest handoff: says No direct match found`);
+  assert(cardStepLines(card).length === 0 && !json.includes('Hand off the question'), `${intent} honest handoff: no steps`);
+  assert(!json.includes('*Start here*'), `${intent} honest handoff: no guide`);
+  assert(json.includes('This belongs in #ask-dev'), `${intent} honest handoff: the handoff line stays visible`);
+  assert(cardActionIds(card).includes('view_draft_modal'), `${intent} honest handoff: a Draft button when a team is needed`);
+  assert(!cardActionIds(card).includes('view_full_steps_modal'), `${intent} honest handoff: no Full steps button`);
+}
+
 // ── 3b. Welcome Card & Session Card ──────────────────────────────────────────
 console.log('\n🔹 Welcome Card & Session Card');
 
@@ -5374,6 +5568,14 @@ assert(longStep.endsWith('…') && longStep.length <= 140, 'oneLineStep cuts a 3
 const linkStep = oneLineStep({ detail: `Open <https://example.test/${'a'.repeat(200)}|the long page> and continue.` });
 assert(linkStep.length <= 140 && linkStep.endsWith('…'), 'oneLineStep keeps the result within the limit when the sentence holds a long link');
 assert(oneLineStep({ detail: 'Short enough.' }, 5) === 'Shor…', 'oneLineStep honours a custom max including the ellipsis');
+const lateLinkStep = oneLineStep({ detail: `${'word '.repeat(21)}<https://help.servicetitan.com/${'a'.repeat(80)}|the guide> now.` });
+assert(lateLinkStep.length <= 140 && lateLinkStep.endsWith('…'), 'oneLineStep stays within the limit when a link starts near character 106');
+assert(!/<[^>]*$/.test(lateLinkStep), 'oneLineStep does not leave an unclosed < when the cut lands inside a link');
+assert(lateLinkStep === `${'word '.repeat(21).trim()}…`, 'oneLineStep cuts before the dangling link and trims trailing space');
+assert(
+  pickGuide({ kb_refs: [{ title: '', url: 'https://help.servicetitan.com/a' }, { title: 'B', url: 'https://help.servicetitan.com/b' }] })?.title === 'B',
+  'pickGuide skips a ref with an empty title',
+);
 assert(oneLineStep({}) === '', 'oneLineStep returns an empty string for a missing detail');
 assert(oneLineStep(undefined) === '', 'oneLineStep returns an empty string for an undefined step');
 

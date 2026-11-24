@@ -48,5 +48,9 @@ export function oneLineStep(step, max = 140) {
   const detail = typeof step?.detail === 'string' ? step.detail.trim() : '';
   if (!detail) return '';
   const first = splitSentences(detail)[0];
-  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+  if (first.length <= max) return first;
+  let cut = first.slice(0, max - 1);
+  const open = cut.lastIndexOf('<');
+  if (open > cut.lastIndexOf('>')) cut = cut.slice(0, open).trimEnd();
+  return `${cut}…`;
 }

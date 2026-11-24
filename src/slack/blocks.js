@@ -1,6 +1,8 @@
 import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from '../claude/grounding.js';
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
+import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './answer-layout.js';
+import { shortId } from './cache.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -240,6 +242,12 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   });
   blocks.push({ type: 'divider' });
 
+  const layout = layoutFor(data._intent);
+  if (layout !== 'legacy') {
+    blocks.push(...buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm }));
+    return blocks;
+  }
+
   const honestHandoff = isHonestHandoff(data);
   const summary = honestHandoff
     ? '*Research*\nNo direct match found.'
@@ -283,6 +291,90 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   blocks.push({ type: 'actions', elements: actionElements });
   blocks.push({ type: 'divider' });
 
+  return blocks;
+}
+
+const COMPACT_LAYOUT = {
+  guide:  { heading: '*Steps*',      maxSteps: 5 },
+  answer: { heading: '*Next steps*', maxSteps: 3 },
+};
+const COMPACT_TITLE_MAX = 120;
+
+function compactStepLine(step) {
+  const title = String(step.title ?? '').trim();
+  const head = title
+    ? `*${step.num}. ${escapeMrkdwn(clamp(title, COMPACT_TITLE_MAX))}*`
+    : `*${step.num}.*`;
+  const line = oneLineStep(step);
+  return `${TAG_CIRCLE[step.tag] ?? '⚪'} ${head}${line ? ` — ${escapeMrkdwn(line)}` : ''}`;
+}
+
+function isStepCut(step) {
+  return oneLineStep(step) !== String(step.detail ?? '').trim()
+    || String(step.title ?? '').trim().length > COMPACT_TITLE_MAX;
+}
+
+function sourcesFallbackBlock(slackRefs, atlassianRefs, kbRefs) {
+  const links = [...kbRefs, ...atlassianRefs, ...slackRefs]
+    .map((ref) => safeSlackLink(ref?.url, cleanLabel(ref?.title) || cleanLabel(ref?.channel) || 'Source'))
+    .filter((link) => link.startsWith('<http'))
+    .slice(0, 3);
+  if (!links.length) return null;
+  return { type: 'context', elements: [{ type: 'mrkdwn', text: `Sources: ${links.join(' · ')}` }] };
+}
+
+function modalButton(text, actionId, value) {
+  return { type: 'button', text: { type: 'plain_text', text, emoji: true }, action_id: actionId, value };
+}
+
+function buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm }) {
+  const blocks = [];
+  const section = (text) => blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+  const { heading, maxSteps } = COMPACT_LAYOUT[layout];
+  const honestHandoff = isHonestHandoff(data);
+  const diagnosis = String(data.diagnosis ?? '').trim();
+  const allSteps = honestHandoff
+    ? []
+    : (data.steps ?? []).filter((step) => String(step?.title ?? '').trim() || String(step?.detail ?? '').trim());
+  const steps = allSteps.slice(0, maxSteps);
+  let expandable = allSteps.length > maxSteps || steps.some(isStepCut);
+
+  if (honestHandoff) {
+    section('*Answer*\nNo direct match found.');
+  } else if (layout === 'guide') {
+    const guide = pickGuide(data);
+    if (guide) section(`*Start here*\n${safeSlackLink(guide.url, guide.title)}`);
+    if (diagnosis) expandable = true;
+  } else if (diagnosis) {
+    const lead = trimToSentences(diagnosis, 3, { keepLast: true });
+    const text = `*Answer*\n${linkifyCitations(lead, slackRefs, atlassianRefs, kbRefs)}`;
+    if (lead !== diagnosis || text.length > SECTION_MAX) expandable = true;
+    section(clamp(text));
+  }
+
+  if (steps.length) section(clamp([heading, ...steps.map(compactStepLine)].join('\n')));
+
+  if (data.involvement?.needed) blocks.push(handoffContextBlock(data.involvement));
+
+  const shownText = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
+  if (!shownText.includes('<http')) {
+    const fallback = sourcesFallbackBlock(slackRefs, atlassianRefs, kbRefs);
+    if (fallback) blocks.push(fallback);
+  }
+
+  const actionElements = [];
+  if (String(data._originalQuery ?? '').trim()) {
+    const value = JSON.stringify({ id: shortId(data._originalQuery) });
+    if (expandable) actionElements.push(modalButton('📋 Full steps', 'view_full_steps_modal', value));
+    if (data.involvement?.needed && handoffDraftText(data)) actionElements.push(modalButton('📝 Draft', 'view_draft_modal', value));
+  }
+  const sources = sourcesButton(data, slackRefs, atlassianRefs, kbRefs);
+  if (sources) actionElements.push(sources);
+  actionElements.push(wrongAnswerButton(data));
+  if (isDm) actionElements.push(newChatButton());
+
+  blocks.push({ type: 'actions', elements: actionElements });
+  blocks.push({ type: 'divider' });
   return blocks;
 }
 
