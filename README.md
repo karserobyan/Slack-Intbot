@@ -111,7 +111,7 @@ npm start
 | `MODERATOR_USER_IDS` | Required for review actions | Comma-separated Slack user IDs allowed to approve/reject feedback and knowledge nominations. If unset, review actions fail closed. |
 | `FEEDBACK_CHANNEL`, `FEEDBACK_CHANNEL_ID` | Optional | Legacy aliases for `FEEDBACK_REVIEW_CHANNEL_ID` — honored for backwards compatibility. |
 | `ANTHROPIC_BASE_URL` | Optional | Gateway origin (default: `https://servicetitanint.truefoundry.cloud/api/llm`). Calls go to `{base}/v1/messages`. |
-| `ANTHROPIC_MODEL` | Optional | Resolver and Reply model (default: `sonnet-5-5`). Intake, evaluator, handoff choice, and KB search use `haiku-5-5`. |
+| `ANTHROPIC_MODEL` | Optional | Resolver and Reply model alias (default: `integrationsbot-internal/chat-model`, sonnet-5-5). Intake, evaluator, handoff choice, and KB search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). The gateway rejects raw model names with a 403. |
 | `CLAUDE_TIMEOUT_MS` | Optional | Per-call API timeout in ms (default: `90000`). The pipeline itself hard-caps at 60s. |
 | `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |

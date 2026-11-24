@@ -1,6 +1,6 @@
 export const GATEWAY_BASE_URL = 'https://servicetitanint.truefoundry.cloud/api/llm';
-export const HAIKU_MODEL = 'haiku-5-5';
-export const SONNET_MODEL = 'sonnet-5-5';
+export const HAIKU_MODEL = 'integrationsbot-internal/chat-model-fast';
+export const SONNET_MODEL = 'integrationsbot-internal/chat-model';
 
 export function anthropicBaseUrl() {
   const configured = process.env.ANTHROPIC_BASE_URL?.trim();

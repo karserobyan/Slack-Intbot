@@ -123,8 +123,8 @@ assert.deepEqual = (actual, expected, label) => {
 
 console.log('\n🔹 Model gateway');
 assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'model calls go to the ServiceTitan gateway');
-assert(HAIKU_MODEL === 'haiku-5-5', 'intake uses the live haiku model');
-assert(SONNET_MODEL === 'sonnet-5-5', 'the answer uses the live sonnet model');
+assert(HAIKU_MODEL === 'integrationsbot-internal/chat-model-fast', 'fast steps use the virtual-account haiku alias');
+assert(SONNET_MODEL === 'integrationsbot-internal/chat-model', 'the answer uses the virtual-account sonnet alias');
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');
@@ -2482,7 +2482,7 @@ const okInterp = await runInterpreter('Zapier stopped syncing');
 assert(okInterp.cleaned_question === 'Zapier stopped syncing', 'parses cleaned_question');
 assert(okInterp.intent === 'troubleshooting', 'parses intent');
 assert(okInterp.question_confidence === 'high', 'parses question_confidence');
-assert(lastInterpreterBody.model === 'haiku-5-5', 'uses the gateway Haiku model');
+assert(lastInterpreterBody.model === 'integrationsbot-internal/chat-model-fast', 'uses the gateway Haiku alias');
 
 await runInterpreter('still not working', { threadHistory: [
   { role: 'user', content: 'My Zapier broke' },
