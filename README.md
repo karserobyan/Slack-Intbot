@@ -18,7 +18,7 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Policy and troubleshooting questions** — **Answer**: the research cut to at most 3 sentences (the sentence that cites a source is always kept), then at most 3 one-line steps
    - **Anything unclear** — the full card: **Research** (the diagnosis, then a short sentence naming the pages, tickets, and public channels that shaped it) and **What to do** with every step
    - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to. The short cards keep the draft to paste (the diagnosis, the steps, and the customer message when there is one) behind the 📝 Draft button, and the full card shows it inline. When nothing matched, the card says "No direct match found." and the draft is the question. The bot does not post into those channels. A person posts the draft.
-   - **Buttons** — 📋 Full steps (when anything was cut) opens the research and every step. 📝 Draft opens the draft to paste. 🔍 Sources stores every link; locked channels are not shown. 👎 Wrong Answer. 💬 New chat in DMs. Full steps and Draft read an in-memory store of the last 50 answers, kept for 1 hour (`CACHE_TTL_MS`); after that, or after a bot restart, they open "Answer expired" and ask the person to ask again.
+   - **Buttons** — 📋 Full steps opens the research and every step (on a guide card whenever there is research; on an answer card only when something was cut). 📝 Draft opens the draft to paste. 🔍 Sources stores every link; locked channels are not shown. 👎 Wrong Answer. 💬 New chat in DMs. Full steps and Draft read a separate in-memory card store: one id per rendered card, kept for 24 hours (`CARD_TTL_MS`), at most 300 cards, cleared by a bot restart, and independent of the answer cache and `CACHE_MIN_MS`; after that, or after a bot restart, they open "Answer expired" and ask the person to ask again.
    - **Follow-ups** — a follow-up in the same thread is a chat reply: the summary, then the sources that shaped that reply, and no new card
 
 Anyone can ask. The answer is the same for every role. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
@@ -116,7 +116,8 @@ npm start
 | `INTBOT_GATEWAY_URL` | Optional | Gateway origin (default: `https://servicetitanint.truefoundry.cloud/api/llm`). Calls go to `{base}/v1/messages`. `ANTHROPIC_BASE_URL` is ignored, so a shell's ambient value cannot send the gateway token elsewhere. |
 | `INTBOT_MODEL` | Optional | Resolver and Reply model alias (default: `integrationsbot-internal/chat-model`, sonnet-5-5). Intake, evaluator, handoff choice, and KB search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). The gateway rejects raw model names with a 403. `ANTHROPIC_MODEL` is ignored. |
 | `CLAUDE_TIMEOUT_MS` | Optional | Per-call API timeout in ms (default: `90000`). The pipeline itself hard-caps at 60s. |
-| `CACHE_TTL_MS` | Optional | Response cache and answer-card store TTL in ms (default: `3600000` = 1 hour) |
+| `CACHE_TTL_MS` | Optional | Response (answer) cache TTL in ms (default: `3600000` = 1 hour). Does not affect the card store. |
+| `CARD_TTL_MS` | Optional | How long the Full steps and Draft buttons keep working, in ms (default: `86400000` = 24 hours). The card store holds one entry per rendered card, at most 300, in memory (a restart clears it), independent of the answer cache and `CACHE_MIN_MS`. |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
 | `RATE_LIMIT_WINDOW_MS` | Optional | Rate limit window in ms (default: `60000` = 1 min) |
 | `PORT` | Optional | HTTP port when not using Socket Mode (default: `3000`) |
@@ -148,7 +149,7 @@ src/
 │   ├── blocks.js                # Block Kit builders (response, modals, error, progress)
 │   ├── cache.js                 # In-memory LRU response cache with TTL
 │   ├── card-modals.js           # Full steps and Draft modal views from the card store
-│   ├── card-store.js            # In-memory store of recent answer cards (1 hour, 50 max)
+│   ├── card-store.js            # In-memory store, one id per rendered card (24 h, 300 max)
 │   ├── conversation.js          # Per-thread history store for follow-up mode
 │   ├── feedback.js              # Wrong Answer feedback queue + moderation
 │   ├── knowledge.js             # knowledge.md loader with 5-min cache
@@ -233,7 +234,7 @@ When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or 
 
 ```bash
 fly launch
-fly secrets set SLACK_BOT_TOKEN=xoxb-... SLACK_SIGNING_SECRET=... ANTHROPIC_API_KEY=sk-ant-...
+fly secrets set SLACK_BOT_TOKEN=xoxb-... SLACK_SIGNING_SECRET=... ANTHROPIC_API_KEY=tfy_va_...  # AI Gateway virtual-account token, not a personal tfy_pat_... token
 fly deploy
 ```
 

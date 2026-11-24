@@ -364,6 +364,7 @@ function buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm
   if (data.involvement?.needed) blocks.push(handoffContextBlock(data.involvement));
 
   const shownText = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
+  // Only our own links start with '<http': escapeMrkdwn turns a model-written '<http' into '&lt;http'.
   if (!shownText.includes('<http')) {
     const fallback = sourcesFallbackBlock(slackRefs, atlassianRefs, kbRefs);
     if (fallback) blocks.push(fallback);

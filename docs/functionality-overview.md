@@ -94,7 +94,7 @@ Both entry points funnel into the shared query flow (see §13).
   - **Team knowledge** — `data/knowledge.md` via `src/slack/knowledge.js` (5-min cache)
   - **Slack** — via search executor / optional Slack MCP (`SLACK_USER_TOKEN`)
 - **How they're combined:** Gathered results plus team knowledge and past corrections are passed into Resolver (and Reply when a customer was mentioned)
-- **External services:** Anthropic API (Claude + `web_search` for KB), Confluence REST, Jira REST, Slack search/MCP
+- **External services:** ServiceTitan AI Gateway (Claude models + `web_search` for KB), Confluence REST, Jira REST, Slack search/MCP
 
 ### One audience
 - No CSA vs Specialist prompt split. Everyone who owns the case gets the same Resolver card.
@@ -163,9 +163,9 @@ Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is no
   3. A `Sources:` line with up to 3 links, only when refs exist but nothing on the card links a source
   4. When nothing matched, **Answer** reads "No direct match found." and there are no steps
 - **Source links:** the research text names the sources that shaped it and links them when the host is allowlisted. The Sources button stores every link
-- **Buttons, in order:** **Full steps** when anything was cut (extra steps, a shortened step, a trimmed Answer, or in the Guide layout any research text), **Draft** when another team is needed, **Sources** when refs exist, **Wrong Answer**, **New chat** in DMs. The full layout has Wrong Answer, Sources, New chat
+- **Buttons, in order:** **Full steps** in the Guide layout whenever there is research text (or anything was cut), in the Answer layout only when something was cut (extra steps, a shortened step, a trimmed Answer), **Draft** when another team is needed, **Sources** when refs exist, **Wrong Answer**, **New chat** in DMs. The full layout has Wrong Answer, Sources, New chat
 - **Modals:** Full steps opens the Research paragraph and every step. Draft opens the draft to paste: the diagnosis, the steps, and the customer message when one exists, or the question itself when nothing matched. Both read the card store
-- **Card store:** `src/slack/card-store.js` (opened by `src/slack/card-modals.js`) keeps each first-answer card in memory for 1 hour (`CACHE_TTL_MS`), at most 50 cards, oldest dropped first. After the hour, once newer answers push it out, or after a bot restart, the buttons open an "Answer expired" message that asks the person to ask again. It is separate from the response cache: it stores every first answer (cache hits included), while the cache keeps only answers that took `CACHE_MIN_MS` or longer
+- **Card store:** `src/slack/card-store.js` (opened by `src/slack/card-modals.js`) gives each rendered first-answer card (guide or answer layout) its own random id and keeps that card's view in memory for 24 hours (`CARD_TTL_MS`), at most 300 cards, oldest dropped first. Asking the same question again, or a cache replay, makes a new card with a new id, so one card never shows another card's answer. After 24 hours, once newer cards push it out, or after a bot restart, the buttons open an "Answer expired" message that asks the person to ask again. It is independent of the response cache and `CACHE_MIN_MS`: it stores every first-answer card (cache hits included), while the cache keeps only answers that took `CACHE_MIN_MS` or longer. Full-layout cards have no Full steps or Draft buttons and are not stored
 - Nomination suggestion if the response qualifies for the knowledge base
 
 ### Wrong-answer feedback flow
@@ -281,7 +281,7 @@ All three live in `data/` and are **gitignored**.
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
 - `ATLASSIAN_CLOUD_ID` — site cloud id for a scoped token; looked up from the site when unset
-- `INTBOT_GATEWAY_URL`, `INTBOT_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
+- `INTBOT_GATEWAY_URL`, `INTBOT_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CARD_TTL_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
 
 ---
 

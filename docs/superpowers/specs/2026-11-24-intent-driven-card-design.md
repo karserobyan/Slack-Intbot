@@ -58,3 +58,14 @@ The reply stage can still add customer-addressed text when a question mentions a
 ## Branching
 
 Commit the model-alias gateway fix on its own first, then build this on a new `feature/intent-card` branch. Nothing is pushed without confirmation.
+
+## Implementation notes (decided during the build)
+
+- Compact steps are one section with one line per step, not one block per step.
+- `_intent` travels with the cached answer (it is not a transient field), so a cache replay keeps its layout.
+- Full steps and Draft read a separate in-memory card store (`src/slack/card-store.js`), not the answer cache by query: the answer cache only keeps answers that took at least `CACHE_MIN_MS`. Each rendered card gets a random 12-hex id (`_cardId`, transient), kept 24 hours (`CARD_TTL_MS`), at most 300 cards. Legacy-layout cards are not stored.
+- The button handler logic lives in `src/slack/card-modals.js` (`cardModalView`).
+- A missing card opens "Answer expired": "This answer is no longer stored (it expired, or the bot restarted). Ask again to get a fresh one."
+- In the guide layout, Full steps shows whenever research exists (the research paragraph is not on the card); in the answer layout only when something was cut.
+- Wrong Answer does not delete already-posted cards' stored views.
+- Ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored; the overrides are `INTBOT_GATEWAY_URL` and `INTBOT_MODEL`.

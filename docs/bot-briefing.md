@@ -34,7 +34,7 @@ The layout follows Intake's `intent`. Every card starts with the title.
 
 Steps keep their colour dots (action, backend, verify, escalate). When refs exist and nothing on the card links one, a `Sources:` line is added.
 
-Buttons, in order: Full steps when anything was cut, Draft when another team should take it, Sources when there are references, Wrong Answer, and New chat in DMs. Full steps opens the research paragraph and every step. Draft opens the draft to paste. Both read an in-memory card store (1 hour, 50 answers, `CACHE_TTL_MS`); after that or a bot restart they open "Answer expired" and ask the person to ask again. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
+Buttons, in order: Full steps (on a guide card whenever there is research; on an answer card only when something was cut), Draft when another team should take it, Sources when there are references, Wrong Answer, and New chat in DMs. Full steps opens the research paragraph and every step. Draft opens the draft to paste. Both read a separate in-memory card store: one id per rendered card, kept for 24 hours (`CARD_TTL_MS`), at most 300 cards, cleared by a bot restart, and independent of the answer cache and `CACHE_MIN_MS`; after that or a bot restart they open "Answer expired" and ask the person to ask again. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
 
 Involvement:
 
