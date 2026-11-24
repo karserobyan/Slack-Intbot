@@ -214,14 +214,6 @@ When `involvement.needed` is true, `who` is one of `engineering`, `partner`, or 
 
 ## Deployment
 
-### Railway (recommended)
-
-1. Push to GitHub
-2. Create a new Railway project from the repo
-3. Add all environment variables in Railway's dashboard
-4. Railway auto-detects Node.js and runs `npm start`
-5. Set your Slack app's Request URL to the Railway-provided domain
-
 ### Fly.io
 
 ```bash
