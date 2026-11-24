@@ -21,6 +21,7 @@
 - No change to the resolver prompt/schema, models, search, thread follow-up replies, auto-answer card, chat-resolution card, or feedback flow.
 - Keep Block Kit payloads well under Slack's 50-block limit. Section text at most 2900 characters, button `value` at most 2000.
 - `node test.js` must end with 0 failures. Run it on a clean copy (no `.env`, no `data/`), with `ANTHROPIC_BASE_URL` unset, because local tokens and data leak into some mocks: `rsync -a --exclude node_modules --exclude .env --exclude .git --exclude data ./ "$TMPDIR/clean"/ && ln -s "$PWD/node_modules" "$TMPDIR/clean/node_modules" && (cd "$TMPDIR/clean" && env -u ANTHROPIC_BASE_URL node test.js | tail -5)`.
+- Model names: the gateway account only accepts the aliases `integrationsbot-internal/chat-model` (sonnet-5-5) and `integrationsbot-internal/chat-model-fast` (haiku-5-5), set once in `src/claude/anthropic-config.js`. Raw `haiku-5-5` / `sonnet-5-5` return HTTP 403; never reintroduce them in code or docs.
 - Never push or open a PR without the user's confirmation. Commit only the files a task names; never commit `package-lock.json`, `.env`, `data/`, or `AGENTS.md`.
 
 ## Review Focus
@@ -138,7 +139,8 @@
 
 - [ ] **Step 1: Write the failing tests:** `buildFullStepsModal` contains the research text and one block per step, fewer than 100 blocks for 20 steps; `buildDraftModal` has the draft text and no `*Draft*` heading; `buildExpiredModal` has the title `Answer expired`; every modal title is at most 24 characters.
 - [ ] **Step 2: Run `node test.js` and confirm they fail.**
-- [ ] **Step 3: Implement the three builders** in `blocks.js` and the two handlers in `index.js`.- [ ] **Step 4: Run `node test.js` (clean copy) and confirm everything passes.**
+- [ ] **Step 3: Implement the three builders** in `blocks.js` and the two handlers in `index.js`.
+- [ ] **Step 4: Run `node test.js` (clean copy) and confirm everything passes.**
 - [ ] **Step 5: Commit** `src/slack/blocks.js src/index.js test.js` with `feat: open full steps and the handoff draft in modals`.
 
 ### Task 7: Docs and live check
@@ -146,7 +148,7 @@
 **Files:**
 - Modify: `docs/functionality-overview.md` (the card description section)
 
-- [ ] **Step 1: Update the card description** in `docs/functionality-overview.md` to describe the two layouts, the buttons, and the one-hour expiry of Full steps and Draft.
+- [ ] **Step 1: Update the card description** in `docs/functionality-overview.md` to describe the two layouts, the buttons, and the one-hour expiry of Full steps and Draft. In the same commit, replace the stale raw model names (`haiku-5-5` / `sonnet-5-5` presented as what the bot sends) with the aliases or an "alias (haiku-5-5)" form in `process.md` (line 23), `docs/functionality-overview.md` (line 10), `docs/bot-briefing.md` (line 73), `.cursor/skills/integrationsbot/SKILL.md` (lines 47, 54, 55) and the operator hint in `scripts/smoke-kb-search.js` (line 78). Add `scripts/smoke-kb-search.js` and those docs to the commit's file list.
 - [ ] **Step 2: Run the full suite on a clean copy** (command in Global Constraints) and confirm `0 failed`.
 - [ ] **Step 3: Live render check.** In a scratchpad script, run `runPipeline` (from `src/claude/pipeline.js`) for one guide-wording and one info-wording question, build `buildResponseBlocks({ ...result, _originalQuery: question })`, and print the block texts. Expected: the guide question starts with a guide link; the info question starts with a short answer; neither contains a duplicated Draft.
 - [ ] **Step 4: Commit** `docs/functionality-overview.md` with `docs: describe the intent-driven answer card`.
