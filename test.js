@@ -1255,6 +1255,9 @@ assert(requestCtx._originalQuery === 'q', 'withRequestContext still sets _origin
 // ── Feedback Moderation ───────────────────────────────────────────────────
 console.log('\n🔹 Feedback Moderation');
 
+const testDataDir = await mkdtemp(join(tmpdir(), 'intbot-test-data-'));
+_setFeedbackStorageForTest({ dir: testDataDir });
+
 // saveFeedback should write to pending, NOT active
 const testRecord = await saveFeedback({
   query: 'zapier test query for moderation',
@@ -1418,7 +1421,7 @@ const pendingAfterFailedReject = await getPendingFeedback();
 assert(pendingAfterFailedReject.length === 1, 'failed reject leaves pending count unchanged');
 assert(pendingAfterFailedReject.some((e) => e.id === feedbackToReject.id), 'failed reject keeps record pending in cache');
 
-_setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
+_setFeedbackStorageForTest({ dir: testDataDir });
 await rm(feedbackTempDir, { force: true });
 await rm(feedbackRejectDir, { force: true });
 
@@ -1635,7 +1638,7 @@ if (_savedKbApiKey) process.env.ANTHROPIC_API_KEY = _savedKbApiKey;
 // ── 14. Knowledge Writer ─────────────────────────────────────────────────────
 console.log('\n🔹 Knowledge Writer');
 
-const TEST_KB = join(process.cwd(), 'data', '__test-knowledge.md');
+const TEST_KB = join(testDataDir, '__test-knowledge.md');
 try { await writeFile(TEST_KB, '', 'utf-8'); } catch { /* ok */ }
 
 assert(await hasKbUrl('https://help.servicetitan.com/zapier', TEST_KB) === false, 'hasKbUrl returns false on empty file');
@@ -1791,7 +1794,7 @@ await rm(nomDupKb, { force: true });
 
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
-_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store
+_setStoreForTest(join(testDataDir, 'nominations-pending.json')); // restore default store
 
 // ── Moderation authorization ─────────────────────────────────────────────────
 console.log('\n🔹 Moderation authorization');
@@ -2036,7 +2039,7 @@ assert(rejectedNominationJson.includes(DANGEROUS_ESCAPED), 'rejectNomination kee
 _setKnowledgeWriterDefaultFileForTest(null);
 await rm(nominationEscapeFile, { force: true });
 await rm(nominationEscapeKb, { force: true });
-_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json'));
+_setStoreForTest(join(testDataDir, 'nominations-pending.json'));
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 
 // ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
@@ -6104,6 +6107,8 @@ for (const label of ['compact guide card', 'compact answer card', 'legacy card',
 for (const view of [stepsModal, draftModal, expiredModal, bareSteps, bareDraft, honestSteps, honestDraft, hugeSteps25, hugeDraft]) {
   assert(view.title.text.length <= 24, `modal title "${view.title.text}" is at most 24 characters`);
 }
+
+await rm(testDataDir, { recursive: true, force: true });
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
