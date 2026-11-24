@@ -196,6 +196,35 @@ export function buildThreadReplyBlocks(data) {
   }];
 }
 
+export function buildStepBlocks(steps) {
+  return steps.map((step) => {
+    const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+    const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
+    const detailRaw = escapeMrkdwn(step.detail);
+    const budget = 2900 - prefix.length;
+    const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
+    return {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${prefix}${detail}` },
+    };
+  });
+}
+
+function handoffContextBlock(involvement) {
+  const who = escapeMrkdwn(involvement.who ?? 'another team');
+  const channel = escapeMrkdwn(involvement.channel ?? '');
+  const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
+  const handoff = channel
+    ? `This belongs in ${channel}`
+    : suggestions.length
+      ? `Could go to ${suggestions.length === 1 ? suggestions[0] : `${suggestions.slice(0, -1).join(', ')}, or ${suggestions[suggestions.length - 1]}`}`
+      : `Someone else needs to take this${who ? ` (${who})` : ''}`;
+  return {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: handoff }],
+  };
+}
+
 export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
@@ -229,34 +258,13 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       type: 'section',
       text: { type: 'mrkdwn', text: '*What to do*' },
     });
-    for (const step of steps) {
-      const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
-      const detailRaw = escapeMrkdwn(step.detail);
-      const budget = 2900 - prefix.length;
-      const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: `${prefix}${detail}` },
-      });
-    }
+    blocks.push(...buildStepBlocks(steps));
   }
 
   // 4. Involvement
   const involvement = data.involvement;
   if (involvement?.needed) {
-    const who = escapeMrkdwn(involvement.who ?? 'another team');
-    const channel = escapeMrkdwn(involvement.channel ?? '');
-    const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
-    const handoff = channel
-      ? `This belongs in ${channel}`
-      : suggestions.length
-        ? `Could go to ${suggestions.length === 1 ? suggestions[0] : `${suggestions.slice(0, -1).join(', ')}, or ${suggestions[suggestions.length - 1]}`}`
-        : `Someone else needs to take this${who ? ` (${who})` : ''}`;
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: handoff }],
-    });
+    blocks.push(handoffContextBlock(involvement));
     const draft = handoffDraftText(data);
     if (draft) {
       blocks.push({
@@ -267,48 +275,53 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   }
 
   // 7. Action buttons
-  const actionElements = [
-    {
-      type: 'button',
-      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
-      action_id: 'wrong_answer_modal',
-      style: 'danger',
-      value: JSON.stringify({
-        query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
-        issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
-        integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
-      }),
-    },
-  ];
-
-  const totalRefs = slackRefs.length + atlassianRefs.length + kbRefs.length;
-  if (totalRefs > 0) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '🔍 Sources', emoji: true },
-      action_id: 'view_sources_modal',
-      value: _buildSourcesButtonValue(
-        slackRefs,
-        atlassianRefs,
-        kbRefs,
-        data.diagnosis ?? null,
-      ),
-    });
-  }
-
-  if (isDm) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '💬 New chat', emoji: true },
-      action_id: 'new_chat',
-      value: 'new_chat',
-    });
-  }
+  const actionElements = [wrongAnswerButton(data)];
+  const sources = sourcesButton(data, slackRefs, atlassianRefs, kbRefs);
+  if (sources) actionElements.push(sources);
+  if (isDm) actionElements.push(newChatButton());
 
   blocks.push({ type: 'actions', elements: actionElements });
   blocks.push({ type: 'divider' });
 
   return blocks;
+}
+
+function wrongAnswerButton(data) {
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+    action_id: 'wrong_answer_modal',
+    style: 'danger',
+    value: JSON.stringify({
+      query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
+      issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
+      integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
+    }),
+  };
+}
+
+function sourcesButton(data, slackRefs, atlassianRefs, kbRefs) {
+  if (slackRefs.length + atlassianRefs.length + kbRefs.length === 0) return null;
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '🔍 Sources', emoji: true },
+    action_id: 'view_sources_modal',
+    value: _buildSourcesButtonValue(
+      slackRefs,
+      atlassianRefs,
+      kbRefs,
+      data.diagnosis ?? null,
+    ),
+  };
+}
+
+function newChatButton() {
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+    action_id: 'new_chat',
+    value: 'new_chat',
+  };
 }
 
 export function buildWelcomeCard() {
