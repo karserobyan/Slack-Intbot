@@ -2,7 +2,6 @@ import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from '../claude/grounding.js';
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
 import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './answer-layout.js';
-import { shortId } from './cache.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -198,7 +197,7 @@ export function buildThreadReplyBlocks(data) {
   }];
 }
 
-export function buildStepBlocks(steps) {
+function buildStepBlocks(steps) {
   return steps.map((step) => {
     const circle = TAG_CIRCLE[step.tag] ?? '⚪';
     const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
@@ -364,8 +363,8 @@ function buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm
   }
 
   const actionElements = [];
-  if (String(data._originalQuery ?? '').trim()) {
-    const value = JSON.stringify({ id: shortId(data._originalQuery) });
+  if (data._cardId) {
+    const value = JSON.stringify({ id: data._cardId });
     if (expandable) actionElements.push(modalButton('📋 Full steps', 'view_full_steps_modal', value));
     if (data.involvement?.needed && handoffDraftText(data)) actionElements.push(modalButton('📝 Draft', 'view_draft_modal', value));
   }

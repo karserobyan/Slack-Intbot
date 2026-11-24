@@ -27,8 +27,8 @@ import {
 import { cardModalView } from './src/slack/card-modals.js';
 import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from './src/claude/grounding.js';
 import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
-import { getCached, setCached, cacheStats, pruneExpired, deleteCache, shortId } from './src/slack/cache.js';
-import { rememberCard, getCardById, forgetCard } from './src/slack/card-store.js';
+import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
+import { rememberCard, getCardById, forgetCard, cardStoreSize } from './src/slack/card-store.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
@@ -889,7 +889,7 @@ const intentSteps = Array.from({ length: 7 }, (_, i) => ({
   detail: `Open the Zapier settings for step ${i + 1}. Then confirm the change saved. Finally tell the customer.`,
   tag: ['action', 'backend', 'verify', 'escalate', 'mystery', 'action', 'verify'][i],
 }));
-const intentBase = { ...sampleJson, diagnosis: intentDiagnosis, steps: intentSteps, _originalQuery: intentQuery };
+const intentBase = { ...sampleJson, diagnosis: intentDiagnosis, steps: intentSteps, _originalQuery: intentQuery, _cardId: 'a1b2c3d4e5f6' };
 
 // Guide layout
 const guideCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to' });
@@ -967,7 +967,7 @@ assert(cardButton(fullyCutCard, 'view_draft_modal').text.text === '📝 Draft', 
 for (const id of ['view_full_steps_modal', 'view_draft_modal']) {
   const value = JSON.parse(cardButton(fullyCutCard, id).value);
   assert(/^[0-9a-f]{12}$/.test(value.id) && Object.keys(value).length === 1, `buttons: ${id} value is { id: <12 hex> }`);
-  assert(value.id === shortId(intentQuery), `buttons: ${id} id is shortId of the original query`);
+  assert(value.id === intentBase._cardId, `buttons: ${id} id is the card's own _cardId`);
 }
 assert(fullyCutCard.find(b => b.type === 'actions').elements.every(e => e.value.length < 2000), 'buttons: every value is under 2000 characters');
 assert(JSON.stringify(fullyCutCard).includes('This belongs in #ask-integrations'), 'guide: the handoff line is kept when another team is needed');
@@ -986,8 +986,10 @@ assert(!cardActionIds(nothingCutAnswer).includes('view_full_steps_modal'), 'butt
 assert(cardActionIds(answerCard).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when steps were cut');
 assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', steps: shortSteps })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when the answer was cut');
 assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: 'Short.', steps: [{ ...shortSteps[0], detail: 'One. Two.' }] })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when a step detail was cut');
-const noQueryCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _originalQuery: undefined, involvement: { needed: true, channel: '#ask-integrations' } });
-assert(!cardActionIds(noQueryCard).includes('view_full_steps_modal') && !cardActionIds(noQueryCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted without an original query');
+const noQueryCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _cardId: undefined, involvement: { needed: true, channel: '#ask-integrations' } });
+assert(!cardActionIds(noQueryCard).includes('view_full_steps_modal') && !cardActionIds(noQueryCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted without a card id');
+const emptyIdCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _cardId: '', involvement: { needed: true, channel: '#ask-integrations' } });
+assert(!cardActionIds(emptyIdCard).includes('view_full_steps_modal') && !cardActionIds(emptyIdCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted with an empty card id');
 assert(
   JSON.stringify(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting' }))) === JSON.stringify(['view_full_steps_modal', 'view_sources_modal', 'wrong_answer_modal']),
   'buttons: a channel answer card has Full steps, Sources, Wrong Answer',
@@ -1066,6 +1068,7 @@ const honestHandoffData = {
   steps: [{ num: 1, title: 'Hand off the question', detail: "I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.", tag: 'escalate' }],
   involvement: { needed: true, who: 'engineering', channel: '#ask-dev' },
   _originalQuery: 'Customer cannot connect the new booking widget',
+  _cardId: 'b2c3d4e5f6a1',
   slack_refs: [], atlassian_refs: [], kb_refs: [],
 };
 for (const intent of ['how-to', 'troubleshooting']) {
@@ -2869,13 +2872,6 @@ assert(getCached('only one') !== null, 'single-key write works');
 setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
 assert(getCached('valid key') !== null, 'valid key in mixed array is written');
 
-// ── cache short ids ───────────────────────────────────────────────────────────
-console.log('\n🔹 cache short ids');
-
-assert(shortId('  zapier   API ACCESS ') === shortId('zapier api access'), 'shortId is stable across phrasings of the same normalised query');
-assert(/^[0-9a-f]{12}$/.test(shortId('zapier api access')), 'shortId is 12 lowercase hex chars');
-assert(shortId('zapier api access') !== shortId('rwg pending'), 'shortId differs for different queries');
-
 // ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
 console.log('\n🔹 transient cache fields');
 
@@ -2884,9 +2880,16 @@ const bakedResult = {
   integration_type: 'Zapier',
   _originalQuery: 'original asker query',
   _cleanedQuestion: 'zapier broke',
+  _cardId: '0123456789ab',
 };
 
 const stripped = stripTransient(bakedResult);
+assert(stripped._cardId === undefined, 'stripTransient drops _cardId');
+setCachedMulti(['card id cache probe raw', 'card id cache probe cleaned'], stripTransient(bakedResult));
+assert(getCached('card id cache probe raw') && !('_cardId' in getCached('card id cache probe raw')) && !('_cardId' in getCached('card id cache probe cleaned')), 'an answer-cache entry never holds a _cardId');
+deleteCache('card id cache probe raw');
+deleteCache('card id cache probe cleaned');
+assert(withRequestContext(bakedResult, { query: 'q' })._cardId === undefined, 'withRequestContext drops a cached _cardId');
 assert(stripped._originalQuery === undefined, 'stripTransient drops _originalQuery');
 assert(stripped._cleanedQuestion === undefined, 'stripTransient drops _cleanedQuestion');
 assert(stripped.issue_title === 'Zapier broke', 'stripTransient keeps real fields');
@@ -5597,7 +5600,86 @@ assert(fastSectionTexts(fastStepsModal).filter((text) => STEP_LINE.test(text)).l
 const fastDraftModal = cardModalView('draft', fastDraftButton?.value);
 assert(fastDraftButton !== undefined && fastDraftModal.callback_id === 'draft_view', 'fast answer: the Draft button opens the draft modal, not the expired one');
 assert(fastSectionTexts(fastDraftModal)[0]?.includes('Zapier needs API access enabled on the tenant'), 'fast answer: the draft modal carries the answer text');
-forgetCard(fastQuery);
+
+// A second fast ask of the same question gets its own card id; the first card keeps its own answer.
+const secondDiagnosis = 'Zapier must be reconnected from the Zapier side after the API toggle changes. The reconnect button sits in the Zapier account. It takes about a minute.';
+const secondSteps = fastSteps.map((step) => ({ ...step, title: `Zapier reconnect step ${step.num}`, detail: `Open the Zapier account and reconnect the ServiceTitan app ${step.num}. Then run a test zap.` }));
+const secondEvidence = `${secondDiagnosis} ${secondSteps.map((step) => `${step.title}. ${step.detail}`).join(' ')}`;
+const secondResponses = () => [
+  anthropicMock(JSON.stringify({
+    cleaned_question: fastCleaned,
+    intent: 'how-to',
+    entities: { integration: 'Zapier', error_code: null, tenant_id: null, customer_mentioned: false, symptom: 'connect' },
+    question_confidence: 'high',
+    clarifying_question: null,
+    search_plan: { sources: [{ name: 'slack', priority: 'high', query: 'zapier connect tenant' }], rationale: 'r' },
+  })),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock(JSON.stringify({
+    issue_title: 'Reconnect Zapier',
+    integration_type: 'Zapier',
+    confidence: 'high',
+    diagnosis: secondDiagnosis,
+    steps: secondSteps,
+    involvement: { needed: true, who: 'engineering', reason: 'Needs a backend toggle', channel: null },
+    slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C9/p8', channel: '#ask-integrations', title: 'Zapier reconnect' }],
+    atlassian_refs: [],
+    kb_refs: [],
+    sources_used: ['slack'],
+  })),
+];
+const secondQueue = secondResponses();
+const secondUpdates = [];
+for (const key of fastEnvKeys) fastEnvBefore[key] = process.env[key];
+process.env.ANTHROPIC_API_KEY = 'test';
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+process.env.CACHE_MIN_MS = '30000';
+process.env.QUALITY_LAYER_ENABLED = 'false';
+globalThis.fetch = async (url, init) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('truefoundry.cloud')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return secondQueue.shift();
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({
+      ok: true,
+      messages: { matches: [{ text: secondEvidence, permalink: 'https://servicetitan.slack.com/archives/C9/p8', channel: { name: 'ask-integrations', is_private: false } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+try {
+  await handleQuery({
+    rawText: `<@UBOT> ${fastQuery}`,
+    channelId: 'C456',
+    threadTs: 'fast-card-thread-second',
+    userId: 'U-fast-card-second',
+    client: {
+      users: { info: async () => ({ user: { profile: { title: 'Customer Support Advocate' } } }) },
+      chat: {
+        postMessage: async (payload) => ({ ts: payload.thread_ts ?? '1700000002.222' }),
+        update: async (payload) => { secondUpdates.push(payload); return payload; },
+      },
+    },
+  });
+} finally {
+  globalThis.fetch = fastFetchBefore;
+  for (const key of fastEnvKeys) {
+    if (fastEnvBefore[key] === undefined) delete process.env[key];
+    else process.env[key] = fastEnvBefore[key];
+  }
+}
+const secondCard = secondUpdates.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+const firstId = fastStepsButton && JSON.parse(fastStepsButton.value).id;
+const secondId = secondCard && JSON.parse(cardButton(secondCard, 'view_full_steps_modal').value).id;
+assert(secondCard !== undefined && getCached(fastQuery) === null, 'second fast ask: re-ran the pipeline (no answer-cache entry) and posted a compact card');
+assert(/^[0-9a-f]{12}$/.test(firstId ?? '') && /^[0-9a-f]{12}$/.test(secondId ?? '') && firstId !== secondId, 'second fast ask: the same question gets a different 12-hex card id');
+assert(fastSectionTexts(cardModalView('steps', fastStepsButton?.value))[0]?.includes('Zapier needs API access enabled on the tenant'), 'second fast ask: the first card still opens its own answer');
+assert(fastSectionTexts(cardModalView('steps', JSON.stringify({ id: secondId })))[0]?.includes('Zapier must be reconnected from the Zapier side'), 'second fast ask: the second card opens its own answer');
+assert(fastSectionTexts(cardModalView('draft', cardButton(secondCard ?? [], 'view_draft_modal')?.value))[0]?.includes('Zapier must be reconnected from the Zapier side'), 'second fast ask: the second Draft opens its own answer');
+forgetCard(firstId);
+forgetCard(secondId);
 assert(cardModalView('steps', fastStepsButton?.value).callback_id === 'answer_expired_view', 'fast answer: the button value stops resolving once the card is forgotten');
 
 const replayQuery = 'Cached replay card question for buttons';
@@ -5618,8 +5700,39 @@ const replayBlocks = replayPosts.find((payload) => JSON.stringify(payload.blocks
 assert(replayBlocks !== undefined, 'cached replay: the replayed card has a Full steps button');
 assert(cardModalView('steps', replayBlocks && cardButton(replayBlocks, 'view_full_steps_modal')?.value).callback_id === 'full_steps_view', 'cached replay: the Full steps button resolves to the full steps modal');
 assert(cardModalView('draft', replayBlocks && cardButton(replayBlocks, 'view_draft_modal')?.value).callback_id === 'draft_view', 'cached replay: the Draft button resolves to the draft modal');
-forgetCard(replayQuery);
+const replayId = replayBlocks && JSON.parse(cardButton(replayBlocks, 'view_full_steps_modal').value).id;
+assert(/^[0-9a-f]{12}$/.test(replayId ?? '') && replayId !== intentBase._cardId, 'cached replay: the replayed card carries a fresh card id');
+const replayPostsAgain = [];
+await handleQuery({
+  rawText: `<@UBOT> ${replayQuery}`,
+  channelId: 'C123',
+  threadTs: 'cached-replay-card-thread-2',
+  userId: 'U-replay-card-2',
+  client: { chat: { postMessage: async (payload) => { replayPostsAgain.push(payload); return { ts: '1700000003.222' }; } } },
+});
+const replayAgainBlocks = replayPostsAgain.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+const replayAgainId = replayAgainBlocks && JSON.parse(cardButton(replayAgainBlocks, 'view_full_steps_modal').value).id;
+assert(replayAgainId && replayAgainId !== replayId && getCardById(replayAgainId) !== null, 'cached replay: a second replay gets another new id that resolves');
+assert(!('_cardId' in (getCached(replayQuery) ?? {})), 'cached replay: the answer-cache entry still has no _cardId');
+forgetCard(replayId);
+forgetCard(replayAgainId);
 deleteCache(replayQuery);
+
+// Legacy-layout cards have no Full steps/Draft buttons, so they are not stored.
+const legacyReplayQuery = 'Cached replay legacy card question';
+setCached(legacyReplayQuery, stripTransient({ ...sampleJson, _intent: 'unclear' }));
+const storeSizeBeforeLegacy = cardStoreSize();
+const legacyPosts = [];
+await handleQuery({
+  rawText: `<@UBOT> ${legacyReplayQuery}`,
+  channelId: 'C123',
+  threadTs: 'cached-replay-legacy-thread',
+  userId: 'U-replay-legacy',
+  client: { chat: { postMessage: async (payload) => { legacyPosts.push(payload); return { ts: '1700000003.333' }; } } },
+});
+assert(legacyPosts.some((payload) => JSON.stringify(payload.blocks ?? []).includes('*What to do*')), 'legacy replay: the legacy card was posted');
+assert(cardStoreSize() === storeSizeBeforeLegacy, 'legacy replay: a legacy-layout card is not remembered');
+deleteCache(legacyReplayQuery);
 
 // ── answer layout helpers ────────────────────────────────────────────────────
 console.log('\n🔹 Answer layout helpers');
@@ -5778,8 +5891,8 @@ const modalCached = stripTransient({
   customer_message: modalCustomer,
   involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
 });
-rememberCard(modalQuery, modalCached);
-const modalValue = JSON.stringify({ id: shortId(modalQuery) });
+const modalId = rememberCard(withRequestContext(modalCached, { query: modalQuery }));
+const modalValue = JSON.stringify({ id: modalId });
 
 const stepsModal = cardModalView('steps', modalValue);
 const stepsModalSections = modalSections(stepsModal);
@@ -5828,7 +5941,7 @@ for (const [label, value] of [
   }
 }
 
-forgetCard(modalQuery);
+forgetCard(modalId);
 assert(cardModalView('steps', modalValue).callback_id === 'answer_expired_view', 'cardModalView steps returns the expired modal once the card entry is removed');
 assert(cardModalView('draft', modalValue).callback_id === 'answer_expired_view', 'cardModalView draft returns the expired modal once the card entry is removed');
 
@@ -5870,7 +5983,11 @@ const honestSteps = buildFullStepsModal(honestModalView);
 assert(honestSteps.blocks.length === 1 && modalSections(honestSteps)[0] === '*Research*\nNo direct match found.', 'honest handoff: the full steps modal says no direct match was found');
 assert(!JSON.stringify(honestSteps).includes('Hand off the question') && !JSON.stringify(honestSteps).includes('*What to do*'), 'honest handoff: the full steps modal lists no steps');
 const honestDraft = buildDraftModal(honestModalView);
-assert(modalSections(honestDraft)[0] === 'Unknown integration', 'honest handoff: the draft falls back to the issue title when the query is not cached');
+const honestQuestion = 'Can Acme Widgets push jobs into ServiceTitan?';
+const honestId = rememberCard(withRequestContext(honestModalView, { query: honestQuestion }));
+const honestStoredDraft = cardModalView('draft', JSON.stringify({ id: honestId }));
+assert(modalSections(honestStoredDraft)[0] === honestQuestion, 'honest handoff: the stored card\'s Draft modal shows the user\'s original question');
+forgetCard(honestId);
 assert(!JSON.stringify(honestDraft).includes('*Draft*'), 'honest handoff: the draft modal has no *Draft* heading');
 assert(buildDraftModal({ ...honestModalView, issue_title: '' }).blocks[0].text.text === 'Nothing to draft for this answer.', 'honest handoff with no title: nothing to draft');
 
@@ -5888,45 +6005,51 @@ assert(hostileJson.includes('A&amp;B &lt;@U123&gt;'), 'modals keep the escaped m
 assert(!hostileJson.includes('CPRIV'), 'full steps modal does not link a private Slack ref');
 
 // ── card store ───────────────────────────────────────────────────────────────
-const storeView = { issue_title: 'Stored card' };
-rememberCard('Card Store   Question', storeView);
-assert(getCardById(shortId('  card store question ')) === storeView, 'card store: a remembered view resolves by the short id of a differently spaced and cased query');
+const storeView = { issue_title: 'Stored card', _originalQuery: 'the asker question' };
+const storeId = rememberCard(storeView);
+assert(/^[0-9a-f]{12}$/.test(storeId), 'card store: rememberCard returns a 12 lowercase hex id');
+assert(getCardById(storeId)?.issue_title === 'Stored card', 'card store: a remembered view resolves by its id');
+assert(getCardById(storeId)?._originalQuery === 'the asker question', 'card store: the stored view keeps the original question');
+assert(getCardById(storeId) !== storeView, 'card store: the stored view is a copy');
+const storeIdAgain = rememberCard(storeView);
+assert(storeIdAgain !== storeId, 'card store: remembering the same view again returns a new id');
+forgetCard(storeIdAgain);
 assert(getCardById('000000000000') === null, 'card store: an unknown id returns null');
 assert(getCardById(undefined) === null && getCardById(42) === null, 'card store: a non-string id returns null');
-assert(getCached('Card Store   Question') === null, 'card store: remembering a card does not touch the answer cache');
-forgetCard('card store question');
-assert(getCardById(shortId('card store question')) === null, 'card store: forgetCard removes the entry');
+assert(getCached('the asker question') === null, 'card store: remembering a card does not touch the answer cache');
+forgetCard(storeId);
+assert(getCardById(storeId) === null, 'card store: forgetCard removes the entry');
 
-rememberCard('card store expiry probe', storeView);
+const HOUR_MS = 60 * 60 * 1000;
 const realDateNow = Date.now;
+const savedCardTtl = process.env.CARD_TTL_MS;
 try {
-  Date.now = () => realDateNow() + 2 * 60 * 60 * 1000;
-  assert(getCardById(shortId('card store expiry probe')) === null, 'card store: an entry older than the TTL returns null');
+  delete process.env.CARD_TTL_MS;
+  const expiryId = rememberCard(storeView);
+  Date.now = () => realDateNow() + 23 * HOUR_MS;
+  assert(getCardById(expiryId)?.issue_title === 'Stored card', 'card store: a card is still there after 23 hours by default');
+  Date.now = () => realDateNow() + 25 * HOUR_MS;
+  assert(getCardById(expiryId) === null, 'card store: a card is gone after 25 hours by default');
+  Date.now = realDateNow;
+  assert(getCardById(expiryId) === null, 'card store: an expired entry is deleted on lookup');
+
+  process.env.CARD_TTL_MS = String(2 * HOUR_MS);
+  const shortTtlId = rememberCard(storeView);
+  Date.now = () => realDateNow() + HOUR_MS;
+  assert(getCardById(shortTtlId) !== null, 'card store: CARD_TTL_MS keeps a card within its TTL');
+  Date.now = () => realDateNow() + 2 * HOUR_MS + 1000;
+  assert(getCardById(shortTtlId) === null, 'card store: CARD_TTL_MS is honoured');
 } finally {
   Date.now = realDateNow;
+  if (savedCardTtl === undefined) delete process.env.CARD_TTL_MS;
+  else process.env.CARD_TTL_MS = savedCardTtl;
 }
-assert(getCardById(shortId('card store expiry probe')) === null, 'card store: an expired entry is deleted on lookup');
 
-rememberCard('card store refresh probe', storeView);
-try {
-  Date.now = () => realDateNow() + 50 * 60 * 1000;
-  rememberCard('card store refresh probe', storeView);
-  Date.now = () => realDateNow() + 100 * 60 * 1000;
-  assert(getCardById(shortId('card store refresh probe')) === storeView, 'card store: re-remembering a query refreshes its expiry');
-} finally {
-  Date.now = realDateNow;
-}
-forgetCard('card store refresh probe');
-
-const storeKeys = Array.from({ length: 51 }, (_, i) => `card store capacity probe ${i}`);
-for (const key of storeKeys) rememberCard(key, { issue_title: key });
-assert(getCardById(shortId(storeKeys[0])) === null, 'card store: the 51st distinct entry evicts the oldest');
-assert(getCardById(shortId(storeKeys[1]))?.issue_title === storeKeys[1] && getCardById(shortId(storeKeys[50]))?.issue_title === storeKeys[50], 'card store: the newer entries survive the eviction');
-rememberCard(storeKeys[1], { issue_title: 'refreshed' });
-rememberCard('card store capacity probe extra', { issue_title: 'extra' });
-assert(getCardById(shortId(storeKeys[1]))?.issue_title === 'refreshed', 're-remembering an entry makes it the newest, so the next eviction takes an older one');
-assert(getCardById(shortId(storeKeys[2])) === null, 'card store: the next eviction takes the oldest entry that was not refreshed');
-for (const key of [...storeKeys, 'card store capacity probe extra']) forgetCard(key);
+const capacityIds = Array.from({ length: 301 }, (_, i) => rememberCard({ issue_title: `card store capacity probe ${i}` }));
+assert(cardStoreSize() <= 300, `card store: never holds more than 300 cards (got ${cardStoreSize()})`);
+assert(getCardById(capacityIds[0]) === null, 'card store: the 301st card evicts the oldest');
+assert(getCardById(capacityIds[1])?.issue_title === 'card store capacity probe 1' && getCardById(capacityIds[300])?.issue_title === 'card store capacity probe 300', 'card store: the newer cards survive the eviction');
+for (const id of capacityIds) forgetCard(id);
 
 // ── card buttons resolve through the card store ─────────────────────────────
 const roundTripQuery = 'Round trip   card QUESTION about Zapier';
@@ -5935,9 +6058,9 @@ const roundTripView = stripTransient({
   customer_message: modalCustomer,
   involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
 });
-rememberCard('round trip card question about zapier', roundTripView);
+const roundTripId = rememberCard(withRequestContext(roundTripView, { query: roundTripQuery }));
 for (const intent of ['how-to', 'troubleshooting']) {
-  const card = buildResponseBlocks({ ...roundTripView, _intent: intent, _originalQuery: roundTripQuery });
+  const card = buildResponseBlocks({ ...roundTripView, _intent: intent, _originalQuery: roundTripQuery, _cardId: roundTripId });
   const stepsButton = cardButton(card, 'view_full_steps_modal');
   const draftButton = cardButton(card, 'view_draft_modal');
   assert(stepsButton !== undefined && draftButton !== undefined, `${intent} card: Full steps and Draft buttons are present`);
@@ -5946,7 +6069,7 @@ for (const intent of ['how-to', 'troubleshooting']) {
   assert(roundTripSteps.callback_id === 'full_steps_view' && modalSections(roundTripSteps)[0].includes('API access is off for this tenant.'), `${intent} card: the Full steps button value opens the full steps modal with the research text`);
   assert(roundTripDraft.callback_id === 'draft_view' && modalSections(roundTripDraft)[0].includes('1. Step title 1'), `${intent} card: the Draft button value opens the draft modal`);
 }
-forgetCard(roundTripQuery);
+forgetCard(roundTripId);
 
 for (const view of [stepsModal, draftModal, expiredModal, bareSteps, bareDraft, honestSteps, honestDraft, hugeSteps25, hugeDraft]) {
   assert(view.title.text.length <= 24, `modal title "${view.title.text}" is at most 24 characters`);

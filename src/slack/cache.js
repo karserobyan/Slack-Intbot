@@ -10,8 +10,6 @@
  *   "zapier api access", "rwg pending", "angi not syncing", etc.
  */
 
-import { createHash } from 'node:crypto';
-
 const TTL_MS = parseInt(process.env.CACHE_TTL_MS ?? '3600000', 10) || 3600000; // 1 hour default
 const MAX_ENTRIES = 50;
 
@@ -49,15 +47,6 @@ function lookup(key) {
  */
 export function getCached(query) {
   return lookup(cacheKey(query));
-}
-
-/**
- * Short, button-safe id for a query: first 12 hex chars of the SHA-1 of its cache key.
- * @param {string} query
- * @returns {string}
- */
-export function shortId(query) {
-  return createHash('sha1').update(cacheKey(query)).digest('hex').slice(0, 12);
 }
 
 /**

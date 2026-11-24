@@ -13,6 +13,7 @@ import {
 } from '../slack/blocks.js';
 import { getCached, setCachedMulti, cacheStats } from '../slack/cache.js';
 import { rememberCard } from '../slack/card-store.js';
+import { layoutFor } from '../slack/answer-layout.js';
 import { checkRateLimit, rateLimitResetIn } from '../utils/rate-limiter.js';
 import { nominateResponse } from '../slack/nominations.js';
 import { runPipeline } from '../claude/pipeline.js';
@@ -24,7 +25,7 @@ function stripBotMention(text) {
 
 // Per-request fields that depend on the current thread/channel/query and must
 // NEVER be served stale from cache.
-const TRANSIENT_FIELDS = ['_originalQuery', '_cleanedQuestion'];
+const TRANSIENT_FIELDS = ['_originalQuery', '_cleanedQuestion', '_cardId'];
 
 // Returns a shallow clone with all transient per-request fields removed — used
 // before writing to the shared cache so stored data is request-agnostic.
@@ -40,6 +41,11 @@ export function withRequestContext(data, { query, threadTs, channelId }) {
   const view = stripTransient(data);
   view._originalQuery = query;
   return view;
+}
+
+// Full steps and Draft read this stored copy, so the id must exist before the card is built.
+function attachCardId(view) {
+  if (layoutFor(view._intent) !== 'legacy') view._cardId = rememberCard(view);
 }
 
 async function deliverPipelineResult({
@@ -73,7 +79,7 @@ async function deliverPipelineResult({
   delete pipelineResult._cleanedQuestion;
 
   const view = withRequestContext(pipelineResult, { query, threadTs, channelId });
-  if (!followUp) rememberCard(query, stripTransient(view));
+  if (!followUp) attachCardId(view);
   const blocks = followUp ? buildThreadReplyBlocks(view) : buildResponseBlocks(view, { isDm });
   const fallbackText = followUp
     ? String(view.diagnosis ?? view.issue_title ?? query).slice(0, 200)
@@ -261,7 +267,7 @@ export async function handleQuery({ rawText, channelId, threadTs, client, userId
     const cachedSources = (cached.sources_used ?? []).join(',') || 'none';
     console.info(`[query] cache-hit confidence=${cached.confidence ?? 'unknown'} integration=${cachedIntegration} sources=${cachedSources}`);
     const cachedView = withRequestContext(cached, { query, threadTs, channelId });
-    rememberCard(query, stripTransient(cachedView));
+    attachCardId(cachedView);
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
