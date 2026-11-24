@@ -13,10 +13,13 @@ Internal Slack bot for ServiceTitan integrations support people who own the case
    - **Research** — every question searches Confluence, Jira, Slack, and the help center in parallel; an evaluator may refine the plan once. Confluence is the Internal Product Documentation space only. Pages and tickets that come back stay on the card.
    - **Resolver** — produces diagnosis, steps, and involvement
    - **Reply** — adds a paste-ready `customer_message` only when Intake set `entities.customer_mentioned`
-4. The placeholder is replaced with a structured Block Kit response:
-   - **Research** — the diagnosis: the summary, then a short sentence naming the pages, tickets, and public channels that shaped it. The 🔍 Sources button stores every link. Locked channels are not shown.
-   - **What to do** — the next actions, in plain language. A follow-up in the same thread is a chat reply: the summary, then the sources that shaped that reply, and no new card
-   - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to, and gives one draft to paste: the diagnosis, the steps, and the customer message when there is one. When nothing matched, the card says "No direct match found." and the draft is the question. The bot does not post into those channels. A person posts the draft.
+4. The placeholder is replaced with a structured Block Kit response. The layout follows what Intake decided the question is:
+   - **How-to and setup questions** — **Start here**: the best guide link from the pages and articles the research found, then at most 5 one-line steps
+   - **Policy and troubleshooting questions** — **Answer**: the research cut to at most 3 sentences (the sentence that cites a source is always kept), then at most 3 one-line steps
+   - **Anything unclear** — the full card: **Research** (the diagnosis, then a short sentence naming the pages, tickets, and public channels that shaped it) and **What to do** with every step
+   - **Where it belongs** — when another team should take it, the card names that channel, or a few channels it could go to. The short cards keep the draft to paste (the diagnosis, the steps, and the customer message when there is one) behind the 📝 Draft button, and the full card shows it inline. When nothing matched, the card says "No direct match found." and the draft is the question. The bot does not post into those channels. A person posts the draft.
+   - **Buttons** — 📋 Full steps (when anything was cut) opens the research and every step. 📝 Draft opens the draft to paste. 🔍 Sources stores every link; locked channels are not shown. 👎 Wrong Answer. 💬 New chat in DMs. Full steps and Draft read an in-memory store of the last 50 answers, kept for 1 hour (`CACHE_TTL_MS`); after that, or after a bot restart, they open "Answer expired" and ask the person to ask again.
+   - **Follow-ups** — a follow-up in the same thread is a chat reply: the summary, then the sources that shaped that reply, and no new card
 
 Anyone can ask. The answer is the same for every role. There is no CSA vs Specialist mode split and no legacy single-call rollback path.
 
@@ -113,7 +116,7 @@ npm start
 | `ANTHROPIC_BASE_URL` | Optional | Gateway origin (default: `https://servicetitanint.truefoundry.cloud/api/llm`). Calls go to `{base}/v1/messages`. |
 | `ANTHROPIC_MODEL` | Optional | Resolver and Reply model alias (default: `integrationsbot-internal/chat-model`, sonnet-5-5). Intake, evaluator, handoff choice, and KB search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). The gateway rejects raw model names with a 403. |
 | `CLAUDE_TIMEOUT_MS` | Optional | Per-call API timeout in ms (default: `90000`). The pipeline itself hard-caps at 60s. |
-| `CACHE_TTL_MS` | Optional | Response cache TTL in ms (default: `3600000` = 1 hour) |
+| `CACHE_TTL_MS` | Optional | Response cache and answer-card store TTL in ms (default: `3600000` = 1 hour) |
 | `RATE_LIMIT_MAX` | Optional | Max requests per user per window (default: `5`) |
 | `RATE_LIMIT_WINDOW_MS` | Optional | Rate limit window in ms (default: `60000` = 1 min) |
 | `PORT` | Optional | HTTP port when not using Socket Mode (default: `3000`) |
@@ -141,8 +144,11 @@ src/
 │   ├── kb-search.js             # KB lookup via Anthropic web_search (help.servicetitan.com)
 │   └── atlassian-search.js      # Confluence + Jira REST search
 ├── slack/
+│   ├── answer-layout.js         # Answer card layout by intent (guide pick, sentence and step trimming)
 │   ├── blocks.js                # Block Kit builders (response, modals, error, progress)
 │   ├── cache.js                 # In-memory LRU response cache with TTL
+│   ├── card-modals.js           # Full steps and Draft modal views from the card store
+│   ├── card-store.js            # In-memory store of recent answer cards (1 hour, 50 max)
 │   ├── conversation.js          # Per-thread history store for follow-up mode
 │   ├── feedback.js              # Wrong Answer feedback queue + moderation
 │   ├── knowledge.js             # knowledge.md loader with 5-min cache

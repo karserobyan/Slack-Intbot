@@ -26,9 +26,15 @@ Accounting (QuickBooks, Sage Intacct, NetSuite, Xero, Viewpoint Vista, and the o
 
 ## The card
 
-Order: title, diagnosis, steps (action, backend, verify, escalate), where it belongs, a draft to paste, buttons.
+The layout follows Intake's `intent`. Every card starts with the title.
 
-Buttons: Wrong Answer, Sources when there are references, and New chat in DMs. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
+- `how-to`, `integration-setup`: **Start here** (the best guide link, always one of the KB or Confluence refs the research returned), then at most 5 one-line steps.
+- `policy`, `troubleshooting`: **Answer** (at most 3 sentences, always keeping the cited one), then at most 3 one-line steps.
+- Missing or `unclear` intent: the full card. Research paragraph, every step, where it belongs, and the draft inline.
+
+Steps keep their colour dots (action, backend, verify, escalate). When refs exist and nothing on the card links one, a `Sources:` line is added.
+
+Buttons, in order: Full steps when anything was cut, Draft when another team should take it, Sources when there are references, Wrong Answer, and New chat in DMs. Full steps opens the research paragraph and every step. Draft opens the draft to paste. Both read an in-memory card store (1 hour, 50 answers, `CACHE_TTL_MS`); after that or a bot restart they open "Answer expired" and ask the person to ask again. Nothing on the card posts into another channel. There is no Send handoff button and no Post to thread button.
 
 Involvement:
 
@@ -37,7 +43,7 @@ Involvement:
 - Several listed channels could receive it and none is clearly the one: the card says “Could go to” up to three of them. It does not collapse those into one guess.
 - Nothing on the list fits, or the choice fails: the card names no channel.
 
-When another team should take it, one *Draft* under that line holds the diagnosis, the steps, and the customer message when a customer was mentioned. The same draft is what they paste if the card lists a few channels. When nothing matched, the card says "No direct match found.", skips that step, and the draft is the question. A person posts it. The bot does not.
+When another team should take it, one draft holds the diagnosis, the steps, and the customer message when a customer was mentioned. It sits behind the Draft button, and only the full card shows it inline as *Draft*. The same draft is what they paste if the card lists a few channels. When nothing matched, the card says "No direct match found.", skips that step, and the draft is the question. A person posts it. The bot does not.
 
 ## What still posts
 
@@ -70,7 +76,7 @@ Wrong-answer feedback and `knowledge.md` nominations stay human-approved (Stewar
 
 Node.js ESM. No CommonJS. No comments unless the reason is non-obvious. Block Kit stays well under 50 blocks. Escape model text with `escapeMrkdwn`.
 
-Models already chosen: Intake, evaluator, handoff choice, and KB web search use `haiku-5-5`. Resolver and Reply use `ANTHROPIC_MODEL` or `sonnet-5-5`. Calls go to the AI Gateway at `https://servicetitanint.truefoundry.cloud/api/llm` (`/v1/messages`). Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
+Models already chosen: Intake, evaluator, handoff choice, and KB web search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). Resolver and Reply use `ANTHROPIC_MODEL` or `integrationsbot-internal/chat-model` (sonnet-5-5). The gateway accepts only those aliases, and `src/claude/anthropic-config.js` sets them once. Calls go to the AI Gateway at `https://servicetitanint.truefoundry.cloud/api/llm` (`/v1/messages`). Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
 
 ## Recent merges
 

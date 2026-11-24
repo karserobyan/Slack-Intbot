@@ -75,7 +75,7 @@ if (res.status === 401) {
 if (res.status === 403 && /web_search|tool.*not.*enabled|not.*available/i.test(errMsg)) {
   fail(
     'web_search is not enabled for this gateway model',
-    'Ask the gateway owners to enable web_search on haiku-5-5'
+    'Ask the gateway owners to enable web_search on integrationsbot-internal/chat-model-fast (haiku-5-5)'
   );
 }
 
