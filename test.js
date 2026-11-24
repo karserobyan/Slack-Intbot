@@ -3,6 +3,7 @@
  * requiring Slack or Anthropic API connections.
  */
 
+import './test/setup-env.js';
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
@@ -102,6 +103,10 @@ import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/qual
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
 import { messagesUrl, HAIKU_MODEL, SONNET_MODEL, anthropicClientOptions, answerModel } from './src/claude/anthropic-config.js';
 import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './src/slack/answer-layout.js';
+import { _setKnowledgeFileForTest } from './src/slack/knowledge.js';
+
+// The ignored local data/knowledge.md would otherwise feed the pipeline tests' evidence.
+_setKnowledgeFileForTest(join(tmpdir(), 'intbot-test-no-such-dir', 'knowledge.md'));
 
 let passed = 0;
 let failed = 0;
