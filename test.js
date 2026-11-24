@@ -95,6 +95,7 @@ import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/q
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
 import { messagesUrl, HAIKU_MODEL, SONNET_MODEL } from './src/claude/anthropic-config.js';
+import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './src/slack/answer-layout.js';
 
 let passed = 0;
 let failed = 0;
@@ -5224,6 +5225,119 @@ if (followUpSlackToken === undefined) delete process.env.SLACK_USER_TOKEN;
 else process.env.SLACK_USER_TOKEN = followUpSlackToken;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = followUpApiKey;
+
+// ── answer layout helpers ────────────────────────────────────────────────────
+console.log('\n🔹 Answer layout helpers');
+
+assert(layoutFor('how-to') === 'guide', 'layoutFor maps how-to to guide');
+assert(layoutFor('integration-setup') === 'guide', 'layoutFor maps integration-setup to guide');
+assert(layoutFor('policy') === 'answer', 'layoutFor maps policy to answer');
+assert(layoutFor('troubleshooting') === 'answer', 'layoutFor maps troubleshooting to answer');
+assert(layoutFor('unclear') === 'legacy', 'layoutFor maps unclear to legacy');
+assert(layoutFor(undefined) === 'legacy', 'layoutFor maps a missing intent to legacy');
+assert(layoutFor('nonsense') === 'legacy', 'layoutFor maps an unknown intent to legacy');
+assert(layoutFor(null) === 'legacy', 'layoutFor maps a null intent to legacy');
+assert(layoutFor(42) === 'legacy', 'layoutFor maps a non-string intent to legacy');
+
+const guideKb = [
+  { title: 'Marketing Pro setup guide', url: 'https://kb.test/marketing-pro' },
+  { title: 'Fleet Pro setup guide', url: 'https://kb.test/fleet-pro' },
+];
+const guideConfluence = [
+  { type: 'jira', title: 'INT-1 Fix webhook', url: 'https://jira.test/INT-1' },
+  { type: 'confluence', title: 'Webhook runbook', url: 'https://wiki.test/webhook-runbook' },
+];
+assert(
+  pickGuide({ diagnosis: 'Follow the "Fleet Pro setup guide" to connect it.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://kb.test/fleet-pro',
+  'pickGuide picks the KB ref whose title is quoted in the diagnosis',
+);
+assert(
+  pickGuide({ diagnosis: 'follow the FLEET PRO SETUP GUIDE', kb_refs: guideKb })?.title === 'Fleet Pro setup guide',
+  'pickGuide matches the diagnosis title case-insensitively',
+);
+assert(
+  pickGuide({ diagnosis: 'See the Webhook runbook.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://wiki.test/webhook-runbook',
+  'pickGuide picks a Confluence ref whose title is quoted in the diagnosis',
+);
+assert(
+  pickGuide({
+    diagnosis: 'Use the Shared title page.',
+    kb_refs: [{ title: 'Shared title', url: 'https://kb.test/shared' }],
+    atlassian_refs: [{ type: 'confluence', title: 'Shared title', url: 'https://wiki.test/shared' }],
+  })?.url === 'https://kb.test/shared',
+  'pickGuide prefers the KB ref over a Confluence ref when both titles are in the diagnosis',
+);
+assert(
+  pickGuide({ diagnosis: 'No title is quoted here.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://kb.test/marketing-pro',
+  'pickGuide falls back to the first KB ref',
+);
+assert(
+  JSON.stringify(pickGuide({ kb_refs: guideKb })) === JSON.stringify({ title: 'Marketing Pro setup guide', url: 'https://kb.test/marketing-pro' }),
+  'pickGuide returns exactly the title and url of the ref',
+);
+assert(
+  pickGuide({ diagnosis: 'Nothing quoted.', kb_refs: [], atlassian_refs: guideConfluence })?.url === 'https://wiki.test/webhook-runbook',
+  'pickGuide falls back to the first Confluence ref and skips Jira',
+);
+assert(
+  pickGuide({
+    diagnosis: 'See the INT-1 Fix webhook ticket.',
+    atlassian_refs: [{ type: 'jira', title: 'INT-1 Fix webhook', url: 'https://jira.test/INT-1' }],
+  }) === null,
+  'pickGuide never picks a Jira ref even when its title is in the diagnosis',
+);
+assert(
+  pickGuide({
+    diagnosis: 'Nothing quoted.',
+    atlassian_refs: [{ type: 'jira', title: 'INT-1', url: 'https://jira.test/INT-1' }],
+    slack_refs: [{ title: 'Thread', url: 'https://slack.test/p1' }],
+  }) === null,
+  'pickGuide returns null when only Jira and Slack refs exist',
+);
+assert(pickGuide({}) === null, 'pickGuide returns null with no refs');
+assert(pickGuide({ diagnosis: undefined, kb_refs: undefined, atlassian_refs: undefined }) === null, 'pickGuide tolerates undefined diagnosis and ref lists');
+assert(
+  pickGuide({ kb_refs: [{ title: 'No link guide' }, { title: 'Linked guide', url: 'https://kb.test/linked' }] })?.url === 'https://kb.test/linked',
+  'pickGuide skips refs that have no url',
+);
+
+const fiveSentences = 'First one. Second one! Third one? Fourth one. Fifth one.';
+assert(
+  trimToSentences(fiveSentences, 3, { keepLast: true }) === 'First one. Second one! Fifth one.',
+  'trimToSentences with keepLast returns the leading sentences plus the last',
+);
+assert(
+  trimToSentences(fiveSentences, 3) === 'First one. Second one! Third one?',
+  'trimToSentences without keepLast returns the first maxSentences sentences',
+);
+const twoSentences = 'Only one.   And two.';
+assert(trimToSentences(twoSentences, 3, { keepLast: true }) === twoSentences, 'trimToSentences leaves a short text unchanged');
+assert(trimToSentences('', 2) === '', 'trimToSentences keeps an empty string empty');
+assert(trimToSentences(undefined, 2) === '', 'trimToSentences returns an empty string for undefined input');
+assert(
+  trimToSentences('Use e.g. the admin page. Then save. Done now.', 1) === 'Use e.g. the admin page.',
+  'trimToSentences does not split after an abbreviation like e.g.',
+);
+assert(
+  trimToSentences('Open <https://a.test/x|the page>. <https://b.test|Then> save. Finally check.', 2) === 'Open <https://a.test/x|the page>. <https://b.test|Then> save.',
+  'trimToSentences splits before a Slack link and keeps link text intact',
+);
+assert(
+  trimToSentences('One. Two. Three.', 2, { keepLast: true }) === 'One. Three.',
+  'trimToSentences with keepLast drops the middle sentences and keeps the last',
+);
+
+assert(
+  oneLineStep({ detail: 'Open the admin page. Then click save.' }) === 'Open the admin page.',
+  'oneLineStep returns only the first sentence',
+);
+const longStep = oneLineStep({ detail: `${'word '.repeat(60).trim()}.` });
+assert(longStep.endsWith('…') && longStep.length <= 140, 'oneLineStep cuts a 300-character single sentence to at most 140 characters ending with an ellipsis');
+const linkStep = oneLineStep({ detail: `Open <https://example.test/${'a'.repeat(200)}|the long page> and continue.` });
+assert(linkStep.length <= 140 && linkStep.endsWith('…'), 'oneLineStep keeps the result within the limit when the sentence holds a long link');
+assert(oneLineStep({ detail: 'Short enough.' }, 5) === 'Shor…', 'oneLineStep honours a custom max including the ellipsis');
+assert(oneLineStep({}) === '', 'oneLineStep returns an empty string for a missing detail');
+assert(oneLineStep(undefined) === '', 'oneLineStep returns an empty string for an undefined step');
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);
