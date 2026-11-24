@@ -2868,6 +2868,8 @@ const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke' });
 assert(okPipeResult.issue_title === 'T', 'Resolver ran');
 assert(okPipeResult.customer_message === undefined, 'customer_mentioned false → no customer_message even if resolver mock planted one');
 assert(stepCounter === 3, 'Interpreter + Evaluator + Resolver (no reply) for slack-only plan');
+assert(okPipeResult._intent === 'troubleshooting', 'the pipeline attaches the interpreter intent');
+assert(stripTransient(okPipeResult)._intent === 'troubleshooting', 'the intent survives caching');
 assert(okPipeResult.confidence === 'low', 'a diagnosis the research does not support is not high confidence');
 assert(okPipeResult.diagnosis === 'Root cause unclear — no direct match found. Escalate for investigation.', 'an unsupported diagnosis is replaced with the honest line');
 assert(okPipeResult.steps.length === 1 && okPipeResult.steps[0].tag === 'escalate', 'an unsupported answer does not keep an invented step');
