@@ -16,7 +16,7 @@ Hard cap is 60 seconds. One abort covers the whole run. Model calls do not use S
 
 1. **Intake** (Haiku). Understands the question and builds a search plan. On a first message it may ask one clarifying question when confidence is low. On a follow-up it does not ask again.
 2. **Research.** Searches the plan. An evaluator may refine the search once.
-3. **Resolver** (Sonnet, or `ANTHROPIC_MODEL`). Diagnosis, steps, confidence, and whether another team is needed. A plain-language reading of the research is kept. A step that is not about that research is dropped. A diagnosis about a different product is replaced with no direct match. It does not write the customer draft, and it does not pick the channel.
+3. **Resolver** (Sonnet, or `INTBOT_MODEL`). Diagnosis, steps, confidence, and whether another team is needed. A plain-language reading of the research is kept. A step that is not about that research is dropped. A diagnosis about a different product is replaced with no direct match. It does not write the customer draft, and it does not pick the channel.
 4. **Handoff channel** (Haiku), only when another team is needed and Slack returned a channel list. It reads the issue against every channel from `conversations.list` (name, purpose, topic). Channel names are not stored in the bot.
 5. **Reply** (Sonnet), only when Intake set `entities.customer_mentioned` to true. It writes `customer_message` from facts the Resolver and research already produced. If Reply fails before the 60-second cap, the diagnosis and steps still come back and the customer draft is omitted. If the cap has already fired, the request fails.
 
@@ -76,7 +76,7 @@ Wrong-answer feedback and `knowledge.md` nominations stay human-approved (Stewar
 
 Node.js ESM. No CommonJS. No comments unless the reason is non-obvious. Block Kit stays well under 50 blocks. Escape model text with `escapeMrkdwn`.
 
-Models already chosen: Intake, evaluator, handoff choice, and KB web search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). Resolver and Reply use `ANTHROPIC_MODEL` or `integrationsbot-internal/chat-model` (sonnet-5-5). The gateway accepts only those aliases, and `src/claude/anthropic-config.js` sets them once. Calls go to the AI Gateway at `https://servicetitanint.truefoundry.cloud/api/llm` (`/v1/messages`). Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
+Models already chosen: Intake, evaluator, handoff choice, and KB web search use `integrationsbot-internal/chat-model-fast` (haiku-5-5). Resolver and Reply use `INTBOT_MODEL` or `integrationsbot-internal/chat-model` (sonnet-5-5). The gateway accepts only those aliases, and `src/claude/anthropic-config.js` sets them once. Calls go to the AI Gateway at `https://servicetitanint.truefoundry.cloud/api/llm` (`/v1/messages`), or `INTBOT_GATEWAY_URL` when set; ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored. Do not switch these to Opus, adaptive thinking, or streaming unless a task says so.
 
 ## Recent merges
 

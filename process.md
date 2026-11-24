@@ -20,7 +20,7 @@ This is a working-state document for picking up where we left off. Read top to b
 **IntegrationsBot** — internal Slack bot for ServiceTitan integrations support agents.
 
 - Node.js (ESM), `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
-- Default model: `integrationsbot-internal/chat-model` (sonnet-5-5) for Resolver and Reply (override via `ANTHROPIC_MODEL`); `integrationsbot-internal/chat-model-fast` (haiku-5-5) for the shorter calls. The gateway accepts only these aliases. Gateway: `https://servicetitanint.truefoundry.cloud/api/llm`.
+- Default model: `integrationsbot-internal/chat-model` (sonnet-5-5) for Resolver and Reply (override via `INTBOT_MODEL`); `integrationsbot-internal/chat-model-fast` (haiku-5-5) for the shorter calls. The gateway accepts only these aliases. Gateway: `https://servicetitanint.truefoundry.cloud/api/llm` (override via `INTBOT_GATEWAY_URL`; ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored).
 - Current sources: Confluence + Jira via REST (Basic Auth), Slack via MCP, KB via Anthropic `web_search` (scoped to `help.servicetitan.com`)
 - Entry points: `src/handlers/mention.js` (channel mentions) and `src/handlers/dm.js` (DMs) — both call `handleQuery()` in `mention.js`
 - Test runner: `node test.js` (no framework, plain `assert`), must pass with 0 failures before any PR

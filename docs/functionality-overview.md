@@ -7,7 +7,7 @@ An internal Slack bot for ServiceTitan integrations support people who own the c
 ## Quick facts
 
 - **Entry points:** `src/index.js` (Bolt app startup) + `src/handlers/mention.js` (shared query handler)
-- **Model:** `integrationsbot-internal/chat-model` (sonnet-5-5) for Resolver and Reply (override via `ANTHROPIC_MODEL`); `integrationsbot-internal/chat-model-fast` (haiku-5-5) for Intake, evaluator, handoff choice, and KB search. The gateway accepts only these aliases (a raw model name returns 403); `src/claude/anthropic-config.js` sets them once. Calls go to `https://servicetitanint.truefoundry.cloud/api/llm/v1/messages`.
+- **Model:** `integrationsbot-internal/chat-model` (sonnet-5-5) for Resolver and Reply (override via `INTBOT_MODEL`); `integrationsbot-internal/chat-model-fast` (haiku-5-5) for Intake, evaluator, handoff choice, and KB search. The gateway accepts only these aliases (a raw model name returns 403); `src/claude/anthropic-config.js` sets them once. Calls go to `https://servicetitanint.truefoundry.cloud/api/llm/v1/messages` (override the origin with `INTBOT_GATEWAY_URL`; ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored).
 - **Stack:** Node.js ESM, `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
 - **Search sources:** Confluence REST, Jira REST, Slack MCP (optional), Anthropic `web_search` scoped to `help.servicetitan.com` (KB), local `data/knowledge.md`
 - **In scope:** Zapier, Angi, Reserve with Google, ServiceChannel, Thumbtack, Procore, Chat-to-Text, generic webhooks/API
@@ -281,7 +281,7 @@ All three live in `data/` and are **gitignored**.
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
 - `ATLASSIAN_CLOUD_ID` — site cloud id for a scoped token; looked up from the site when unset
-- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
+- `INTBOT_GATEWAY_URL`, `INTBOT_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
 
 ---
 

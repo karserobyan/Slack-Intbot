@@ -100,7 +100,7 @@ import {
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
-import { messagesUrl, HAIKU_MODEL, SONNET_MODEL } from './src/claude/anthropic-config.js';
+import { messagesUrl, HAIKU_MODEL, SONNET_MODEL, anthropicClientOptions, answerModel } from './src/claude/anthropic-config.js';
 import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './src/slack/answer-layout.js';
 
 let passed = 0;
@@ -132,6 +132,54 @@ console.log('\n🔹 Model gateway');
 assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'model calls go to the ServiceTitan gateway');
 assert(HAIKU_MODEL === 'integrationsbot-internal/chat-model-fast', 'fast steps use the virtual-account haiku alias');
 assert(SONNET_MODEL === 'integrationsbot-internal/chat-model', 'the answer uses the virtual-account sonnet alias');
+
+{
+  const saved = {};
+  for (const k of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'INTBOT_GATEWAY_URL', 'INTBOT_MODEL', 'ANTHROPIC_API_KEY']) saved[k] = process.env[k];
+  const restore = () => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  try {
+    delete process.env.INTBOT_GATEWAY_URL;
+    delete process.env.INTBOT_MODEL;
+    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+    process.env.ANTHROPIC_MODEL = 'haiku-5-5';
+    process.env.ANTHROPIC_API_KEY = 'test-gateway-key';
+    assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'ambient ANTHROPIC_BASE_URL does not reroute model calls');
+    const opts = anthropicClientOptions();
+    assert(opts.baseURL === 'https://servicetitanint.truefoundry.cloud/api/llm', 'SDK client baseURL stays the gateway with ambient ANTHROPIC_BASE_URL set');
+    assert(answerModel() === 'integrationsbot-internal/chat-model', 'ambient ANTHROPIC_MODEL does not change the answer model');
+    assert(opts.maxRetries === 0, 'SDK client does not retry on its own');
+    assert(opts.apiKey === 'test-gateway-key', 'SDK client key comes from ANTHROPIC_API_KEY');
+
+    let kbUrl = null;
+    let kbModel = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      kbUrl = String(url);
+      kbModel = JSON.parse(init.body).model;
+      return { ok: true, json: async () => ({ content: [] }) };
+    };
+    try {
+      await searchKnowledgeBase('zapier api access not working');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert(kbUrl === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'KB search posts to the gateway even with ambient ANTHROPIC_BASE_URL set');
+    assert(kbModel === HAIKU_MODEL, 'KB search uses the fast alias');
+
+    process.env.INTBOT_GATEWAY_URL = 'https://example.test/x/';
+    process.env.INTBOT_MODEL = 'integrationsbot-internal/other-model';
+    assert(messagesUrl() === 'https://example.test/x/v1/messages', 'INTBOT_GATEWAY_URL overrides the gateway, trailing slash stripped');
+    assert(anthropicClientOptions().baseURL === 'https://example.test/x', 'SDK client honours INTBOT_GATEWAY_URL');
+    assert(answerModel() === 'integrationsbot-internal/other-model', 'INTBOT_MODEL overrides the answer model');
+  } finally {
+    restore();
+  }
+}
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');

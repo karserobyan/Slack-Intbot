@@ -52,9 +52,9 @@ Hard cap is 60 seconds (`HARD_CAP_MS`). One `AbortController` covers the whole r
 Models already chosen:
 
 - Interpreter, evaluator, handoff channel, KB web search: `integrationsbot-internal/chat-model-fast` (haiku-5-5)
-- Resolver and Reply: `process.env.ANTHROPIC_MODEL` or `integrationsbot-internal/chat-model` (sonnet-5-5)
+- Resolver and Reply: `process.env.INTBOT_MODEL` or `integrationsbot-internal/chat-model` (sonnet-5-5)
 - The gateway accepts only these aliases; a raw model name returns 403. `src/claude/anthropic-config.js` is the one place they are set.
-- Every call goes to `ANTHROPIC_BASE_URL` (default `https://servicetitanint.truefoundry.cloud/api/llm`) plus `/v1/messages`, with `ANTHROPIC_API_KEY` as `x-api-key`.
+- Every call goes to `INTBOT_GATEWAY_URL` (default `https://servicetitanint.truefoundry.cloud/api/llm`) plus `/v1/messages`, with `ANTHROPIC_API_KEY` as `x-api-key`. Ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored on purpose.
 
 Do not switch these to Opus, adaptive thinking, or streaming unless the task says so. Do not add SDK retries. KB search calls the Messages API with `web_search_20250305` scoped to `help.servicetitan.com`; leave that tool type unless a task is specifically about KB search.
 

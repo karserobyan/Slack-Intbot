@@ -2,8 +2,10 @@ export const GATEWAY_BASE_URL = 'https://servicetitanint.truefoundry.cloud/api/l
 export const HAIKU_MODEL = 'integrationsbot-internal/chat-model-fast';
 export const SONNET_MODEL = 'integrationsbot-internal/chat-model';
 
+// Own variable names: a shell's ambient ANTHROPIC_BASE_URL/ANTHROPIC_MODEL
+// would otherwise send the gateway token to another host.
 export function anthropicBaseUrl() {
-  const configured = process.env.ANTHROPIC_BASE_URL?.trim();
+  const configured = process.env.INTBOT_GATEWAY_URL?.trim();
   return (configured || GATEWAY_BASE_URL).replace(/\/$/, '');
 }
 
@@ -12,7 +14,7 @@ export function messagesUrl() {
 }
 
 export function answerModel() {
-  return process.env.ANTHROPIC_MODEL?.trim() || SONNET_MODEL;
+  return process.env.INTBOT_MODEL?.trim() || SONNET_MODEL;
 }
 
 export function anthropicClientOptions() {
