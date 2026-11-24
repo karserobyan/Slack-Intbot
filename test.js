@@ -19,7 +19,12 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
   buildThreadReplyBlocks,
+  buildFullStepsModal,
+  buildDraftModal,
+  buildExpiredModal,
 } from './src/slack/blocks.js';
+import { cardModalView } from './src/slack/card-modals.js';
+import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from './src/claude/grounding.js';
 import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache, shortId, getCachedById } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
@@ -5610,6 +5615,139 @@ assert(
 );
 assert(oneLineStep({}) === '', 'oneLineStep returns an empty string for a missing detail');
 assert(oneLineStep(undefined) === '', 'oneLineStep returns an empty string for an undefined step');
+
+// ── card modals ──────────────────────────────────────────────────────────────
+console.log('\n🔹 Card modals');
+
+const modalSections = (view) => view.blocks.filter(b => b.type === 'section').map(b => b.text.text);
+const modalHasEmptyText = (view) => view.blocks.some(b => b.type === 'section' && !String(b.text?.text ?? '').trim());
+const modalIsValid = (view) => view.type === 'modal'
+  && view.title.type === 'plain_text'
+  && view.close.text === 'Close'
+  && view.blocks.length >= 1
+  && view.blocks.length < 100
+  && !modalHasEmptyText(view);
+
+const modalQuery = 'Card modal question about Zapier setup';
+const modalCustomer = 'Hi [Name], your Zapier connection was reset during our migration.';
+const modalCached = stripTransient({
+  ...intentBase,
+  _intent: 'how-to',
+  customer_message: modalCustomer,
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+});
+setCached(modalQuery, modalCached);
+const modalValue = JSON.stringify({ id: shortId(modalQuery) });
+
+const stepsModal = cardModalView('steps', modalValue);
+const stepsModalSections = modalSections(stepsModal);
+assert(stepsModal.callback_id === 'full_steps_view' && stepsModal.title.text === 'Full steps', 'cardModalView steps returns the Full steps modal for a cached id');
+assert(modalIsValid(stepsModal), 'full steps modal is a valid modal with non-empty sections');
+assert(stepsModalSections[0].startsWith('*Research*\n') && stepsModalSections[0].includes('API access is off for this tenant.'), 'full steps modal opens with the research paragraph');
+assert(stepsModalSections[0].includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'full steps modal links the cited guide in the research paragraph');
+assert(stepsModalSections[1] === '*What to do*', 'full steps modal has a *What to do* heading after the research');
+assert(stepsModalSections.filter(t => STEP_LINE.test(t)).length === 7, 'full steps modal has one block per step');
+assert(stepsModal.blocks.length === 9, `full steps modal is research + heading + 7 steps (got ${stepsModal.blocks.length})`);
+assert(stepsModalSections[2].startsWith('🔵 *1. Step title 1*\nOpen the Zapier settings for step 1. Then confirm the change saved.'), 'full steps modal shows each step in full, not the one-line form');
+assert(!JSON.stringify(stepsModal).includes('*Draft*'), 'full steps modal has no *Draft* block');
+
+const draftModal = cardModalView('draft', modalValue);
+const draftModalSections = modalSections(draftModal);
+assert(draftModal.callback_id === 'draft_view' && draftModal.title.text === 'Handoff draft', 'cardModalView draft returns the Handoff draft modal for a cached id');
+assert(modalIsValid(draftModal) && draftModal.blocks.length === 1, 'draft modal is one valid section');
+assert(!JSON.stringify(draftModal).includes('*Draft*'), 'draft modal has no *Draft* heading');
+assert(draftModalSections[0].startsWith('API access is off for this tenant.'), 'draft modal starts with the diagnosis');
+assert(draftModalSections[0].includes('1. Step title 1 — Open the Zapier settings for step 1.'), 'draft modal lists the steps');
+assert(draftModalSections[0].includes(modalCustomer), 'draft modal ends with the customer message');
+
+const expiredModal = buildExpiredModal();
+assert(expiredModal.callback_id === 'answer_expired_view' && expiredModal.title.text === 'Answer expired', 'buildExpiredModal has the Answer expired title');
+assert(modalIsValid(expiredModal) && expiredModal.blocks.length === 1, 'expired modal is one valid section');
+assert(
+  modalSections(expiredModal)[0] === 'This answer is no longer stored (it expired, or it was marked wrong). Ask again to get a fresh one.',
+  'expired modal asks the person to ask again',
+);
+
+for (const [label, value] of [
+  ['an unknown id', JSON.stringify({ id: '000000000000' })],
+  ['malformed JSON', 'not json'],
+  ['an empty object', '{}'],
+  ['a numeric id', '{"id":42}'],
+  ['undefined', undefined],
+  ['an empty string', ''],
+  ['a JSON null', 'null'],
+  ['a JSON number', '42'],
+]) {
+  for (const kind of ['steps', 'draft']) {
+    let view = null;
+    let threw = false;
+    try { view = cardModalView(kind, value); } catch { threw = true; }
+    assert(!threw && view?.callback_id === 'answer_expired_view', `cardModalView ${kind} with ${label} returns the expired modal without throwing`);
+  }
+}
+
+deleteCache(modalQuery);
+assert(cardModalView('steps', modalValue).callback_id === 'answer_expired_view', 'cardModalView steps returns the expired modal once the cache entry is removed');
+assert(cardModalView('draft', modalValue).callback_id === 'answer_expired_view', 'cardModalView draft returns the expired modal once the cache entry is removed');
+
+const manySteps = Array.from({ length: 25 }, (_, i) => ({ num: i + 1, title: 'T'.repeat(500), detail: 'D'.repeat(5000), tag: 'action' }));
+const hugeView = { issue_title: 'Huge', diagnosis: 'X'.repeat(5000), steps: manySteps, customer_message: 'C'.repeat(5000), kb_refs: [], atlassian_refs: [], slack_refs: [] };
+const hugeSteps20 = buildFullStepsModal({ ...hugeView, steps: hugeSteps });
+assert(hugeSteps20.blocks.length < 100, `full steps modal for 20 steps stays under 100 blocks (got ${hugeSteps20.blocks.length})`);
+assert(hugeSteps20.blocks.filter(b => b.type === 'section').every(b => b.text.text.length <= 3000), 'full steps modal: every section text is at most 3000 characters');
+const hugeSteps25 = buildFullStepsModal(hugeView);
+assert(modalSections(hugeSteps25).filter(t => STEP_LINE.test(t)).length === 20, 'full steps modal shows at most 20 steps, like the legacy card');
+assert(hugeSteps25.blocks.length < 100 && !modalHasEmptyText(hugeSteps25), 'full steps modal for 25 huge steps stays under 100 blocks with no empty section');
+const hugeDraft = buildDraftModal(hugeView);
+assert(hugeDraft.blocks.length === 1 && hugeDraft.blocks[0].text.text.length <= 3000, 'draft modal text is at most 3000 characters for huge input');
+
+const bareView = { issue_title: 'Bare', diagnosis: '', steps: [], kb_refs: [], atlassian_refs: [], slack_refs: [] };
+const bareSteps = buildFullStepsModal(bareView);
+assert(modalIsValid(bareSteps), 'full steps modal with no diagnosis and no steps still has a non-empty block');
+assert(modalSections(bareSteps)[0] === 'Nothing more to show for this answer.', 'full steps modal with nothing to show says so');
+const noDiagnosisSteps = buildFullStepsModal({ ...bareView, steps: intentSteps.slice(0, 2) });
+assert(modalSections(noDiagnosisSteps)[0] === '*What to do*' && modalSections(noDiagnosisSteps).length === 3, 'full steps modal omits the research paragraph when the diagnosis is empty');
+assert(modalIsValid(noDiagnosisSteps), 'full steps modal with an empty diagnosis has no empty-text section');
+const noStepsList = buildFullStepsModal({ issue_title: 'No steps' });
+assert(modalIsValid(noStepsList), 'full steps modal tolerates missing steps, diagnosis and refs');
+const diagnosisOnly = buildFullStepsModal({ ...bareView, diagnosis: 'Only a diagnosis.' });
+assert(modalSections(diagnosisOnly).length === 1 && !JSON.stringify(diagnosisOnly).includes('*What to do*'), 'full steps modal omits the *What to do* heading when there are no steps');
+
+const bareDraft = buildDraftModal(bareView);
+assert(modalIsValid(bareDraft) && modalSections(bareDraft)[0] === 'Nothing to draft for this answer.', 'draft modal with nothing to draft says so');
+assert(modalIsValid(buildDraftModal({ issue_title: 'No steps' })), 'draft modal tolerates missing steps and diagnosis');
+
+const honestModalView = {
+  issue_title: 'Unknown integration',
+  diagnosis: UNGROUNDED_DIAGNOSIS,
+  steps: [{ num: 1, title: 'Hand off the question', detail: UNGROUNDED_STEP, tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', channel: '#ask-dev' },
+  slack_refs: [], atlassian_refs: [], kb_refs: [],
+};
+const honestSteps = buildFullStepsModal(honestModalView);
+assert(honestSteps.blocks.length === 1 && modalSections(honestSteps)[0] === '*Research*\nNo direct match found.', 'honest handoff: the full steps modal says no direct match was found');
+assert(!JSON.stringify(honestSteps).includes('Hand off the question') && !JSON.stringify(honestSteps).includes('*What to do*'), 'honest handoff: the full steps modal lists no steps');
+const honestDraft = buildDraftModal(honestModalView);
+assert(modalSections(honestDraft)[0] === 'Unknown integration', 'honest handoff: the draft falls back to the issue title when the query is not cached');
+assert(!JSON.stringify(honestDraft).includes('*Draft*'), 'honest handoff: the draft modal has no *Draft* heading');
+assert(buildDraftModal({ ...honestModalView, issue_title: '' }).blocks[0].text.text === 'Nothing to draft for this answer.', 'honest handoff with no title: nothing to draft');
+
+const hostileView = {
+  issue_title: 'Hostile',
+  diagnosis: `${DANGEROUS_TEXT}. See #secret-channel for context.`,
+  steps: [{ num: 1, title: DANGEROUS_TEXT, detail: DANGEROUS_TEXT, tag: 'action' }],
+  customer_message: DANGEROUS_TEXT,
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/CPRIV/p1', channel: '#secret-channel', title: 'secret', is_private: true }],
+  atlassian_refs: [], kb_refs: [],
+};
+const hostileJson = JSON.stringify([buildFullStepsModal(hostileView), buildDraftModal(hostileView)]);
+assert(!hostileJson.includes('<@U123>') && !hostileJson.includes('<https://evil.test|click>'), 'modals escape mrkdwn control characters in model text');
+assert(hostileJson.includes('A&amp;B &lt;@U123&gt;'), 'modals keep the escaped model text readable');
+assert(!hostileJson.includes('CPRIV'), 'full steps modal does not link a private Slack ref');
+
+for (const view of [stepsModal, draftModal, expiredModal, bareSteps, bareDraft, honestSteps, honestDraft, hugeSteps25, hugeDraft]) {
+  assert(view.title.text.length <= 24, `modal title "${view.title.text}" is at most 24 characters`);
+}
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

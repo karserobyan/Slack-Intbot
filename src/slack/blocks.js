@@ -783,6 +783,48 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
   };
 }
 
+function cardModal(callbackId, title, blocks) {
+  return {
+    type: 'modal',
+    callback_id: callbackId,
+    title: { type: 'plain_text', text: title, emoji: true },
+    close: { type: 'plain_text', text: 'Close', emoji: true },
+    blocks,
+  };
+}
+
+function textSection(text) {
+  return { type: 'section', text: { type: 'mrkdwn', text } };
+}
+
+export function buildFullStepsModal(data) {
+  const blocks = [];
+  if (isHonestHandoff(data)) {
+    blocks.push(textSection('*Research*\nNo direct match found.'));
+  } else {
+    const summary = researchSummaryText(data.diagnosis, visibleSlackRefs(data.slack_refs), data.atlassian_refs ?? [], data.kb_refs ?? []);
+    if (summary) blocks.push(textSection(summary));
+    const steps = (data.steps ?? []).slice(0, 20);
+    if (steps.length > 0) {
+      blocks.push(textSection('*What to do*'));
+      blocks.push(...buildStepBlocks(steps));
+    }
+  }
+  if (blocks.length === 0) blocks.push(textSection('Nothing more to show for this answer.'));
+  return cardModal('full_steps_view', 'Full steps', blocks);
+}
+
+export function buildDraftModal(data) {
+  const draft = handoffDraftText(data).replace(/^\*Draft\*\n/, '');
+  return cardModal('draft_view', 'Handoff draft', [textSection(draft || 'Nothing to draft for this answer.')]);
+}
+
+export function buildExpiredModal() {
+  return cardModal('answer_expired_view', 'Answer expired', [
+    textSection('This answer is no longer stored (it expired, or it was marked wrong). Ask again to get a fresh one.'),
+  ]);
+}
+
 const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
 
 export function buildChatResolutionBlocks(data) {
