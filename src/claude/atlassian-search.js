@@ -1,7 +1,9 @@
 import 'dotenv/config';
 
 const TIMEOUT_MS = 8000;
+const CONFLUENCE_TIMEOUT_MS = 15000;
 const CONFLUENCE_SPACE_KEY = 'IPD';
+const PAGE_TEXT_MAX = 16000;
 const API_GATEWAY = 'https://api.atlassian.com';
 let missingAuthWarned = false;
 let cloudIdCache = null;
@@ -88,6 +90,7 @@ function confluenceSpaceKey(url) {
 function stripHtml(html) {
   return (html ?? '')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -96,12 +99,30 @@ function stripHtml(html) {
     .trim();
 }
 
+function pageIdFromUrl(url) {
+  const text = String(url ?? '');
+  return text.match(/\/pages\/(\d+)\b/i)?.[1] || text.match(/[?&]pageId=(\d+)/i)?.[1] || '';
+}
+
+async function readConfluencePage(id, creds, signal) {
+  const url = await atlassianResourceUrl('confluence', creds.token, `rest/api/content/${id}?expand=body.storage`, signal);
+  const res = await fetch(url, {
+    headers: { Authorization: creds.header, Accept: 'application/json' },
+    signal,
+  });
+  if (!res.ok) return '';
+  const data = await res.json();
+  const text = stripHtml(data?.body?.storage?.value ?? '');
+  if (!text) return '';
+  return text.length > PAGE_TEXT_MAX ? `${text.slice(0, PAGE_TEXT_MAX)}…` : text;
+}
+
 export async function searchConfluence(query, { signal: externalSignal } = {}) {
   const creds = credentials('confluence');
   if (!creds) return null;
 
   const localController = new AbortController();
-  const timer = setTimeout(() => localController.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => localController.abort(), CONFLUENCE_TIMEOUT_MS);
   const signal = externalSignal
     ? AbortSignal.any([localController.signal, externalSignal])
     : localController.signal;
@@ -128,7 +149,7 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
     if (results.length === 0) return { text: null, refs: [] };
 
     const base = siteBase();
-    const refs = results.map(r => {
+    const pages = results.map(r => {
       const raw = r.url || r.content?._links?.webui || '';
       let pageUrl = '';
       if (/^https?:\/\//i.test(raw)) pageUrl = raw;
@@ -140,15 +161,25 @@ export async function searchConfluence(query, { signal: externalSignal } = {}) {
       }
       const title = String(r.content?.title || r.title || 'Untitled').replace(/@@@hl@@@|@@@endhl@@@/g, '').trim();
       return {
+        id: String(r.content?.id ?? '') || pageIdFromUrl(pageUrl),
         type: 'confluence',
         title,
         url: pageUrl,
         excerpt: stripHtml(r.excerpt ?? '').slice(0, 300),
       };
-    }).filter(r => r.url && confluenceSpaceKey(r.url).toUpperCase() === CONFLUENCE_SPACE_KEY);
-    if (!refs.length) return { text: null, refs: [] };
+    }).filter(page => page.url && confluenceSpaceKey(page.url).toUpperCase() === CONFLUENCE_SPACE_KEY);
+    if (!pages.length) return { text: null, refs: [] };
 
-    const text = refs.map(r => `[Confluence] ${r.title}\n${r.excerpt}\n${r.url}`).join('\n\n');
+    const bodies = await Promise.all(pages.map(async (page) => {
+      if (!page.id) return '';
+      try {
+        return await readConfluencePage(page.id, creds, signal);
+      } catch {
+        return '';
+      }
+    }));
+    const refs = pages.map(({ id, ...ref }) => ref);
+    const text = refs.map((ref, index) => `[Confluence] ${ref.title}\n${bodies[index] || ref.excerpt}\n${ref.url}`).join('\n\n');
     return { text, refs };
   } catch (err) {
     if (localController.signal.aborted) {
