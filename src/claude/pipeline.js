@@ -232,6 +232,7 @@ export async function runPipeline({ rawQuery, threadHistory = [], onProgress, al
     }
 
     answer._cleanedQuestion = interp.cleaned_question;
+    answer._intent = interp.intent;
     const stageStr = Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(' ');
     console.info(`[pipeline] ok refined=${refined} ${stageStr} total=${Date.now() - t0}ms`);
     return answer;
