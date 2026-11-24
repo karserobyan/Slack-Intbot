@@ -21,7 +21,7 @@ import {
   buildThreadReplyBlocks,
 } from './src/slack/blocks.js';
 import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
-import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
+import { getCached, setCached, cacheStats, pruneExpired, deleteCache, shortId, getCachedById } from './src/slack/cache.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
@@ -2599,6 +2599,44 @@ assert(getCached('only one') !== null, 'single-key write works');
 
 setCachedMulti(['valid key', null, '', undefined], dummyCacheData);
 assert(getCached('valid key') !== null, 'valid key in mixed array is written');
+
+// ── cache short ids ───────────────────────────────────────────────────────────
+console.log('\n🔹 cache short ids');
+
+const idData = { issue_title: 'Short id answer' };
+setCached('Zapier API access', idData);
+assert(getCachedById(shortId('  zapier   API ACCESS ')) === idData, 'getCachedById resolves a normalised query id to the cached object');
+assert(getCachedById('000000000000') === null, 'getCachedById returns null for an unknown id');
+assert(shortId('  zapier   API ACCESS ') === shortId('zapier api access'), 'shortId is stable across phrasings of the same normalised query');
+assert(/^[0-9a-f]{12}$/.test(shortId('zapier api access')), 'shortId is 12 lowercase hex chars');
+assert(shortId('zapier api access') !== shortId('rwg pending'), 'shortId differs for different queries');
+
+const idMultiData = { issue_title: 'Short id multi' };
+setCachedMulti(['Short id raw question here', 'short id cleaned question'], idMultiData);
+assert(getCachedById(shortId('Short id raw question here')) === idMultiData, 'setCachedMulti: raw key id resolves');
+assert(getCachedById(shortId('short id cleaned question')) === idMultiData, 'setCachedMulti: cleaned key id resolves');
+
+deleteCache('Short id raw question here');
+assert(getCachedById(shortId('Short id raw question here')) === null, 'deleteCache makes getCachedById return null');
+assert(getCachedById(shortId('short id cleaned question')) === idMultiData, 'deleting one key leaves the other id resolvable');
+
+const idStatsBefore = cacheStats();
+getCachedById(shortId('zapier api access'));
+getCachedById('000000000000');
+const idStatsAfter = cacheStats();
+assert(idStatsAfter.hits === idStatsBefore.hits + 1, 'getCachedById counts a hit');
+assert(idStatsAfter.misses === idStatsBefore.misses + 1, 'getCachedById counts a miss');
+
+setCached('short id expiry probe', { issue_title: 'Expiring' });
+const realDateNow = Date.now;
+Date.now = () => realDateNow() + 2 * 60 * 60 * 1000;
+const expiredById = getCachedById(shortId('short id expiry probe'));
+Date.now = realDateNow;
+assert(expiredById === null, 'getCachedById returns null for an expired entry');
+assert(getCached('short id expiry probe') === null, 'expired entry is removed by getCachedById');
+
+deleteCache('Zapier API access');
+deleteCache('short id cleaned question');
 
 // ── transient cache fields (stale-thread / cross-channel leak guard) ──────────
 console.log('\n🔹 transient cache fields');
