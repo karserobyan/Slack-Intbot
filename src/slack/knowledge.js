@@ -17,6 +17,12 @@ const MAX_SIZE_BYTES = 20 * 1024;    // 20KB cap — warn if exceeded
 
 let _cache = null;
 let _cacheTime = 0;
+let _knowledgeFile = KNOWLEDGE_FILE;
+
+export function _setKnowledgeFileForTest(path) {
+  _knowledgeFile = path ?? KNOWLEDGE_FILE;
+  clearKnowledgeCache();
+}
 
 /**
  * Returns the contents of the team knowledge file, or null if not found.
@@ -29,7 +35,7 @@ export async function getKnowledge() {
   if (_cache !== null && now - _cacheTime < CACHE_TTL_MS) return _cache;
 
   try {
-    const content = await readFile(KNOWLEDGE_FILE, 'utf-8');
+    const content = await readFile(_knowledgeFile, 'utf-8');
     if (Buffer.byteLength(content, 'utf-8') > MAX_SIZE_BYTES) {
       console.warn('[knowledge] data/knowledge.md exceeds 20KB — consider splitting or trimming to keep token costs low.');
     }

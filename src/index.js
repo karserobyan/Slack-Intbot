@@ -4,6 +4,7 @@ import { registerMentionHandler } from './handlers/mention.js';
 import { registerDmHandler } from './handlers/dm.js';
 import { registerAutoAnswerHandler } from './handlers/auto-answer.js';
 import { buildFeedbackModal, buildSourcesModal } from './slack/blocks.js';
+import { cardModalView } from './slack/card-modals.js';
 import { getFeedbackChannelId } from './utils/feedback-channel.js';
 import { pruneExpired, cacheStats } from './slack/cache.js';
 import { pruneConversations } from './slack/conversation.js';
@@ -90,6 +91,32 @@ app.action('view_sources_modal', async ({ ack, body, client, action, logger }) =
     });
   } catch (err) {
     logger.error('[index] Failed to open sources modal:', err.message);
+  }
+});
+
+// ── "Full steps" button — opens the full steps modal ─────────────────────────
+app.action('view_full_steps_modal', async ({ ack, body, client, action, logger }) => {
+  await ack();
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: cardModalView('steps', action.value),
+    });
+  } catch (err) {
+    logger.error('[index] Failed to open full steps modal:', err.message);
+  }
+});
+
+// ── "Draft" button — opens the handoff draft modal ───────────────────────────
+app.action('view_draft_modal', async ({ ack, body, client, action, logger }) => {
+  await ack();
+  try {
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: cardModalView('draft', action.value),
+    });
+  } catch (err) {
+    logger.error('[index] Failed to open draft modal:', err.message);
   }
 });
 

@@ -3,7 +3,8 @@
  * Runs the full pipeline without Slack — type queries and see formatted output.
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-ant-... node cli.js
+ *   ANTHROPIC_API_KEY=tfy_va_... node cli.js
+ *   (the AI Gateway virtual-account token, not a personal tfy_pat_... token)
  *   # or set it in .env
  */
 
@@ -139,7 +140,7 @@ function formatClarifying(question) {
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.log(`${RED}${BOLD}Missing ANTHROPIC_API_KEY${RESET}`);
-  console.log(`Set it in .env or run: ${CYAN}ANTHROPIC_API_KEY=sk-ant-... node cli.js${RESET}\n`);
+  console.log(`Set it in .env or run: ${CYAN}ANTHROPIC_API_KEY=tfy_va_... node cli.js${RESET} (AI Gateway virtual-account token, not a personal tfy_pat_... token)\n`);
   process.exit(1);
 }
 

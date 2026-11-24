@@ -1,6 +1,7 @@
 import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from '../claude/grounding.js';
 import { ACCOUNTING_REDIRECT_CHANNEL } from '../utils/accounting-filter.js';
 import { escapeMrkdwn, safeSlackLink } from './mrkdwn.js';
+import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './answer-layout.js';
 
 const TAG_CIRCLE = {
   action:   '🔵',
@@ -133,6 +134,12 @@ function isHonestHandoff(data) {
     && String(steps[0]?.detail ?? '').trim() === UNGROUNDED_STEP;
 }
 
+// The model chooses step.num and reads attacker-writable Slack text, so it is escaped like any model text.
+function stepNum(step, index) {
+  const num = step.num == null || step.num === '' ? index + 1 : step.num;
+  return escapeMrkdwn(String(num));
+}
+
 function handoffDraftText(data) {
   if (isHonestHandoff(data)) {
     const question = String(data._originalQuery ?? data.issue_title ?? '').trim();
@@ -142,11 +149,11 @@ function handoffDraftText(data) {
   const parts = [];
   const diagnosis = String(data.diagnosis ?? '').trim();
   if (diagnosis) parts.push(escapeMrkdwn(diagnosis));
-  const stepLines = (data.steps ?? []).slice(0, 20).map((step) => {
+  const stepLines = (data.steps ?? []).slice(0, 20).map((step, i) => {
     const title = escapeMrkdwn(String(step.title ?? '').trim());
     const detail = escapeMrkdwn(String(step.detail ?? '').trim());
     if (!title && !detail) return '';
-    const head = [step.num != null && step.num !== '' ? `${step.num}.` : '', title].filter(Boolean).join(' ');
+    const head = [`${stepNum(step, i)}.`, title].filter(Boolean).join(' ');
     return detail ? (head ? `${head} — ${detail}` : detail) : head;
   }).filter(Boolean);
   if (stepLines.length) parts.push(stepLines.join('\n'));
@@ -196,6 +203,35 @@ export function buildThreadReplyBlocks(data) {
   }];
 }
 
+function buildStepBlocks(steps) {
+  return steps.map((step, i) => {
+    const circle = TAG_CIRCLE[step.tag] ?? '⚪';
+    const prefix = `${circle} *${stepNum(step, i)}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
+    const detailRaw = escapeMrkdwn(step.detail);
+    const budget = 2900 - prefix.length;
+    const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
+    return {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `${prefix}${detail}` },
+    };
+  });
+}
+
+function handoffContextBlock(involvement) {
+  const who = escapeMrkdwn(involvement.who ?? 'another team');
+  const channel = escapeMrkdwn(involvement.channel ?? '');
+  const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
+  const handoff = channel
+    ? `This belongs in ${channel}`
+    : suggestions.length
+      ? `Could go to ${suggestions.length === 1 ? suggestions[0] : `${suggestions.slice(0, -1).join(', ')}, or ${suggestions[suggestions.length - 1]}`}`
+      : `Someone else needs to take this${who ? ` (${who})` : ''}`;
+  return {
+    type: 'context',
+    elements: [{ type: 'mrkdwn', text: handoff }],
+  };
+}
+
 export function buildResponseBlocks(data, { isDm = false } = {}) {
   const blocks = [];
   const conf = CONFIDENCE_META[data.confidence] ?? CONFIDENCE_META.medium;
@@ -210,6 +246,12 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
     text: { type: 'plain_text', text: clamp(`${conf.icon} ${data.issue_title ?? 'Integration Issue'}`, HEADER_MAX), emoji: true },
   });
   blocks.push({ type: 'divider' });
+
+  const layout = layoutFor(data._intent);
+  if (layout !== 'legacy') {
+    blocks.push(...buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm }));
+    return blocks;
+  }
 
   const honestHandoff = isHonestHandoff(data);
   const summary = honestHandoff
@@ -229,34 +271,13 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
       type: 'section',
       text: { type: 'mrkdwn', text: '*What to do*' },
     });
-    for (const step of steps) {
-      const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const prefix = `${circle} *${step.num}. ${clamp(escapeMrkdwn(step.title), 200)}*\n`;
-      const detailRaw = escapeMrkdwn(step.detail);
-      const budget = 2900 - prefix.length;
-      const detail = detailRaw.length > budget ? `${detailRaw.slice(0, budget - 1)}…` : detailRaw;
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: `${prefix}${detail}` },
-      });
-    }
+    blocks.push(...buildStepBlocks(steps));
   }
 
   // 4. Involvement
   const involvement = data.involvement;
   if (involvement?.needed) {
-    const who = escapeMrkdwn(involvement.who ?? 'another team');
-    const channel = escapeMrkdwn(involvement.channel ?? '');
-    const suggestions = (involvement.suggestions ?? []).slice(0, 3).map((name) => escapeMrkdwn(name)).filter(Boolean);
-    const handoff = channel
-      ? `This belongs in ${channel}`
-      : suggestions.length
-        ? `Could go to ${suggestions.length === 1 ? suggestions[0] : `${suggestions.slice(0, -1).join(', ')}, or ${suggestions[suggestions.length - 1]}`}`
-        : `Someone else needs to take this${who ? ` (${who})` : ''}`;
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: handoff }],
-    });
+    blocks.push(handoffContextBlock(involvement));
     const draft = handoffDraftText(data);
     if (draft) {
       blocks.push({
@@ -267,48 +288,140 @@ export function buildResponseBlocks(data, { isDm = false } = {}) {
   }
 
   // 7. Action buttons
-  const actionElements = [
-    {
-      type: 'button',
-      text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
-      action_id: 'wrong_answer_modal',
-      style: 'danger',
-      value: JSON.stringify({
-        query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
-        issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
-        integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
-      }),
-    },
-  ];
-
-  const totalRefs = slackRefs.length + atlassianRefs.length + kbRefs.length;
-  if (totalRefs > 0) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '🔍 Sources', emoji: true },
-      action_id: 'view_sources_modal',
-      value: _buildSourcesButtonValue(
-        slackRefs,
-        atlassianRefs,
-        kbRefs,
-        data.diagnosis ?? null,
-      ),
-    });
-  }
-
-  if (isDm) {
-    actionElements.push({
-      type: 'button',
-      text: { type: 'plain_text', text: '💬 New chat', emoji: true },
-      action_id: 'new_chat',
-      value: 'new_chat',
-    });
-  }
+  const actionElements = [wrongAnswerButton(data)];
+  const sources = sourcesButton(data, slackRefs, atlassianRefs, kbRefs);
+  if (sources) actionElements.push(sources);
+  if (isDm) actionElements.push(newChatButton());
 
   blocks.push({ type: 'actions', elements: actionElements });
   blocks.push({ type: 'divider' });
 
   return blocks;
+}
+
+const COMPACT_LAYOUT = {
+  guide:  { heading: '*Steps*',      maxSteps: 5 },
+  answer: { heading: '*Next steps*', maxSteps: 3 },
+};
+const COMPACT_TITLE_MAX = 120;
+
+function compactStepLine(step, index) {
+  const title = String(step.title ?? '').trim();
+  const num = stepNum(step, index);
+  const head = title
+    ? `*${num}. ${escapeMrkdwn(clamp(title, COMPACT_TITLE_MAX))}*`
+    : `*${num}.*`;
+  const line = oneLineStep(step);
+  return `${TAG_CIRCLE[step.tag] ?? '⚪'} ${head}${line ? ` — ${escapeMrkdwn(line)}` : ''}`;
+}
+
+function isStepCut(step) {
+  return oneLineStep(step) !== String(step.detail ?? '').trim()
+    || String(step.title ?? '').trim().length > COMPACT_TITLE_MAX;
+}
+
+function sourcesFallbackBlock(slackRefs, atlassianRefs, kbRefs) {
+  const links = [...kbRefs, ...atlassianRefs, ...slackRefs]
+    .map((ref) => safeSlackLink(ref?.url, cleanLabel(ref?.title) || cleanLabel(ref?.channel) || 'Source'))
+    .filter((link) => link.startsWith('<http'))
+    .slice(0, 3);
+  if (!links.length) return null;
+  return { type: 'context', elements: [{ type: 'mrkdwn', text: `Sources: ${links.join(' · ')}` }] };
+}
+
+function modalButton(text, actionId, value) {
+  return { type: 'button', text: { type: 'plain_text', text, emoji: true }, action_id: actionId, value };
+}
+
+function buildCompactBody(data, layout, { slackRefs, atlassianRefs, kbRefs, isDm }) {
+  const blocks = [];
+  const section = (text) => blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+  const { heading, maxSteps } = COMPACT_LAYOUT[layout];
+  const honestHandoff = isHonestHandoff(data);
+  const diagnosis = String(data.diagnosis ?? '').trim();
+  const allSteps = honestHandoff
+    ? []
+    : (data.steps ?? []).filter((step) => String(step?.title ?? '').trim() || String(step?.detail ?? '').trim());
+  const steps = allSteps.slice(0, maxSteps);
+  let expandable = allSteps.length > maxSteps || steps.some(isStepCut);
+
+  if (honestHandoff) {
+    section('*Answer*\nNo direct match found.');
+  } else if (layout === 'guide') {
+    const guide = pickGuide(data);
+    if (guide) section(`*Start here*\n${safeSlackLink(guide.url, guide.title)}`);
+    if (diagnosis) expandable = true;
+  } else if (diagnosis) {
+    const cites = (sentence) => linkifyCitations(sentence, slackRefs, atlassianRefs, kbRefs).includes('<http');
+    const lead = trimToSentences(diagnosis, 3, { keepLast: true, keep: cites });
+    const text = `*Answer*\n${linkifyCitations(lead, slackRefs, atlassianRefs, kbRefs)}`;
+    if (lead !== diagnosis || text.length > SECTION_MAX) expandable = true;
+    section(clamp(text));
+  }
+
+  if (steps.length) section(clamp([heading, ...steps.map(compactStepLine)].join('\n')));
+
+  if (data.involvement?.needed) blocks.push(handoffContextBlock(data.involvement));
+
+  const shownText = blocks.filter((b) => b.type === 'section').map((b) => b.text.text).join('\n');
+  // Only our own links start with '<http': escapeMrkdwn turns a model-written '<http' into '&lt;http'.
+  if (!shownText.includes('<http')) {
+    const fallback = sourcesFallbackBlock(slackRefs, atlassianRefs, kbRefs);
+    if (fallback) blocks.push(fallback);
+  }
+
+  const actionElements = [];
+  if (data._cardId) {
+    const value = JSON.stringify({ id: data._cardId });
+    if (expandable) actionElements.push(modalButton('📋 Full steps', 'view_full_steps_modal', value));
+    if (data.involvement?.needed && handoffDraftText(data)) actionElements.push(modalButton('📝 Draft', 'view_draft_modal', value));
+  }
+  const sources = sourcesButton(data, slackRefs, atlassianRefs, kbRefs);
+  if (sources) actionElements.push(sources);
+  actionElements.push(wrongAnswerButton(data));
+  if (isDm) actionElements.push(newChatButton());
+
+  blocks.push({ type: 'actions', elements: actionElements });
+  blocks.push({ type: 'divider' });
+  return blocks;
+}
+
+function wrongAnswerButton(data) {
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '👎 Wrong Answer', emoji: true },
+    action_id: 'wrong_answer_modal',
+    style: 'danger',
+    value: JSON.stringify({
+      query: encodeActionText((data._originalQuery ?? '').slice(0, 400)),
+      issueTitle: encodeActionText((data.issue_title ?? '').slice(0, 100)),
+      integrationType: encodeActionText((data.integration_type ?? '').slice(0, 50)),
+    }),
+  };
+}
+
+function sourcesButton(data, slackRefs, atlassianRefs, kbRefs) {
+  if (slackRefs.length + atlassianRefs.length + kbRefs.length === 0) return null;
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '🔍 Sources', emoji: true },
+    action_id: 'view_sources_modal',
+    value: _buildSourcesButtonValue(
+      slackRefs,
+      atlassianRefs,
+      kbRefs,
+      data.diagnosis ?? null,
+    ),
+  };
+}
+
+function newChatButton() {
+  return {
+    type: 'button',
+    text: { type: 'plain_text', text: '💬 New chat', emoji: true },
+    action_id: 'new_chat',
+    value: 'new_chat',
+  };
 }
 
 export function buildWelcomeCard() {
@@ -677,6 +790,48 @@ export function buildSourcesModal({ diagnosis = null, slack_refs = [], atlassian
   };
 }
 
+function cardModal(callbackId, title, blocks) {
+  return {
+    type: 'modal',
+    callback_id: callbackId,
+    title: { type: 'plain_text', text: title, emoji: true },
+    close: { type: 'plain_text', text: 'Close', emoji: true },
+    blocks,
+  };
+}
+
+function textSection(text) {
+  return { type: 'section', text: { type: 'mrkdwn', text } };
+}
+
+export function buildFullStepsModal(data) {
+  const blocks = [];
+  if (isHonestHandoff(data)) {
+    blocks.push(textSection('*Research*\nNo direct match found.'));
+  } else {
+    const summary = researchSummaryText(data.diagnosis, visibleSlackRefs(data.slack_refs), data.atlassian_refs ?? [], data.kb_refs ?? []);
+    if (summary) blocks.push(textSection(summary));
+    const steps = (data.steps ?? []).slice(0, 20);
+    if (steps.length > 0) {
+      blocks.push(textSection('*What to do*'));
+      blocks.push(...buildStepBlocks(steps));
+    }
+  }
+  if (blocks.length === 0) blocks.push(textSection('Nothing more to show for this answer.'));
+  return cardModal('full_steps_view', 'Full steps', blocks);
+}
+
+export function buildDraftModal(data) {
+  const draft = handoffDraftText(data).replace(/^\*Draft\*\n/, '');
+  return cardModal('draft_view', 'Handoff draft', [textSection(draft || 'Nothing to draft for this answer.')]);
+}
+
+export function buildExpiredModal() {
+  return cardModal('answer_expired_view', 'Answer expired', [
+    textSection('This answer is no longer stored (it expired, or the bot restarted). Ask again to get a fresh one.'),
+  ]);
+}
+
 const CHAT_SOURCE_LABEL = { confluence: '📄 Confluence', jira: '📄 Jira', slack: '💬 Slack', kb: '📖 KB', knowledge: '📚 Team knowledge' };
 
 export function buildChatResolutionBlocks(data) {
@@ -802,7 +957,7 @@ export function buildAutoAnswerBlocks({ originalUrl, sourceChannelId, originalUs
     });
     for (const step of steps) {
       const circle = TAG_CIRCLE[step.tag] ?? '⚪';
-      const num = step.num ? `${step.num}. ` : '';
+      const num = step.num ? `${escapeMrkdwn(String(step.num))}. ` : '';
       const title = step.title ? `*${num}${escapeMrkdwn(step.title)}*` : `*${num}${escapeMrkdwn(step.tag ?? 'step')}*`;
       const detail = step.detail ? `\n${escapeMrkdwn(step.detail)}` : '';
       blocks.push({

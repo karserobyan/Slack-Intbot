@@ -1,17 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { anthropicClientOptions, HAIKU_MODEL } from './anthropic-config.js';
 
-const MODEL = 'claude-haiku-4-5-20251001';
+const MODEL = HAIKU_MODEL;
 const TIMEOUT_MS = 15000;
 
 let anthropic = null;
 
 function getAnthropicClient() {
   if (!anthropic) {
-    anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      fetch: (...args) => globalThis.fetch(...args),
-      maxRetries: 0,
-    });
+    anthropic = new Anthropic(anthropicClientOptions());
   }
   return anthropic;
 }

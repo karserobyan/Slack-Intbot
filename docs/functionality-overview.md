@@ -7,7 +7,7 @@ An internal Slack bot for ServiceTitan integrations support people who own the c
 ## Quick facts
 
 - **Entry points:** `src/index.js` (Bolt app startup) + `src/handlers/mention.js` (shared query handler)
-- **Model:** `claude-sonnet-4-6` (override via `ANTHROPIC_MODEL`)
+- **Model:** `integrationsbot-internal/chat-model` (sonnet-5-5) for Resolver and Reply (override via `INTBOT_MODEL`); `integrationsbot-internal/chat-model-fast` (haiku-5-5) for Intake, evaluator, handoff choice, and KB search. The gateway accepts only these aliases (a raw model name returns 403); `src/claude/anthropic-config.js` sets them once. Calls go to `https://servicetitanint.truefoundry.cloud/api/llm/v1/messages` (override the origin with `INTBOT_GATEWAY_URL`; ambient `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` are ignored).
 - **Stack:** Node.js ESM, `@slack/bolt` v4, `@anthropic-ai/sdk`, dotenv
 - **Search sources:** Confluence REST, Jira REST, Slack MCP (optional), Anthropic `web_search` scoped to `help.servicetitan.com` (KB), local `data/knowledge.md`
 - **In scope:** Zapier, Angi, Reserve with Google, ServiceChannel, Thumbtack, Procore, Chat-to-Text, generic webhooks/API
@@ -94,7 +94,7 @@ Both entry points funnel into the shared query flow (see §13).
   - **Team knowledge** — `data/knowledge.md` via `src/slack/knowledge.js` (5-min cache)
   - **Slack** — via search executor / optional Slack MCP (`SLACK_USER_TOKEN`)
 - **How they're combined:** Gathered results plus team knowledge and past corrections are passed into Resolver (and Reply when a customer was mentioned)
-- **External services:** Anthropic API (Claude + `web_search` for KB), Confluence REST, Jira REST, Slack search/MCP
+- **External services:** ServiceTitan AI Gateway (Claude models + `web_search` for KB), Confluence REST, Jira REST, Slack search/MCP
 
 ### One audience
 - No CSA vs Specialist prompt split. Everyone who owns the case gets the same Resolver card.
@@ -152,14 +152,21 @@ Accounting is a keyword gate before the pipeline (`isAccountingTopic`); it is no
 ## 7. Response rendering & user interaction
 
 ### Block Kit response builder
-- **Files:** `src/slack/blocks.js:buildResponseBlocks()`
-- **Pieces of the response card:**
-  1. Header with issue title and confidence icon
-  2. Research summary: the diagnosis names the sources that shaped it and links them when the host is allowlisted. The Sources button stores every link
-  3. Color-coded steps (blue=action, orange=backend, green=verify, red=escalate). A thread follow-up labels these "Still open"
-  4. Where it belongs, then one draft to paste (diagnosis, steps, and the customer message when one exists), only when another team is needed
-  5. Action buttons: **Wrong Answer**, **Sources** when refs exist, **New chat** in DMs
-  7. Nomination suggestion if the response qualifies for the knowledge base
+- **Files:** `src/slack/blocks.js:buildResponseBlocks()`, `src/slack/answer-layout.js` (layout choice, guide pick, sentence and step trimming)
+- **Layout follows the interpreter's `intent`.** The pipeline attaches it to the answer as `_intent` (kept in the cache, never shown). Every layout opens with a header: issue title and confidence icon.
+  - **Guide** (`how-to`, `integration-setup`): **Start here**, the best guide link, then at most 5 one-line steps. The link is always one of the KB or Confluence refs the research returned: the one the research text names, else the first KB ref, else the first Confluence ref. Omitted when there is none
+  - **Answer** (`policy`, `troubleshooting`): **Answer**, the research text cut to at most 3 sentences and always keeping the cited sentence (the one that links a source), then at most 3 one-line steps
+  - **Full layout** (no intent or `unclear`): the Research paragraph, **What to do** with every step (cap 20), and the draft to paste inline when another team is needed
+- **Pieces of the compact cards (Guide and Answer):**
+  1. Color-coded one-line steps (blue=action, orange=backend, green=verify, red=escalate): bold number and title, then the first sentence of the detail, about 140 characters
+  2. Where it belongs, only when another team is needed. The draft is not inline
+  3. A `Sources:` line with up to 3 links, only when refs exist but nothing on the card links a source
+  4. When nothing matched, **Answer** reads "No direct match found." and there are no steps
+- **Source links:** the research text names the sources that shaped it and links them when the host is allowlisted. The Sources button stores every link
+- **Buttons, in order:** **Full steps** in the Guide layout whenever there is research text (or anything was cut), in the Answer layout only when something was cut (extra steps, a shortened step, a trimmed Answer), **Draft** when another team is needed, **Sources** when refs exist, **Wrong Answer**, **New chat** in DMs. The full layout has Wrong Answer, Sources, New chat
+- **Modals:** Full steps opens the Research paragraph and every step. Draft opens the draft to paste: the diagnosis, the steps, and the customer message when one exists, or the question itself when nothing matched. Both read the card store
+- **Card store:** `src/slack/card-store.js` (opened by `src/slack/card-modals.js`) gives each rendered first-answer card (guide or answer layout) its own random id and keeps that card's view in memory for 24 hours (`CARD_TTL_MS`), at most 300 cards, oldest dropped first. Asking the same question again, or a cache replay, makes a new card with a new id, so one card never shows another card's answer. After 24 hours, once newer cards push it out, or after a bot restart, the buttons open an "Answer expired" message that asks the person to ask again. It is independent of the response cache and `CACHE_MIN_MS`: it stores every first-answer card (cache hits included), while the cache keeps only answers that took `CACHE_MIN_MS` or longer. Full-layout cards have no Full steps or Draft buttons and are not stored
+- Nomination suggestion if the response qualifies for the knowledge base
 
 ### Wrong-answer feedback flow
 - **Trigger:** Click "Wrong Answer" → modal opens
@@ -274,7 +281,7 @@ All three live in `data/` and are **gitignored**.
 - `SLACK_APP_TOKEN` — Socket Mode for local dev (blank → HTTP mode)
 - `ATLASSIAN_BASE_URL` — override default `servicetitan.atlassian.net`
 - `ATLASSIAN_CLOUD_ID` — site cloud id for a scoped token; looked up from the site when unset
-- `ANTHROPIC_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
+- `INTBOT_GATEWAY_URL`, `INTBOT_MODEL`, `CLAUDE_TIMEOUT_MS`, `CACHE_TTL_MS`, `CACHE_MIN_MS`, `CARD_TTL_MS`, `CONVERSATION_TTL_MS`, `KNOWLEDGE_MIN_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`, `PORT`, `LOG_LEVEL`
 
 ---
 
@@ -292,7 +299,7 @@ When a `@mention` or DM arrives, both entry points call `handleQuery()` in `src/
 8. **`runPipeline({ rawQuery })`** — Intake → Research (search + evaluator, one refine) → Resolver → Reply only when `entities.customer_mentioned` (60s hard cap)
 9. Attach metadata, conditionally cache
 10. Clarifying-question early-return (if Intake couldn't answer confidently)
-11. Deliver final response card
+11. Deliver final response card (layout from the intent) and remember it in the card store for the Full steps and Draft buttons
 12. Seed conversation history (for follow-ups)
 13. Nominate response for the knowledge base if it qualifies (human-approved Steward)
 
@@ -319,13 +326,11 @@ runPipeline (60s hard cap):
    └─ Reply — customer_message only if customer_mentioned
    │
    ▼
-Render Block Kit response
+Render Block Kit response (layout chosen by Intake's intent)
    ├─ Header + confidence
-   ├─ Diagnosis
-   ├─ Color-coded steps
-   ├─ Involvement (who / channel / reason)
-   ├─ Source chips
-   └─ Buttons: Wrong Answer, Sources, Copy Message
+   ├─ Guide: Start here + up to 5 steps | Answer: up to 3 sentences + up to 3 steps | full layout otherwise
+   ├─ Involvement line (when another team is needed)
+   └─ Buttons: Full steps, Draft, Sources, Wrong Answer, New chat
    │
    ▼
 Post to Slack → seed thread history → nominate to KB if eligible
@@ -343,4 +348,4 @@ Post to Slack → seed thread history → nominate to KB if eligible
 
 ## Summary in one paragraph
 
-IntegrationsBot is a Slack-native, Node ESM, single-process bot for integrations support people who own the case. Channel mentions and DMs converge on a shared handler that walks fast paths (empty / help / accounting keyword redirect / rate limit / cache) before running the always-on pipeline: Intake → Research (search + evaluator, one refine) → Resolver → Reply only when a customer was mentioned, under a 60s hard cap. The response is a Block Kit card with diagnosis, color-coded steps, involvement (engineering / partner / leads), optional customer message, source chips, and Steward actions (Wrong Answer, knowledge nominations — human-approved). There is no NEW_PIPELINE flag and no legacy single-call path.
+IntegrationsBot is a Slack-native, Node ESM, single-process bot for integrations support people who own the case. Channel mentions and DMs converge on a shared handler that walks fast paths (empty / help / accounting keyword redirect / rate limit / cache) before running the always-on pipeline: Intake → Research (search + evaluator, one refine) → Resolver → Reply only when a customer was mentioned, under a 60s hard cap. The response is a Block Kit card shaped by Intake's intent (a guide link with short steps, a short answer with next steps, or the full diagnosis and every step), with color-coded steps, involvement (engineering / partner / leads), a Sources button, and Steward actions (Wrong Answer, knowledge nominations — human-approved). On the short cards, Full steps and Draft buttons open the full research, every step, and the handoff draft (with the optional customer message) in modals. There is no NEW_PIPELINE flag and no legacy single-call path.

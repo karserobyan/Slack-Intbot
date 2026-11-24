@@ -3,6 +3,7 @@
  * requiring Slack or Anthropic API connections.
  */
 
+import './test/setup-env.js';
 import { isAccountingTopic } from './src/utils/accounting-filter.js';
 import {
   buildResponseBlocks,
@@ -19,9 +20,15 @@ import {
   buildChatResolutionBlocks,
   buildProgressBlocks,
   buildThreadReplyBlocks,
+  buildFullStepsModal,
+  buildDraftModal,
+  buildExpiredModal,
 } from './src/slack/blocks.js';
+import { cardModalView } from './src/slack/card-modals.js';
+import { UNGROUNDED_DIAGNOSIS, UNGROUNDED_STEP } from './src/claude/grounding.js';
 import { escapeMrkdwn, safeSlackLink } from './src/slack/mrkdwn.js';
 import { getCached, setCached, cacheStats, pruneExpired, deleteCache } from './src/slack/cache.js';
+import { rememberCard, getCardById, forgetCard, cardStoreSize } from './src/slack/card-store.js';
 import { getHistory, appendToHistory, hasHistory, pruneConversations } from './src/slack/conversation.js';
 import { parseClaudeResponse, summarizeResultForHistory } from './src/claude/prompts.js';
 import { getRelevantFeedback, getAllFeedback, saveFeedback, approveFeedback, rejectFeedback, getPendingFeedback, notifyFeedbackChannel, _setFeedbackStorageForTest } from './src/slack/feedback.js';
@@ -94,9 +101,16 @@ import {
 import { appendQualityShadowRecord, _setQualityShadowFileForTest } from './src/quality/shadow-store.js';
 import { appendQualityAuditEvent, _setQualityAuditFileForTest } from './src/quality/audit-log.js';
 import { recordQualityShadow } from './src/quality/shadow-recorder.js';
+import { messagesUrl, HAIKU_MODEL, SONNET_MODEL, anthropicClientOptions, answerModel } from './src/claude/anthropic-config.js';
+import { layoutFor, pickGuide, trimToSentences, oneLineStep } from './src/slack/answer-layout.js';
+import { _setKnowledgeFileForTest } from './src/slack/knowledge.js';
+
+// The ignored local data/knowledge.md would otherwise feed the pipeline tests' evidence.
+_setKnowledgeFileForTest(join(tmpdir(), 'intbot-test-no-such-dir', 'knowledge.md'));
 
 let passed = 0;
 let failed = 0;
+
 const DANGEROUS_TEXT = 'A&B <@U123> <https://evil.test|click>';
 const DANGEROUS_ESCAPED = 'A&amp;B &lt;@U123&gt; &lt;https://evil.test|click&gt;';
 
@@ -118,6 +132,59 @@ assert.deepEqual = (actual, expected, label) => {
     assert(false, label);
   }
 };
+
+console.log('\n🔹 Model gateway');
+assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'model calls go to the ServiceTitan gateway');
+assert(HAIKU_MODEL === 'integrationsbot-internal/chat-model-fast', 'fast steps use the virtual-account haiku alias');
+assert(SONNET_MODEL === 'integrationsbot-internal/chat-model', 'the answer uses the virtual-account sonnet alias');
+
+{
+  const saved = {};
+  for (const k of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'INTBOT_GATEWAY_URL', 'INTBOT_MODEL', 'ANTHROPIC_API_KEY']) saved[k] = process.env[k];
+  const restore = () => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  try {
+    delete process.env.INTBOT_GATEWAY_URL;
+    delete process.env.INTBOT_MODEL;
+    process.env.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
+    process.env.ANTHROPIC_MODEL = 'haiku-5-5';
+    process.env.ANTHROPIC_API_KEY = 'test-gateway-key';
+    assert(messagesUrl() === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'ambient ANTHROPIC_BASE_URL does not reroute model calls');
+    const opts = anthropicClientOptions();
+    assert(opts.baseURL === 'https://servicetitanint.truefoundry.cloud/api/llm', 'SDK client baseURL stays the gateway with ambient ANTHROPIC_BASE_URL set');
+    assert(answerModel() === 'integrationsbot-internal/chat-model', 'ambient ANTHROPIC_MODEL does not change the answer model');
+    assert(opts.maxRetries === 0, 'SDK client does not retry on its own');
+    assert(opts.apiKey === 'test-gateway-key', 'SDK client key comes from ANTHROPIC_API_KEY');
+
+    let kbUrl = null;
+    let kbModel = null;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      kbUrl = String(url);
+      kbModel = JSON.parse(init.body).model;
+      return { ok: true, json: async () => ({ content: [] }) };
+    };
+    try {
+      await searchKnowledgeBase('zapier api access not working');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert(kbUrl === 'https://servicetitanint.truefoundry.cloud/api/llm/v1/messages', 'KB search posts to the gateway even with ambient ANTHROPIC_BASE_URL set');
+    assert(kbModel === HAIKU_MODEL, 'KB search uses the fast alias');
+
+    process.env.INTBOT_GATEWAY_URL = 'https://example.test/x/';
+    process.env.INTBOT_MODEL = 'integrationsbot-internal/other-model';
+    assert(messagesUrl() === 'https://example.test/x/v1/messages', 'INTBOT_GATEWAY_URL overrides the gateway, trailing slash stripped');
+    assert(anthropicClientOptions().baseURL === 'https://example.test/x', 'SDK client honours INTBOT_GATEWAY_URL');
+    assert(answerModel() === 'integrationsbot-internal/other-model', 'INTBOT_MODEL overrides the answer model');
+  } finally {
+    restore();
+  }
+}
 
 // ── 1. Accounting Filter ─────────────────────────────────────────────────────
 console.log('\n🔹 Accounting Filter');
@@ -802,6 +869,219 @@ assert(dmActions.elements.at(-1).text.text === '💬 New chat', 'New chat button
 const nonDmActions = responseBlocks.find(b => b.type === 'actions');
 assert(!nonDmActions.elements.some(e => e.action_id === 'new_chat'), 'isDm: false (default) has no new_chat button');
 
+// ── 3a. Intent-driven card ───────────────────────────────────────────────────
+console.log('\n🔹 Intent-driven card');
+
+const STEP_LINE = /^(🔵|🟠|🟢|🔴|⚪) /u;
+const cardSections = (blocks) => blocks.filter(b => b.type === 'section').map(b => b.text.text);
+const cardStepLines = (blocks) => cardSections(blocks).flatMap(t => t.split('\n')).filter(l => STEP_LINE.test(l));
+const cardActionIds = (blocks) => blocks.find(b => b.type === 'actions').elements.map(e => e.action_id);
+const cardButton = (blocks, id) => blocks.find(b => b.type === 'actions').elements.find(e => e.action_id === id);
+const cardHasEmptyText = (blocks) => blocks.some(b =>
+  (b.type === 'section' && !String(b.text?.text ?? '').trim())
+  || (b.type === 'context' && b.elements.some(e => !String(e.text ?? '').trim())));
+
+const intentQuery = 'How do I set up Zapier for a tenant?';
+const intentDiagnosis = 'API access is off for this tenant. Zapier needs it before any zap can run. The toggle lives in the admin portal. It resets after a tenant migration. According to the help center article Setting up Zapier with ServiceTitan, enable API access before connecting.';
+const intentSteps = Array.from({ length: 7 }, (_, i) => ({
+  num: i + 1,
+  title: `Step title ${i + 1}`,
+  detail: `Open the Zapier settings for step ${i + 1}. Then confirm the change saved. Finally tell the customer.`,
+  tag: ['action', 'backend', 'verify', 'escalate', 'mystery', 'action', 'verify'][i],
+}));
+const intentBase = { ...sampleJson, diagnosis: intentDiagnosis, steps: intentSteps, _originalQuery: intentQuery, _cardId: 'a1b2c3d4e5f6' };
+
+// Guide layout
+const guideCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to' });
+const guideJson = JSON.stringify(guideCard);
+const startHere = cardSections(guideCard).find(t => t.startsWith('*Start here*'));
+assert(startHere !== undefined, 'guide: a *Start here* section is shown');
+assert(startHere?.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'guide: *Start here* links the KB guide');
+assert(!guideJson.includes('*Research*'), 'guide: no *Research* paragraph');
+assert(!guideJson.includes('*Draft*'), 'guide: no inline *Draft*');
+assert(!guideJson.includes('*What to do*'), 'guide: no legacy steps heading');
+assert(cardSections(guideCard).some(t => t.startsWith('*Steps*\n')), 'guide: one *Steps* section');
+assert(cardStepLines(guideCard).length === 5, `guide: at most 5 step lines (got ${cardStepLines(guideCard).length})`);
+assert(cardStepLines(guideCard).every(l => (l.split(' — ').slice(1).join(' — ')).length <= 140), 'guide: each step detail part is at most 140 characters');
+assert(cardStepLines(guideCard)[0] === '🔵 *1. Step title 1* — Open the Zapier settings for step 1.', 'guide: a step line is the dot, bold title and first sentence');
+assert(cardStepLines(guideCard)[4].startsWith('⚪ '), 'guide: an unknown tag falls back to the white dot');
+assert(guideCard.filter(b => b.type === 'section').length === 2, 'guide: steps render as one section, not one block per step');
+assert(guideCard[0].type === 'header' && guideCard[1].type === 'divider' && guideCard.at(-1).type === 'divider', 'guide: header, divider, ..., divider');
+assert(!guideCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'guide: no Sources line when *Start here* already links a source');
+
+const integrationSetupCard = buildResponseBlocks({ ...intentBase, _intent: 'integration-setup' });
+assert(cardSections(integrationSetupCard)[0].startsWith('*Start here*'), 'integration-setup uses the guide layout');
+
+// Answer layout
+const answerCard = buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting' });
+const answerText = cardSections(answerCard).find(t => t.startsWith('*Answer*\n'));
+assert(answerText !== undefined, 'answer: an *Answer* section is shown');
+assert(answerText.replace('*Answer*\n', '').split(/(?<=[.!?])\s+(?=[A-Z<])/).length <= 3, 'answer: at most 3 sentences');
+assert(answerText.includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'answer: the cited guide sentence is kept and linked');
+assert(answerText.startsWith('*Answer*\nAPI access is off for this tenant.'), 'answer: the lead sentence comes first');
+assert(cardSections(answerCard).some(t => t.startsWith('*Next steps*\n')), 'answer: a *Next steps* section');
+assert(cardStepLines(answerCard).length === 3, `answer: at most 3 step lines (got ${cardStepLines(answerCard).length})`);
+assert(!JSON.stringify(answerCard).includes('*Start here*'), 'answer: no *Start here* section');
+assert(!JSON.stringify(answerCard).includes('*Research*'), 'answer: no *Research* paragraph');
+assert(cardSections(buildResponseBlocks({ ...intentBase, _intent: 'policy' }))[0].startsWith('*Answer*\n'), 'policy uses the answer layout');
+
+const answerLead = (diagnosis) => cardSections(buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting', diagnosis }))
+  .find(t => t.startsWith('*Answer*\n')).replace('*Answer*\n', '');
+const leadSentences = (text) => text.split(/(?<=[.!?])\s+(?=[A-Z<])/);
+const kbLink = '<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>';
+const midCited = answerLead('Zapier uses the API. API access must be on. According to the help center article Setting up Zapier with ServiceTitan, enable it first. The toggle resets after migration. Ask the customer to retry.');
+assert(midCited.includes(kbLink), 'answer: a citation in sentence 3 of 5 keeps its link');
+assert(leadSentences(midCited).length <= 3, 'answer: a mid-paragraph citation still gives at most 3 sentences');
+assert(!midCited.includes('Ask the customer to retry'), 'answer: the cited sentence replaces the last sentence');
+const earlyCited = answerLead('According to Setting up Zapier with ServiceTitan, API access must be on. Zapier uses the API. The toggle is in admin. It resets after migration. Ask the customer to retry.');
+assert(earlyCited.includes(kbLink), 'answer: a citation in sentence 1 is still shown');
+assert(leadSentences(earlyCited).at(-1) === 'Ask the customer to retry.', 'answer: with an early citation the third kept sentence is the last one');
+const uncited = answerLead('Zapier uses the API. API access must be on. The toggle is in admin. It resets after migration. Ask the customer to retry.');
+assert(leadSentences(uncited).at(-1) === 'Ask the customer to retry.' && leadSentences(uncited).length === 3, 'answer: with no citation the last sentence is kept');
+const twoCited = answerLead('Zapier uses the API. API access must be on. The toggle is in admin. See Setting up Zapier with ServiceTitan for the toggle. Ask #ask-integrations if Zapier with ServiceTitan still fails.');
+assert(twoCited.includes(kbLink) && !twoCited.includes('Ask '), 'answer: with two later citations the first one is kept');
+
+// Legacy
+const legacyNoIntent = buildResponseBlocks(sampleJson);
+const legacyUnclear = buildResponseBlocks({ ...sampleJson, _intent: 'unclear' });
+let legacySame = true;
+try { deepEqual(legacyUnclear, legacyNoIntent); } catch { legacySame = false; }
+assert(legacySame, 'legacy: _intent unclear renders exactly like a missing intent');
+assert(JSON.stringify(legacyNoIntent).includes('*Research*') && JSON.stringify(legacyNoIntent).includes('*What to do*'), 'legacy: keeps *Research* and *What to do*');
+let legacyUnknownSame = true;
+try { deepEqual(buildResponseBlocks({ ...sampleJson, _intent: 'nonsense' }), legacyNoIntent); } catch { legacyUnknownSame = false; }
+assert(legacyUnknownSame, 'legacy: an unknown intent renders exactly like a missing intent');
+
+// Buttons
+const fullyCutCard = buildResponseBlocks({
+  ...intentBase,
+  _intent: 'how-to',
+  involvement: { needed: true, who: 'Integrations Engineering', channel: '#ask-integrations' },
+}, { isDm: true });
+assert(
+  JSON.stringify(cardActionIds(fullyCutCard)) === JSON.stringify(['view_full_steps_modal', 'view_draft_modal', 'view_sources_modal', 'wrong_answer_modal', 'new_chat']),
+  `buttons: order is Full steps, Draft, Sources, Wrong Answer, New chat (got ${cardActionIds(fullyCutCard).join(',')})`,
+);
+assert(cardButton(fullyCutCard, 'view_full_steps_modal').text.text === '📋 Full steps', 'buttons: Full steps label');
+assert(cardButton(fullyCutCard, 'view_draft_modal').text.text === '📝 Draft', 'buttons: Draft label');
+for (const id of ['view_full_steps_modal', 'view_draft_modal']) {
+  const value = JSON.parse(cardButton(fullyCutCard, id).value);
+  assert(/^[0-9a-f]{12}$/.test(value.id) && Object.keys(value).length === 1, `buttons: ${id} value is { id: <12 hex> }`);
+  assert(value.id === intentBase._cardId, `buttons: ${id} id is the card's own _cardId`);
+}
+assert(fullyCutCard.find(b => b.type === 'actions').elements.every(e => e.value.length < 2000), 'buttons: every value is under 2000 characters');
+assert(JSON.stringify(fullyCutCard).includes('This belongs in #ask-integrations'), 'guide: the handoff line is kept when another team is needed');
+assert(!JSON.stringify(fullyCutCard).includes('*Draft*'), 'guide: the draft is behind the button, not inline');
+
+const shortSteps = [
+  { num: 1, title: 'Toggle API access', detail: 'Turn on Zapier API access.', tag: 'backend' },
+  { num: 2, title: 'Reconnect', detail: 'Ask the customer to reconnect Zapier.', tag: 'verify' },
+];
+const nothingCutGuide = buildResponseBlocks({ ...intentBase, _intent: 'how-to', diagnosis: '', steps: shortSteps });
+assert(!cardActionIds(nothingCutGuide).includes('view_full_steps_modal'), 'buttons: no Full steps on a guide card when nothing was cut');
+assert(!cardActionIds(nothingCutGuide).includes('view_draft_modal'), 'buttons: no Draft when no other team is needed');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'how-to', steps: shortSteps })).includes('view_full_steps_modal'), 'buttons: Full steps on a guide card when the research is hidden');
+const nothingCutAnswer = buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: 'API access must stay on for Zapier.', steps: shortSteps });
+assert(!cardActionIds(nothingCutAnswer).includes('view_full_steps_modal'), 'buttons: no Full steps on an answer card when nothing was cut');
+assert(cardActionIds(answerCard).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when steps were cut');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', steps: shortSteps })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when the answer was cut');
+assert(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: 'Short.', steps: [{ ...shortSteps[0], detail: 'One. Two.' }] })).includes('view_full_steps_modal'), 'buttons: Full steps on an answer card when a step detail was cut');
+const noQueryCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _cardId: undefined, involvement: { needed: true, channel: '#ask-integrations' } });
+assert(!cardActionIds(noQueryCard).includes('view_full_steps_modal') && !cardActionIds(noQueryCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted without a card id');
+const emptyIdCard = buildResponseBlocks({ ...intentBase, _intent: 'how-to', _cardId: '', involvement: { needed: true, channel: '#ask-integrations' } });
+assert(!cardActionIds(emptyIdCard).includes('view_full_steps_modal') && !cardActionIds(emptyIdCard).includes('view_draft_modal'), 'buttons: Full steps and Draft are omitted with an empty card id');
+assert(
+  JSON.stringify(cardActionIds(buildResponseBlocks({ ...intentBase, _intent: 'troubleshooting' }))) === JSON.stringify(['view_full_steps_modal', 'view_sources_modal', 'wrong_answer_modal']),
+  'buttons: a channel answer card has Full steps, Sources, Wrong Answer',
+);
+
+// Review Focus 3: a cached view keeps its layout
+setCached('intent card cache replay', stripTransient({ ...intentBase, _intent: 'how-to' }));
+const replayed = getCached('intent card cache replay');
+assert(replayed?._intent === 'how-to', 'cache replay: _intent survives stripTransient and the cache');
+deleteCache('intent card cache replay');
+const replayedCard = buildResponseBlocks({ ...replayed, _originalQuery: 'intent card cache replay' });
+assert(cardSections(replayedCard)[0]?.startsWith('*Start here*'), 'cache replay: the retrieved copy still renders *Start here*');
+
+// Review Focus 1: no guide refs
+const noGuideCard = buildResponseBlocks({
+  ...intentBase,
+  _intent: 'how-to',
+  kb_refs: [],
+  atlassian_refs: [{ type: 'jira', url: 'https://servicetitan.atlassian.net/browse/INT-4821', title: 'INT-4821 — Zapier not connecting' }],
+});
+assert(!JSON.stringify(noGuideCard).includes('*Start here*'), 'no guide refs: no *Start here* section');
+assert(cardStepLines(noGuideCard).length === 5, 'no guide refs: steps still render');
+
+// Review Focus 2: no empty-text blocks
+for (const intent of ['how-to', 'troubleshooting']) {
+  for (const diagnosis of ['', 'API access is off for this tenant.']) {
+    const card = buildResponseBlocks({ ...intentBase, _intent: intent, diagnosis });
+    assert(!cardHasEmptyText(card), `${intent} with ${diagnosis ? 'a one-sentence' : 'an empty'} diagnosis has no empty-text block`);
+  }
+  const bare = buildResponseBlocks({ issue_title: 'Bare', _intent: intent, diagnosis: '', steps: [{ num: 1, title: '', detail: '' }], _originalQuery: 'bare' });
+  assert(!cardHasEmptyText(bare), `${intent} with no diagnosis and a blank step has no empty-text block`);
+  assert(!bare.some(b => b.type === 'section'), `${intent} with nothing to say has no section at all`);
+}
+assert(!cardSections(buildResponseBlocks({ ...intentBase, _intent: 'policy', diagnosis: '' })).some(t => t.startsWith('*Answer*')), 'answer: an empty diagnosis omits the *Answer* section');
+
+// Review Focus 4: Sources fallback
+const uncitedRefs = {
+  ...intentBase,
+  _intent: 'troubleshooting',
+  diagnosis: 'API access is off for this tenant.',
+  kb_refs: [
+    { url: 'https://help.servicetitan.com/a', title: 'KB A' },
+    { url: 'https://help.servicetitan.com/b', title: 'KB B' },
+  ],
+  atlassian_refs: [{ type: 'confluence', url: 'https://servicetitan.atlassian.net/wiki/c', title: 'Wiki C' }],
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C1/p1', channel: '#ask-integrations', title: 'Thread D' }],
+};
+const uncitedCard = buildResponseBlocks(uncitedRefs);
+const sourcesLine = uncitedCard.find(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: '))?.elements[0].text;
+assert(sourcesLine !== undefined, 'sources fallback: a Sources: line when no link is on the card');
+assert((sourcesLine?.match(/<https:/g) ?? []).length === 3, 'sources fallback: at most 3 links');
+assert(sourcesLine === 'Sources: <https://help.servicetitan.com/a|KB A> · <https://help.servicetitan.com/b|KB B> · <https://servicetitan.atlassian.net/wiki/c|Wiki C>', 'sources fallback: KB first, then Confluence, joined with a dot');
+assert(!answerCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'sources fallback: no Sources line when the answer already links a source');
+const blockedHostCard = buildResponseBlocks({
+  ...uncitedRefs,
+  kb_refs: [{ url: 'https://evil.test/a', title: 'Evil' }],
+  atlassian_refs: [],
+  slack_refs: [],
+});
+assert(!blockedHostCard.some(b => b.type === 'context' && b.elements[0].text.startsWith('Sources: ')), 'sources fallback: omitted when no ref yields a real link');
+const slackOnlyCard = buildResponseBlocks({ ...uncitedRefs, kb_refs: [], atlassian_refs: [] });
+assert(slackOnlyCard.some(b => b.type === 'context' && b.elements[0].text === 'Sources: <https://servicetitan.slack.com/archives/C1/p1|Thread D>'), 'sources fallback: a Slack ref links when it is the only source');
+
+// Review Focus 5: size limits and honest handoff
+const hugeSteps = Array.from({ length: 20 }, (_, i) => ({ num: i + 1, title: 'T'.repeat(500), detail: 'D'.repeat(500), tag: 'action' }));
+for (const intent of ['how-to', 'troubleshooting']) {
+  const huge = buildResponseBlocks({ ...intentBase, _intent: intent, steps: hugeSteps, diagnosis: 'X'.repeat(5000), involvement: { needed: true, channel: '#ask-integrations' } }, { isDm: true });
+  assert(huge.length < 50, `${intent}: 20 huge steps stay under 50 blocks (got ${huge.length})`);
+  assert(huge.filter(b => b.type === 'section').every(b => b.text.text.length <= 2900), `${intent}: every section text is at most 2900 characters`);
+  assertWithinSlackLimits(huge, `${intent} huge card`);
+}
+const honestHandoffData = {
+  issue_title: 'Unknown integration',
+  confidence: 'low',
+  diagnosis: 'Root cause unclear — no direct match found. Escalate for investigation.',
+  steps: [{ num: 1, title: 'Hand off the question', detail: "I searched but couldn't find specific information about this integration or issue. Hand it to the channel that owns this kind of issue.", tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', channel: '#ask-dev' },
+  _originalQuery: 'Customer cannot connect the new booking widget',
+  _cardId: 'b2c3d4e5f6a1',
+  slack_refs: [], atlassian_refs: [], kb_refs: [],
+};
+for (const intent of ['how-to', 'troubleshooting']) {
+  const card = buildResponseBlocks({ ...honestHandoffData, _intent: intent });
+  const json = JSON.stringify(card);
+  assert(cardSections(card).includes('*Answer*\nNo direct match found.'), `${intent} honest handoff: says No direct match found`);
+  assert(cardStepLines(card).length === 0 && !json.includes('Hand off the question'), `${intent} honest handoff: no steps`);
+  assert(!json.includes('*Start here*'), `${intent} honest handoff: no guide`);
+  assert(json.includes('This belongs in #ask-dev'), `${intent} honest handoff: the handoff line stays visible`);
+  assert(cardActionIds(card).includes('view_draft_modal'), `${intent} honest handoff: a Draft button when a team is needed`);
+  assert(!cardActionIds(card).includes('view_full_steps_modal'), `${intent} honest handoff: no Full steps button`);
+}
+
 // ── 3b. Welcome Card & Session Card ──────────────────────────────────────────
 console.log('\n🔹 Welcome Card & Session Card');
 
@@ -975,6 +1255,9 @@ assert(requestCtx._originalQuery === 'q', 'withRequestContext still sets _origin
 // ── Feedback Moderation ───────────────────────────────────────────────────
 console.log('\n🔹 Feedback Moderation');
 
+const testDataDir = await mkdtemp(join(tmpdir(), 'intbot-test-data-'));
+_setFeedbackStorageForTest({ dir: testDataDir });
+
 // saveFeedback should write to pending, NOT active
 const testRecord = await saveFeedback({
   query: 'zapier test query for moderation',
@@ -1138,7 +1421,7 @@ const pendingAfterFailedReject = await getPendingFeedback();
 assert(pendingAfterFailedReject.length === 1, 'failed reject leaves pending count unchanged');
 assert(pendingAfterFailedReject.some((e) => e.id === feedbackToReject.id), 'failed reject keeps record pending in cache');
 
-_setFeedbackStorageForTest({ dir: join(process.cwd(), 'data') });
+_setFeedbackStorageForTest({ dir: testDataDir });
 await rm(feedbackTempDir, { force: true });
 await rm(feedbackRejectDir, { force: true });
 
@@ -1355,7 +1638,7 @@ if (_savedKbApiKey) process.env.ANTHROPIC_API_KEY = _savedKbApiKey;
 // ── 14. Knowledge Writer ─────────────────────────────────────────────────────
 console.log('\n🔹 Knowledge Writer');
 
-const TEST_KB = join(process.cwd(), 'data', '__test-knowledge.md');
+const TEST_KB = join(testDataDir, '__test-knowledge.md');
 try { await writeFile(TEST_KB, '', 'utf-8'); } catch { /* ok */ }
 
 assert(await hasKbUrl('https://help.servicetitan.com/zapier', TEST_KB) === false, 'hasKbUrl returns false on empty file');
@@ -1511,7 +1794,7 @@ await rm(nomDupKb, { force: true });
 
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 await rm(nomTmp, { force: true });
-_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json')); // restore default store
+_setStoreForTest(join(testDataDir, 'nominations-pending.json')); // restore default store
 
 // ── Moderation authorization ─────────────────────────────────────────────────
 console.log('\n🔹 Moderation authorization');
@@ -1756,7 +2039,7 @@ assert(rejectedNominationJson.includes(DANGEROUS_ESCAPED), 'rejectNomination kee
 _setKnowledgeWriterDefaultFileForTest(null);
 await rm(nominationEscapeFile, { force: true });
 await rm(nominationEscapeKb, { force: true });
-_setStoreForTest(join(process.cwd(), 'data', 'nominations-pending.json'));
+_setStoreForTest(join(testDataDir, 'nominations-pending.json'));
 delete process.env.FEEDBACK_REVIEW_CHANNEL_ID;
 
 // ── 17. buildFollowUpBlocks — label param ─────────────────────────────────────
@@ -2129,7 +2412,7 @@ const origFetchSE = globalThis.fetch;
 // Helper fetch returns a per-URL fixture
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('api.anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{
         type: 'web_search_tool_result',
@@ -2185,7 +2468,7 @@ assert(partial.jira === null, 'jira stays null');
 // One failing source does not break others
 globalThis.fetch = async (url) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('api.anthropic.com')) throw new Error('boom');
+  if (u.includes('truefoundry.cloud')) throw new Error('boom');
   if (u.includes('atlassian.net/wiki')) {
     return new Response(JSON.stringify({ results: [{ title: 'OK', url: '/x', excerpt: '' }] }), { status: 200 });
   }
@@ -2377,7 +2660,7 @@ const RESOLVER_MOCK = {
 };
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     lastAnthropicBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       id: 'msg_test',
@@ -2450,7 +2733,7 @@ assert(lastAnthropicBody.messages[0].content === 'Issue: q', 'empty feedback add
 // runReply returns only { customer_message }
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     lastAnthropicBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"customer_message":"Hi there, we are fixing this.","extra":"drop"}' }],
@@ -2487,7 +2770,7 @@ const origFetchInt = globalThis.fetch;
 let lastInterpreterBody;
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     lastInterpreterBody = JSON.parse(opts.body);
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"cleaned_question":"Zapier stopped syncing","intent":"troubleshooting","entities":{"integration":"Zapier","error_code":null,"tenant_id":null,"customer_mentioned":false,"symptom":"stopped syncing"},"question_confidence":"high","clarifying_question":null,"search_plan":{"sources":[{"name":"confluence","priority":"high","query":"Zapier sync"}],"rationale":"r"}}' }],
@@ -2502,7 +2785,7 @@ const okInterp = await runInterpreter('Zapier stopped syncing');
 assert(okInterp.cleaned_question === 'Zapier stopped syncing', 'parses cleaned_question');
 assert(okInterp.intent === 'troubleshooting', 'parses intent');
 assert(okInterp.question_confidence === 'high', 'parses question_confidence');
-assert(lastInterpreterBody.model === 'claude-haiku-4-5-20251001' || lastInterpreterBody.model.includes('haiku'), 'uses Haiku model');
+assert(lastInterpreterBody.model === 'integrationsbot-internal/chat-model-fast', 'uses the gateway Haiku alias');
 
 await runInterpreter('still not working', { threadHistory: [
   { role: 'user', content: 'My Zapier broke' },
@@ -2515,7 +2798,7 @@ assert(lastMsg.includes('Zapier broke'), 'includes prior thread history');
 
 let attempts = 0;
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     attempts++;
     if (attempts === 1) return new Response('upstream error', { status: 503 });
     return new Response(JSON.stringify({
@@ -2531,7 +2814,7 @@ assert(retried.question_confidence === 'low', 'got the eventual response');
 
 attempts = 0;
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     attempts++;
     return new Response('boom', { status: 503 });
   }
@@ -2555,7 +2838,7 @@ import { runEvaluator } from './src/claude/evaluator.js';
 const origFetchEv = globalThis.fetch;
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"sufficient":true,"rationale":"good","refined_plan":null}' }],
       stop_reason: 'end_turn',
@@ -2574,7 +2857,7 @@ assert(suff.sufficient === true, 'parses sufficient: true');
 assert(suff.refined_plan === null, 'refined_plan null when sufficient');
 
 globalThis.fetch = async (url, opts) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     return new Response(JSON.stringify({
       content: [{ type: 'text', text: '{"sufficient":false,"rationale":"results off-topic","refined_plan":{"sources":[{"name":"slack","priority":"high","query":"better keywords"}]}}' }],
       stop_reason: 'end_turn',
@@ -2627,9 +2910,16 @@ const bakedResult = {
   integration_type: 'Zapier',
   _originalQuery: 'original asker query',
   _cleanedQuestion: 'zapier broke',
+  _cardId: '0123456789ab',
 };
 
 const stripped = stripTransient(bakedResult);
+assert(stripped._cardId === undefined, 'stripTransient drops _cardId');
+setCachedMulti(['card id cache probe raw', 'card id cache probe cleaned'], stripTransient(bakedResult));
+assert(getCached('card id cache probe raw') && !('_cardId' in getCached('card id cache probe raw')) && !('_cardId' in getCached('card id cache probe cleaned')), 'an answer-cache entry never holds a _cardId');
+deleteCache('card id cache probe raw');
+deleteCache('card id cache probe cleaned');
+assert(withRequestContext(bakedResult, { query: 'q' })._cardId === undefined, 'withRequestContext drops a cached _cardId');
 assert(stripped._originalQuery === undefined, 'stripTransient drops _originalQuery');
 assert(stripped._cleanedQuestion === undefined, 'stripTransient drops _cleanedQuestion');
 assert(stripped.issue_title === 'Zapier broke', 'stripTransient keeps real fields');
@@ -2857,7 +3147,7 @@ function emptyHelpCenterResponse() {
   }), { status: 200, headers: { 'content-type': 'application/json' } });
 }
 async function passThroughFetch(url, init) {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return nextResponse();
   }
@@ -2888,6 +3178,8 @@ const okPipeResult = await runPipeline({ rawQuery: 'Zapier broke' });
 assert(okPipeResult.issue_title === 'T', 'Resolver ran');
 assert(okPipeResult.customer_message === undefined, 'customer_mentioned false → no customer_message even if resolver mock planted one');
 assert(stepCounter === 3, 'Interpreter + Evaluator + Resolver (no reply) for slack-only plan');
+assert(okPipeResult._intent === 'troubleshooting', 'the pipeline attaches the interpreter intent');
+assert(stripTransient(okPipeResult)._intent === 'troubleshooting', 'the intent survives caching');
 assert(okPipeResult.confidence === 'low', 'a diagnosis the research does not support is not high confidence');
 assert(okPipeResult.diagnosis === 'Root cause unclear — no direct match found. Escalate for investigation.', 'an unsupported diagnosis is replaced with the honest line');
 assert(okPipeResult.steps.length === 1 && okPipeResult.steps[0].tag === 'escalate', 'an unsupported answer does not keep an invented step');
@@ -2967,7 +3259,7 @@ sequenceResponses.push(
 );
 const priorBodies = [];
 globalThis.fetch = async (url, init) => {
-  if (typeof url === 'string' && url.includes('anthropic.com')) {
+  if (typeof url === 'string' && url.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     priorBodies.push(JSON.parse(init.body).messages?.[0]?.content ?? '');
     return nextResponse();
@@ -3065,7 +3357,7 @@ const fillResponses = [
 ];
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return fillResponses[fillStep++];
   }
@@ -3220,7 +3512,7 @@ const draftResponses = [
 ];
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return draftResponses[draftStep++];
   }
@@ -5131,7 +5423,7 @@ const mentionResponses = [
 ];
 globalThis.fetch = async (url, opts) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(opts)) return emptyHelpCenterResponse();
     return mentionResponses[mentionStepCounter++];
   }
@@ -5193,7 +5485,7 @@ const followUpSlackToken = process.env.SLACK_USER_TOKEN;
 process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
 globalThis.fetch = async (url, init) => {
   const u = typeof url === 'string' ? url : url.toString();
-  if (u.includes('anthropic.com')) {
+  if (u.includes('truefoundry.cloud')) {
     if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
     return followUpResponses[followUpStep++];
   }
@@ -5242,6 +5534,608 @@ if (followUpSlackToken === undefined) delete process.env.SLACK_USER_TOKEN;
 else process.env.SLACK_USER_TOKEN = followUpSlackToken;
 if (followUpApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
 else process.env.ANTHROPIC_API_KEY = followUpApiKey;
+
+// ── card buttons after a fast answer (answer cache policy untouched) ─────────
+console.log('\n🔹 Card buttons after a fast answer');
+
+const fastQuery = 'How do I connect Zapier for a brand new tenant?';
+const fastCleaned = 'how do i connect zapier for a brand new tenant';
+const fastDiagnosis = 'Zapier needs API access enabled on the tenant before it can connect. The toggle lives in the admin portal. It resets after a tenant migration.';
+const fastSteps = Array.from({ length: 6 }, (_, i) => ({
+  num: i + 1,
+  title: `Zapier tenant step ${i + 1}`,
+  detail: `Open the admin portal and confirm the tenant Zapier setting ${i + 1}. Then save the change.`,
+  tag: 'action',
+}));
+const fastEvidence = `${fastDiagnosis} ${fastSteps.map((step) => `${step.title}. ${step.detail}`).join(' ')}`;
+const fastEnvKeys = ['ANTHROPIC_API_KEY', 'SLACK_USER_TOKEN', 'CACHE_MIN_MS', 'QUALITY_LAYER_ENABLED'];
+const fastEnvBefore = Object.fromEntries(fastEnvKeys.map((key) => [key, process.env[key]]));
+const fastFetchBefore = globalThis.fetch;
+process.env.ANTHROPIC_API_KEY = 'test';
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+process.env.CACHE_MIN_MS = '30000';
+process.env.QUALITY_LAYER_ENABLED = 'false';
+let fastStep = 0;
+const fastResponses = [
+  anthropicMock(JSON.stringify({
+    cleaned_question: fastCleaned,
+    intent: 'how-to',
+    entities: { integration: 'Zapier', error_code: null, tenant_id: null, customer_mentioned: false, symptom: 'connect' },
+    question_confidence: 'high',
+    clarifying_question: null,
+    search_plan: { sources: [{ name: 'slack', priority: 'high', query: 'zapier connect tenant' }], rationale: 'r' },
+  })),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock(JSON.stringify({
+    issue_title: 'Connect Zapier',
+    integration_type: 'Zapier',
+    confidence: 'high',
+    diagnosis: fastDiagnosis,
+    steps: fastSteps,
+    involvement: { needed: true, who: 'engineering', reason: 'Needs a backend toggle', channel: null },
+    slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C9/p9', channel: '#ask-integrations', title: 'Zapier tenant connect' }],
+    atlassian_refs: [],
+    kb_refs: [],
+    sources_used: ['slack'],
+  })),
+];
+globalThis.fetch = async (url, init) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('truefoundry.cloud')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return fastResponses[fastStep++];
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({
+      ok: true,
+      messages: { matches: [{ text: fastEvidence, permalink: 'https://servicetitan.slack.com/archives/C9/p9', channel: { name: 'ask-integrations', is_private: false } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const fastUpdates = [];
+const fastStarted = Date.now();
+try {
+  await handleQuery({
+    rawText: `<@UBOT> ${fastQuery}`,
+    channelId: 'C123',
+    threadTs: 'fast-card-thread',
+    userId: 'U-fast-card',
+    client: {
+      users: { info: async () => ({ user: { profile: { title: 'Customer Support Advocate' } } }) },
+      chat: {
+        postMessage: async (payload) => ({ ts: payload.thread_ts ?? '1700000002.111' }),
+        update: async (payload) => { fastUpdates.push(payload); return payload; },
+      },
+    },
+  });
+} finally {
+  globalThis.fetch = fastFetchBefore;
+  for (const key of fastEnvKeys) {
+    if (fastEnvBefore[key] === undefined) delete process.env[key];
+    else process.env[key] = fastEnvBefore[key];
+  }
+}
+const fastCard = fastUpdates.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+assert(Date.now() - fastStarted < 30000, 'fast answer: the mocked pipeline finishes well under CACHE_MIN_MS');
+assert(fastCard !== undefined, 'fast answer: the posted card is a compact card with a Full steps button');
+assert(getCached(fastQuery) === null && getCached(fastCleaned) === null, 'fast answer: the answer cache policy is untouched (a fast answer is not cached)');
+const fastStepsButton = fastCard && cardButton(fastCard, 'view_full_steps_modal');
+const fastDraftButton = fastCard && cardButton(fastCard, 'view_draft_modal');
+const fastStepsModal = cardModalView('steps', fastStepsButton?.value);
+const fastSectionTexts = (view) => view.blocks.filter((b) => b.type === 'section').map((b) => b.text.text);
+assert(fastStepsModal.callback_id === 'full_steps_view', 'fast answer: the Full steps button opens the full steps modal, not the expired one');
+assert(fastSectionTexts(fastStepsModal)[0]?.includes('Zapier needs API access enabled on the tenant'), 'fast answer: the full steps modal carries the research text');
+assert(fastSectionTexts(fastStepsModal).filter((text) => STEP_LINE.test(text)).length === 6, 'fast answer: the full steps modal lists all 6 steps');
+const fastDraftModal = cardModalView('draft', fastDraftButton?.value);
+assert(fastDraftButton !== undefined && fastDraftModal.callback_id === 'draft_view', 'fast answer: the Draft button opens the draft modal, not the expired one');
+assert(fastSectionTexts(fastDraftModal)[0]?.includes('Zapier needs API access enabled on the tenant'), 'fast answer: the draft modal carries the answer text');
+
+// A second fast ask of the same question gets its own card id; the first card keeps its own answer.
+const secondDiagnosis = 'Zapier must be reconnected from the Zapier side after the API toggle changes. The reconnect button sits in the Zapier account. It takes about a minute.';
+const secondSteps = fastSteps.map((step) => ({ ...step, title: `Zapier reconnect step ${step.num}`, detail: `Open the Zapier account and reconnect the ServiceTitan app ${step.num}. Then run a test zap.` }));
+const secondEvidence = `${secondDiagnosis} ${secondSteps.map((step) => `${step.title}. ${step.detail}`).join(' ')}`;
+const secondResponses = () => [
+  anthropicMock(JSON.stringify({
+    cleaned_question: fastCleaned,
+    intent: 'how-to',
+    entities: { integration: 'Zapier', error_code: null, tenant_id: null, customer_mentioned: false, symptom: 'connect' },
+    question_confidence: 'high',
+    clarifying_question: null,
+    search_plan: { sources: [{ name: 'slack', priority: 'high', query: 'zapier connect tenant' }], rationale: 'r' },
+  })),
+  anthropicMock('{"sufficient":true,"rationale":"good","refined_plan":null}'),
+  anthropicMock(JSON.stringify({
+    issue_title: 'Reconnect Zapier',
+    integration_type: 'Zapier',
+    confidence: 'high',
+    diagnosis: secondDiagnosis,
+    steps: secondSteps,
+    involvement: { needed: true, who: 'engineering', reason: 'Needs a backend toggle', channel: null },
+    slack_refs: [{ url: 'https://servicetitan.slack.com/archives/C9/p8', channel: '#ask-integrations', title: 'Zapier reconnect' }],
+    atlassian_refs: [],
+    kb_refs: [],
+    sources_used: ['slack'],
+  })),
+];
+const secondQueue = secondResponses();
+const secondUpdates = [];
+for (const key of fastEnvKeys) fastEnvBefore[key] = process.env[key];
+process.env.ANTHROPIC_API_KEY = 'test';
+process.env.SLACK_USER_TOKEN = 'xoxp-test-token';
+process.env.CACHE_MIN_MS = '30000';
+process.env.QUALITY_LAYER_ENABLED = 'false';
+globalThis.fetch = async (url, init) => {
+  const u = typeof url === 'string' ? url : url.toString();
+  if (u.includes('truefoundry.cloud')) {
+    if (isHelpCenterSearch(init)) return emptyHelpCenterResponse();
+    return secondQueue.shift();
+  }
+  if (u.includes('slack.com/api/search.messages')) {
+    return new Response(JSON.stringify({
+      ok: true,
+      messages: { matches: [{ text: secondEvidence, permalink: 'https://servicetitan.slack.com/archives/C9/p8', channel: { name: 'ask-integrations', is_private: false } }] },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return new Response(JSON.stringify({ results: [], items: [], issues: [], messages: { matches: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+try {
+  await handleQuery({
+    rawText: `<@UBOT> ${fastQuery}`,
+    channelId: 'C456',
+    threadTs: 'fast-card-thread-second',
+    userId: 'U-fast-card-second',
+    client: {
+      users: { info: async () => ({ user: { profile: { title: 'Customer Support Advocate' } } }) },
+      chat: {
+        postMessage: async (payload) => ({ ts: payload.thread_ts ?? '1700000002.222' }),
+        update: async (payload) => { secondUpdates.push(payload); return payload; },
+      },
+    },
+  });
+} finally {
+  globalThis.fetch = fastFetchBefore;
+  for (const key of fastEnvKeys) {
+    if (fastEnvBefore[key] === undefined) delete process.env[key];
+    else process.env[key] = fastEnvBefore[key];
+  }
+}
+const secondCard = secondUpdates.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+const firstId = fastStepsButton && JSON.parse(fastStepsButton.value).id;
+const secondId = secondCard && JSON.parse(cardButton(secondCard, 'view_full_steps_modal').value).id;
+assert(secondCard !== undefined && getCached(fastQuery) === null, 'second fast ask: re-ran the pipeline (no answer-cache entry) and posted a compact card');
+assert(/^[0-9a-f]{12}$/.test(firstId ?? '') && /^[0-9a-f]{12}$/.test(secondId ?? '') && firstId !== secondId, 'second fast ask: the same question gets a different 12-hex card id');
+assert(fastSectionTexts(cardModalView('steps', fastStepsButton?.value))[0]?.includes('Zapier needs API access enabled on the tenant'), 'second fast ask: the first card still opens its own answer');
+assert(fastSectionTexts(cardModalView('steps', JSON.stringify({ id: secondId })))[0]?.includes('Zapier must be reconnected from the Zapier side'), 'second fast ask: the second card opens its own answer');
+assert(fastSectionTexts(cardModalView('draft', cardButton(secondCard ?? [], 'view_draft_modal')?.value))[0]?.includes('Zapier must be reconnected from the Zapier side'), 'second fast ask: the second Draft opens its own answer');
+forgetCard(firstId);
+forgetCard(secondId);
+assert(cardModalView('steps', fastStepsButton?.value).callback_id === 'answer_expired_view', 'fast answer: the button value stops resolving once the card is forgotten');
+
+const replayQuery = 'Cached replay card question for buttons';
+setCached(replayQuery, stripTransient({
+  ...intentBase,
+  _intent: 'how-to',
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+}));
+const replayPosts = [];
+await handleQuery({
+  rawText: `<@UBOT> ${replayQuery}`,
+  channelId: 'C123',
+  threadTs: 'cached-replay-card-thread',
+  userId: 'U-replay-card',
+  client: { chat: { postMessage: async (payload) => { replayPosts.push(payload); return { ts: '1700000003.111' }; } } },
+});
+const replayBlocks = replayPosts.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+assert(replayBlocks !== undefined, 'cached replay: the replayed card has a Full steps button');
+assert(cardModalView('steps', replayBlocks && cardButton(replayBlocks, 'view_full_steps_modal')?.value).callback_id === 'full_steps_view', 'cached replay: the Full steps button resolves to the full steps modal');
+assert(cardModalView('draft', replayBlocks && cardButton(replayBlocks, 'view_draft_modal')?.value).callback_id === 'draft_view', 'cached replay: the Draft button resolves to the draft modal');
+const replayId = replayBlocks && JSON.parse(cardButton(replayBlocks, 'view_full_steps_modal').value).id;
+assert(/^[0-9a-f]{12}$/.test(replayId ?? '') && replayId !== intentBase._cardId, 'cached replay: the replayed card carries a fresh card id');
+const replayPostsAgain = [];
+await handleQuery({
+  rawText: `<@UBOT> ${replayQuery}`,
+  channelId: 'C123',
+  threadTs: 'cached-replay-card-thread-2',
+  userId: 'U-replay-card-2',
+  client: { chat: { postMessage: async (payload) => { replayPostsAgain.push(payload); return { ts: '1700000003.222' }; } } },
+});
+const replayAgainBlocks = replayPostsAgain.find((payload) => JSON.stringify(payload.blocks ?? []).includes('view_full_steps_modal'))?.blocks;
+const replayAgainId = replayAgainBlocks && JSON.parse(cardButton(replayAgainBlocks, 'view_full_steps_modal').value).id;
+assert(replayAgainId && replayAgainId !== replayId && getCardById(replayAgainId) !== null, 'cached replay: a second replay gets another new id that resolves');
+assert(!('_cardId' in (getCached(replayQuery) ?? {})), 'cached replay: the answer-cache entry still has no _cardId');
+forgetCard(replayId);
+forgetCard(replayAgainId);
+deleteCache(replayQuery);
+
+// Legacy-layout cards have no Full steps/Draft buttons, so they are not stored.
+const legacyReplayQuery = 'Cached replay legacy card question';
+setCached(legacyReplayQuery, stripTransient({ ...sampleJson, _intent: 'unclear' }));
+const storeSizeBeforeLegacy = cardStoreSize();
+const legacyPosts = [];
+await handleQuery({
+  rawText: `<@UBOT> ${legacyReplayQuery}`,
+  channelId: 'C123',
+  threadTs: 'cached-replay-legacy-thread',
+  userId: 'U-replay-legacy',
+  client: { chat: { postMessage: async (payload) => { legacyPosts.push(payload); return { ts: '1700000003.333' }; } } },
+});
+assert(legacyPosts.some((payload) => JSON.stringify(payload.blocks ?? []).includes('*What to do*')), 'legacy replay: the legacy card was posted');
+assert(cardStoreSize() === storeSizeBeforeLegacy, 'legacy replay: a legacy-layout card is not remembered');
+deleteCache(legacyReplayQuery);
+
+// ── answer layout helpers ────────────────────────────────────────────────────
+console.log('\n🔹 Answer layout helpers');
+
+assert(layoutFor('how-to') === 'guide', 'layoutFor maps how-to to guide');
+assert(layoutFor('integration-setup') === 'guide', 'layoutFor maps integration-setup to guide');
+assert(layoutFor('policy') === 'answer', 'layoutFor maps policy to answer');
+assert(layoutFor('troubleshooting') === 'answer', 'layoutFor maps troubleshooting to answer');
+assert(layoutFor('unclear') === 'legacy', 'layoutFor maps unclear to legacy');
+assert(layoutFor(undefined) === 'legacy', 'layoutFor maps a missing intent to legacy');
+assert(layoutFor('nonsense') === 'legacy', 'layoutFor maps an unknown intent to legacy');
+assert(layoutFor(null) === 'legacy', 'layoutFor maps a null intent to legacy');
+assert(layoutFor(42) === 'legacy', 'layoutFor maps a non-string intent to legacy');
+
+const guideKb = [
+  { title: 'Marketing Pro setup guide', url: 'https://kb.test/marketing-pro' },
+  { title: 'Fleet Pro setup guide', url: 'https://kb.test/fleet-pro' },
+];
+const guideConfluence = [
+  { type: 'jira', title: 'INT-1 Fix webhook', url: 'https://jira.test/INT-1' },
+  { type: 'confluence', title: 'Webhook runbook', url: 'https://wiki.test/webhook-runbook' },
+];
+assert(
+  pickGuide({ diagnosis: 'Follow the "Fleet Pro setup guide" to connect it.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://kb.test/fleet-pro',
+  'pickGuide picks the KB ref whose title is quoted in the diagnosis',
+);
+assert(
+  pickGuide({ diagnosis: 'follow the FLEET PRO SETUP GUIDE', kb_refs: guideKb })?.title === 'Fleet Pro setup guide',
+  'pickGuide matches the diagnosis title case-insensitively',
+);
+assert(
+  pickGuide({ diagnosis: 'See the Webhook runbook.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://wiki.test/webhook-runbook',
+  'pickGuide picks a Confluence ref whose title is quoted in the diagnosis',
+);
+assert(
+  pickGuide({
+    diagnosis: 'Use the Shared title page.',
+    kb_refs: [{ title: 'Shared title', url: 'https://kb.test/shared' }],
+    atlassian_refs: [{ type: 'confluence', title: 'Shared title', url: 'https://wiki.test/shared' }],
+  })?.url === 'https://kb.test/shared',
+  'pickGuide prefers the KB ref over a Confluence ref when both titles are in the diagnosis',
+);
+assert(
+  pickGuide({ diagnosis: 'No title is quoted here.', kb_refs: guideKb, atlassian_refs: guideConfluence })?.url === 'https://kb.test/marketing-pro',
+  'pickGuide falls back to the first KB ref',
+);
+assert(
+  JSON.stringify(pickGuide({ kb_refs: guideKb })) === JSON.stringify({ title: 'Marketing Pro setup guide', url: 'https://kb.test/marketing-pro' }),
+  'pickGuide returns exactly the title and url of the ref',
+);
+assert(
+  pickGuide({ diagnosis: 'Nothing quoted.', kb_refs: [], atlassian_refs: guideConfluence })?.url === 'https://wiki.test/webhook-runbook',
+  'pickGuide falls back to the first Confluence ref and skips Jira',
+);
+assert(
+  pickGuide({
+    diagnosis: 'See the INT-1 Fix webhook ticket.',
+    atlassian_refs: [{ type: 'jira', title: 'INT-1 Fix webhook', url: 'https://jira.test/INT-1' }],
+  }) === null,
+  'pickGuide never picks a Jira ref even when its title is in the diagnosis',
+);
+assert(
+  pickGuide({
+    diagnosis: 'Nothing quoted.',
+    atlassian_refs: [{ type: 'jira', title: 'INT-1', url: 'https://jira.test/INT-1' }],
+    slack_refs: [{ title: 'Thread', url: 'https://slack.test/p1' }],
+  }) === null,
+  'pickGuide returns null when only Jira and Slack refs exist',
+);
+assert(pickGuide({}) === null, 'pickGuide returns null with no refs');
+assert(pickGuide({ diagnosis: undefined, kb_refs: undefined, atlassian_refs: undefined }) === null, 'pickGuide tolerates undefined diagnosis and ref lists');
+assert(
+  pickGuide({ kb_refs: [{ title: 'No link guide' }, { title: 'Linked guide', url: 'https://kb.test/linked' }] })?.url === 'https://kb.test/linked',
+  'pickGuide skips refs that have no url',
+);
+
+const fiveSentences = 'First one. Second one! Third one? Fourth one. Fifth one.';
+assert(
+  trimToSentences(fiveSentences, 3, { keepLast: true }) === 'First one. Second one! Fifth one.',
+  'trimToSentences with keepLast returns the leading sentences plus the last',
+);
+assert(
+  trimToSentences(fiveSentences, 3) === 'First one. Second one! Third one?',
+  'trimToSentences without keepLast returns the first maxSentences sentences',
+);
+const twoSentences = 'Only one.   And two.';
+assert(trimToSentences(twoSentences, 3, { keepLast: true }) === twoSentences, 'trimToSentences leaves a short text unchanged');
+assert(trimToSentences('', 2) === '', 'trimToSentences keeps an empty string empty');
+assert(trimToSentences(undefined, 2) === '', 'trimToSentences returns an empty string for undefined input');
+assert(
+  trimToSentences('Use e.g. the admin page. Then save. Done now.', 1) === 'Use e.g. the admin page.',
+  'trimToSentences does not split after an abbreviation like e.g.',
+);
+assert(
+  trimToSentences('Open <https://a.test/x|the page>. <https://b.test|Then> save. Finally check.', 2) === 'Open <https://a.test/x|the page>. <https://b.test|Then> save.',
+  'trimToSentences splits before a Slack link and keeps link text intact',
+);
+assert(
+  trimToSentences('One. Two. Cited here. Four. Five.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'One. Two. Cited here.',
+  'trimToSentences with keep keeps the first later sentence the predicate accepts instead of the last',
+);
+assert(
+  trimToSentences('One. Two. Three. Cited a. Cited b.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'One. Two. Cited a.',
+  'trimToSentences with keep picks the first of several accepted later sentences',
+);
+assert(
+  trimToSentences('One. Two. Three. Four. Five.', 3, { keepLast: true, keep: () => false }) === 'One. Two. Five.',
+  'trimToSentences with keep falls back to the last sentence when none is accepted',
+);
+assert(
+  trimToSentences('Cited one. Two. Three. Four.', 3, { keepLast: true, keep: (s) => s.includes('Cited') }) === 'Cited one. Two. Four.',
+  'trimToSentences with keep ignores accepted sentences already in the leading set',
+);
+assert(
+  trimToSentences('One. Two. Three.', 2, { keepLast: true }) === 'One. Three.',
+  'trimToSentences with keepLast drops the middle sentences and keeps the last',
+);
+
+assert(
+  oneLineStep({ detail: 'Open the admin page. Then click save.' }) === 'Open the admin page.',
+  'oneLineStep returns only the first sentence',
+);
+const longStep = oneLineStep({ detail: `${'word '.repeat(60).trim()}.` });
+assert(longStep.endsWith('…') && longStep.length <= 140, 'oneLineStep cuts a 300-character single sentence to at most 140 characters ending with an ellipsis');
+const linkStep = oneLineStep({ detail: `Open <https://example.test/${'a'.repeat(200)}|the long page> and continue.` });
+assert(linkStep.length <= 140 && linkStep.endsWith('…'), 'oneLineStep keeps the result within the limit when the sentence holds a long link');
+assert(oneLineStep({ detail: 'Short enough.' }, 5) === 'Shor…', 'oneLineStep honours a custom max including the ellipsis');
+const lateLinkStep = oneLineStep({ detail: `${'word '.repeat(21)}<https://help.servicetitan.com/${'a'.repeat(80)}|the guide> now.` });
+assert(lateLinkStep.length <= 140 && lateLinkStep.endsWith('…'), 'oneLineStep stays within the limit when a link starts near character 106');
+assert(!/<[^>]*$/.test(lateLinkStep), 'oneLineStep does not leave an unclosed < when the cut lands inside a link');
+assert(lateLinkStep === `${'word '.repeat(21).trim()}…`, 'oneLineStep cuts before the dangling link and trims trailing space');
+assert(
+  pickGuide({ kb_refs: [{ title: '', url: 'https://help.servicetitan.com/a' }, { title: 'B', url: 'https://help.servicetitan.com/b' }] })?.title === 'B',
+  'pickGuide skips a ref with an empty title',
+);
+assert(oneLineStep({}) === '', 'oneLineStep returns an empty string for a missing detail');
+assert(oneLineStep(undefined) === '', 'oneLineStep returns an empty string for an undefined step');
+
+// ── card modals ──────────────────────────────────────────────────────────────
+console.log('\n🔹 Card modals');
+
+const modalSections = (view) => view.blocks.filter(b => b.type === 'section').map(b => b.text.text);
+const modalHasEmptyText = (view) => view.blocks.some(b => b.type === 'section' && !String(b.text?.text ?? '').trim());
+const modalIsValid = (view) => view.type === 'modal'
+  && view.title.type === 'plain_text'
+  && view.close.text === 'Close'
+  && view.blocks.length >= 1
+  && view.blocks.length < 100
+  && !modalHasEmptyText(view);
+
+const modalQuery = 'Card modal question about Zapier setup';
+const modalCustomer = 'Hi [Name], your Zapier connection was reset during our migration.';
+const modalCached = stripTransient({
+  ...intentBase,
+  _intent: 'how-to',
+  customer_message: modalCustomer,
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+});
+const modalId = rememberCard(withRequestContext(modalCached, { query: modalQuery }));
+const modalValue = JSON.stringify({ id: modalId });
+
+const stepsModal = cardModalView('steps', modalValue);
+const stepsModalSections = modalSections(stepsModal);
+assert(stepsModal.callback_id === 'full_steps_view' && stepsModal.title.text === 'Full steps', 'cardModalView steps returns the Full steps modal for a cached id');
+assert(modalIsValid(stepsModal), 'full steps modal is a valid modal with non-empty sections');
+assert(stepsModalSections[0].startsWith('*Research*\n') && stepsModalSections[0].includes('API access is off for this tenant.'), 'full steps modal opens with the research paragraph');
+assert(stepsModalSections[0].includes('<https://help.servicetitan.com/zapier-setup|Setting up Zapier with ServiceTitan>'), 'full steps modal links the cited guide in the research paragraph');
+assert(stepsModalSections[1] === '*What to do*', 'full steps modal has a *What to do* heading after the research');
+assert(stepsModalSections.filter(t => STEP_LINE.test(t)).length === 7, 'full steps modal has one block per step');
+assert(stepsModal.blocks.length === 9, `full steps modal is research + heading + 7 steps (got ${stepsModal.blocks.length})`);
+assert(stepsModalSections[2].startsWith('🔵 *1. Step title 1*\nOpen the Zapier settings for step 1. Then confirm the change saved.'), 'full steps modal shows each step in full, not the one-line form');
+assert(!JSON.stringify(stepsModal).includes('*Draft*'), 'full steps modal has no *Draft* block');
+
+const draftModal = cardModalView('draft', modalValue);
+const draftModalSections = modalSections(draftModal);
+assert(draftModal.callback_id === 'draft_view' && draftModal.title.text === 'Handoff draft', 'cardModalView draft returns the Handoff draft modal for a cached id');
+assert(modalIsValid(draftModal) && draftModal.blocks.length === 1, 'draft modal is one valid section');
+assert(!JSON.stringify(draftModal).includes('*Draft*'), 'draft modal has no *Draft* heading');
+assert(draftModalSections[0].startsWith('API access is off for this tenant.'), 'draft modal starts with the diagnosis');
+assert(draftModalSections[0].includes('1. Step title 1 — Open the Zapier settings for step 1.'), 'draft modal lists the steps');
+assert(draftModalSections[0].includes(modalCustomer), 'draft modal ends with the customer message');
+
+const expiredModal = buildExpiredModal();
+assert(expiredModal.callback_id === 'answer_expired_view' && expiredModal.title.text === 'Answer expired', 'buildExpiredModal has the Answer expired title');
+assert(modalIsValid(expiredModal) && expiredModal.blocks.length === 1, 'expired modal is one valid section');
+assert(
+  modalSections(expiredModal)[0] === 'This answer is no longer stored (it expired, or the bot restarted). Ask again to get a fresh one.',
+  'expired modal asks the person to ask again',
+);
+
+for (const [label, value] of [
+  ['an unknown id', JSON.stringify({ id: '000000000000' })],
+  ['malformed JSON', 'not json'],
+  ['an empty object', '{}'],
+  ['a numeric id', '{"id":42}'],
+  ['undefined', undefined],
+  ['an empty string', ''],
+  ['a JSON null', 'null'],
+  ['a JSON number', '42'],
+]) {
+  for (const kind of ['steps', 'draft']) {
+    let view = null;
+    let threw = false;
+    try { view = cardModalView(kind, value); } catch { threw = true; }
+    assert(!threw && view?.callback_id === 'answer_expired_view', `cardModalView ${kind} with ${label} returns the expired modal without throwing`);
+  }
+}
+
+forgetCard(modalId);
+assert(cardModalView('steps', modalValue).callback_id === 'answer_expired_view', 'cardModalView steps returns the expired modal once the card entry is removed');
+assert(cardModalView('draft', modalValue).callback_id === 'answer_expired_view', 'cardModalView draft returns the expired modal once the card entry is removed');
+
+const manySteps = Array.from({ length: 25 }, (_, i) => ({ num: i + 1, title: 'T'.repeat(500), detail: 'D'.repeat(5000), tag: 'action' }));
+const hugeView = { issue_title: 'Huge', diagnosis: 'X'.repeat(5000), steps: manySteps, customer_message: 'C'.repeat(5000), kb_refs: [], atlassian_refs: [], slack_refs: [] };
+const hugeSteps20 = buildFullStepsModal({ ...hugeView, steps: hugeSteps });
+assert(hugeSteps20.blocks.length < 100, `full steps modal for 20 steps stays under 100 blocks (got ${hugeSteps20.blocks.length})`);
+assert(hugeSteps20.blocks.filter(b => b.type === 'section').every(b => b.text.text.length <= 3000), 'full steps modal: every section text is at most 3000 characters');
+const hugeSteps25 = buildFullStepsModal(hugeView);
+assert(modalSections(hugeSteps25).filter(t => STEP_LINE.test(t)).length === 20, 'full steps modal shows at most 20 steps, like the legacy card');
+assert(hugeSteps25.blocks.length < 100 && !modalHasEmptyText(hugeSteps25), 'full steps modal for 25 huge steps stays under 100 blocks with no empty section');
+const hugeDraft = buildDraftModal(hugeView);
+assert(hugeDraft.blocks.length === 1 && hugeDraft.blocks[0].text.text.length <= 3000, 'draft modal text is at most 3000 characters for huge input');
+
+const bareView = { issue_title: 'Bare', diagnosis: '', steps: [], kb_refs: [], atlassian_refs: [], slack_refs: [] };
+const bareSteps = buildFullStepsModal(bareView);
+assert(modalIsValid(bareSteps), 'full steps modal with no diagnosis and no steps still has a non-empty block');
+assert(modalSections(bareSteps)[0] === 'Nothing more to show for this answer.', 'full steps modal with nothing to show says so');
+const noDiagnosisSteps = buildFullStepsModal({ ...bareView, steps: intentSteps.slice(0, 2) });
+assert(modalSections(noDiagnosisSteps)[0] === '*What to do*' && modalSections(noDiagnosisSteps).length === 3, 'full steps modal omits the research paragraph when the diagnosis is empty');
+assert(modalIsValid(noDiagnosisSteps), 'full steps modal with an empty diagnosis has no empty-text section');
+const noStepsList = buildFullStepsModal({ issue_title: 'No steps' });
+assert(modalIsValid(noStepsList), 'full steps modal tolerates missing steps, diagnosis and refs');
+const diagnosisOnly = buildFullStepsModal({ ...bareView, diagnosis: 'Only a diagnosis.' });
+assert(modalSections(diagnosisOnly).length === 1 && !JSON.stringify(diagnosisOnly).includes('*What to do*'), 'full steps modal omits the *What to do* heading when there are no steps');
+
+const bareDraft = buildDraftModal(bareView);
+assert(modalIsValid(bareDraft) && modalSections(bareDraft)[0] === 'Nothing to draft for this answer.', 'draft modal with nothing to draft says so');
+assert(modalIsValid(buildDraftModal({ issue_title: 'No steps' })), 'draft modal tolerates missing steps and diagnosis');
+
+const honestModalView = {
+  issue_title: 'Unknown integration',
+  diagnosis: UNGROUNDED_DIAGNOSIS,
+  steps: [{ num: 1, title: 'Hand off the question', detail: UNGROUNDED_STEP, tag: 'escalate' }],
+  involvement: { needed: true, who: 'engineering', channel: '#ask-dev' },
+  slack_refs: [], atlassian_refs: [], kb_refs: [],
+};
+const honestSteps = buildFullStepsModal(honestModalView);
+assert(honestSteps.blocks.length === 1 && modalSections(honestSteps)[0] === '*Research*\nNo direct match found.', 'honest handoff: the full steps modal says no direct match was found');
+assert(!JSON.stringify(honestSteps).includes('Hand off the question') && !JSON.stringify(honestSteps).includes('*What to do*'), 'honest handoff: the full steps modal lists no steps');
+const honestDraft = buildDraftModal(honestModalView);
+const honestQuestion = 'Can Acme Widgets push jobs into ServiceTitan?';
+const honestId = rememberCard(withRequestContext(honestModalView, { query: honestQuestion }));
+const honestStoredDraft = cardModalView('draft', JSON.stringify({ id: honestId }));
+assert(modalSections(honestStoredDraft)[0] === honestQuestion, 'honest handoff: the stored card\'s Draft modal shows the user\'s original question');
+forgetCard(honestId);
+assert(!JSON.stringify(honestDraft).includes('*Draft*'), 'honest handoff: the draft modal has no *Draft* heading');
+assert(buildDraftModal({ ...honestModalView, issue_title: '' }).blocks[0].text.text === 'Nothing to draft for this answer.', 'honest handoff with no title: nothing to draft');
+
+const hostileView = {
+  issue_title: 'Hostile',
+  diagnosis: `${DANGEROUS_TEXT}. See #secret-channel for context.`,
+  steps: [{ num: 1, title: DANGEROUS_TEXT, detail: DANGEROUS_TEXT, tag: 'action' }],
+  customer_message: DANGEROUS_TEXT,
+  slack_refs: [{ url: 'https://servicetitan.slack.com/archives/CPRIV/p1', channel: '#secret-channel', title: 'secret', is_private: true }],
+  atlassian_refs: [], kb_refs: [],
+};
+const hostileJson = JSON.stringify([buildFullStepsModal(hostileView), buildDraftModal(hostileView)]);
+assert(!hostileJson.includes('<@U123>') && !hostileJson.includes('<https://evil.test|click>'), 'modals escape mrkdwn control characters in model text');
+assert(hostileJson.includes('A&amp;B &lt;@U123&gt;'), 'modals keep the escaped model text readable');
+assert(!hostileJson.includes('CPRIV'), 'full steps modal does not link a private Slack ref');
+
+// ── card store ───────────────────────────────────────────────────────────────
+const storeView = { issue_title: 'Stored card', _originalQuery: 'the asker question' };
+const storeId = rememberCard(storeView);
+assert(/^[0-9a-f]{12}$/.test(storeId), 'card store: rememberCard returns a 12 lowercase hex id');
+assert(getCardById(storeId)?.issue_title === 'Stored card', 'card store: a remembered view resolves by its id');
+assert(getCardById(storeId)?._originalQuery === 'the asker question', 'card store: the stored view keeps the original question');
+assert(getCardById(storeId) !== storeView, 'card store: the stored view is a copy');
+const storeIdAgain = rememberCard(storeView);
+assert(storeIdAgain !== storeId, 'card store: remembering the same view again returns a new id');
+forgetCard(storeIdAgain);
+assert(getCardById('000000000000') === null, 'card store: an unknown id returns null');
+assert(getCardById(undefined) === null && getCardById(42) === null, 'card store: a non-string id returns null');
+assert(getCached('the asker question') === null, 'card store: remembering a card does not touch the answer cache');
+forgetCard(storeId);
+assert(getCardById(storeId) === null, 'card store: forgetCard removes the entry');
+
+const HOUR_MS = 60 * 60 * 1000;
+const realDateNow = Date.now;
+const savedCardTtl = process.env.CARD_TTL_MS;
+try {
+  delete process.env.CARD_TTL_MS;
+  const expiryId = rememberCard(storeView);
+  Date.now = () => realDateNow() + 23 * HOUR_MS;
+  assert(getCardById(expiryId)?.issue_title === 'Stored card', 'card store: a card is still there after 23 hours by default');
+  Date.now = () => realDateNow() + 25 * HOUR_MS;
+  assert(getCardById(expiryId) === null, 'card store: a card is gone after 25 hours by default');
+  Date.now = realDateNow;
+  assert(getCardById(expiryId) === null, 'card store: an expired entry is deleted on lookup');
+
+  process.env.CARD_TTL_MS = String(2 * HOUR_MS);
+  const shortTtlId = rememberCard(storeView);
+  Date.now = () => realDateNow() + HOUR_MS;
+  assert(getCardById(shortTtlId) !== null, 'card store: CARD_TTL_MS keeps a card within its TTL');
+  Date.now = () => realDateNow() + 2 * HOUR_MS + 1000;
+  assert(getCardById(shortTtlId) === null, 'card store: CARD_TTL_MS is honoured');
+} finally {
+  Date.now = realDateNow;
+  if (savedCardTtl === undefined) delete process.env.CARD_TTL_MS;
+  else process.env.CARD_TTL_MS = savedCardTtl;
+}
+
+const capacityIds = Array.from({ length: 301 }, (_, i) => rememberCard({ issue_title: `card store capacity probe ${i}` }));
+assert(cardStoreSize() <= 300, `card store: never holds more than 300 cards (got ${cardStoreSize()})`);
+assert(getCardById(capacityIds[0]) === null, 'card store: the 301st card evicts the oldest');
+assert(getCardById(capacityIds[1])?.issue_title === 'card store capacity probe 1' && getCardById(capacityIds[300])?.issue_title === 'card store capacity probe 300', 'card store: the newer cards survive the eviction');
+for (const id of capacityIds) forgetCard(id);
+
+// ── card buttons resolve through the card store ─────────────────────────────
+const roundTripQuery = 'Round trip   card QUESTION about Zapier';
+const roundTripView = stripTransient({
+  ...intentBase,
+  customer_message: modalCustomer,
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+});
+const roundTripId = rememberCard(withRequestContext(roundTripView, { query: roundTripQuery }));
+for (const intent of ['how-to', 'troubleshooting']) {
+  const card = buildResponseBlocks({ ...roundTripView, _intent: intent, _originalQuery: roundTripQuery, _cardId: roundTripId });
+  const stepsButton = cardButton(card, 'view_full_steps_modal');
+  const draftButton = cardButton(card, 'view_draft_modal');
+  assert(stepsButton !== undefined && draftButton !== undefined, `${intent} card: Full steps and Draft buttons are present`);
+  const roundTripSteps = cardModalView('steps', stepsButton?.value);
+  const roundTripDraft = cardModalView('draft', draftButton?.value);
+  assert(roundTripSteps.callback_id === 'full_steps_view' && modalSections(roundTripSteps)[0].includes('API access is off for this tenant.'), `${intent} card: the Full steps button value opens the full steps modal with the research text`);
+  assert(roundTripDraft.callback_id === 'draft_view' && modalSections(roundTripDraft)[0].includes('1. Step title 1'), `${intent} card: the Draft button value opens the draft modal`);
+}
+forgetCard(roundTripId);
+
+// ── step numbers are escaped on every card and modal ────────────────────────
+const hostileNumSteps = [
+  { num: '<!channel>', title: 'Ping everyone', detail: 'Open the admin portal. Then save.', tag: 'action' },
+  { num: undefined, title: 'No number', detail: 'Confirm the change. Then tell the customer.', tag: 'verify' },
+  { title: 'Missing number', detail: 'Reconnect Zapier.', tag: 'backend' },
+];
+const hostileNumView = {
+  ...intentBase,
+  steps: hostileNumSteps,
+  involvement: { needed: true, who: 'engineering', channel: '#ask-integrations' },
+};
+const hostileNumRenders = {
+  'compact guide card': buildResponseBlocks({ ...hostileNumView, _intent: 'how-to' }),
+  'compact answer card': buildResponseBlocks({ ...hostileNumView, _intent: 'troubleshooting' }),
+  'legacy card': buildResponseBlocks({ ...hostileNumView, _intent: undefined }),
+  'Full steps modal': buildFullStepsModal(hostileNumView),
+  'Draft modal': buildDraftModal(hostileNumView),
+  'auto-answer card': buildAutoAnswerBlocks({ originalUrl: 'https://servicetitan.slack.com/archives/C1/p1', sourceChannelId: 'C1', originalUserId: 'U1', query: 'q', result: hostileNumView }),
+};
+for (const [label, rendered] of Object.entries(hostileNumRenders)) {
+  const json = JSON.stringify(rendered);
+  assert(!json.includes('<!channel>'), `${label}: a model-supplied step number cannot ping the channel`);
+  assert(!json.includes('undefined.'), `${label}: a missing step number never renders as undefined.`);
+}
+for (const label of ['compact guide card', 'compact answer card', 'legacy card', 'Full steps modal', 'Draft modal']) {
+  const json = JSON.stringify(hostileNumRenders[label]);
+  assert(json.includes('&lt;!channel&gt;'), `${label}: the hostile step number is shown escaped`);
+  assert(json.includes('2. No number') && json.includes('3. Missing number'), `${label}: a missing step number falls back to its position`);
+}
+
+for (const view of [stepsModal, draftModal, expiredModal, bareSteps, bareDraft, honestSteps, honestDraft, hugeSteps25, hugeDraft]) {
+  assert(view.title.text.length <= 24, `modal title "${view.title.text}" is at most 24 characters`);
+}
+
+await rm(testDataDir, { recursive: true, force: true });
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

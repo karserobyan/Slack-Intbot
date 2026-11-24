@@ -28,13 +28,7 @@ export function cacheKey(query) {
   return query.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Retrieves a cached response, or null if missing/expired.
- * @param {string} query
- * @returns {object|null}
- */
-export function getCached(query) {
-  const key = cacheKey(query);
+function lookup(key) {
   const entry = store.get(key);
   if (!entry) { _misses++; return null; }
   if (Date.now() > entry.expiresAt) {
@@ -44,6 +38,15 @@ export function getCached(query) {
   }
   _hits++;
   return entry.data;
+}
+
+/**
+ * Retrieves a cached response, or null if missing/expired.
+ * @param {string} query
+ * @returns {object|null}
+ */
+export function getCached(query) {
+  return lookup(cacheKey(query));
 }
 
 /**

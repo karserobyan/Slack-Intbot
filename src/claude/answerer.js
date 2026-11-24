@@ -3,8 +3,8 @@ import { RESOLVER_PROMPT } from './prompts/resolver.js';
 import { REPLY_PROMPT } from './prompts/reply.js';
 import { parseClaudeResponse } from './prompts.js';
 import { RETIRED_ROLE_FIELDS, NON_MODEL_FIELDS } from './answer-schema.js';
+import { anthropicClientOptions, answerModel } from './anthropic-config.js';
 
-const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 const TIMEOUT_MS = parseInt(process.env.CLAUDE_TIMEOUT_MS ?? '90000', 10) || 90000;
 
 // Lazy-init the client so tests can set ANTHROPIC_API_KEY after this module
@@ -15,15 +15,7 @@ let anthropic = null;
 
 function getAnthropicClient() {
   if (!anthropic) {
-    anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      fetch: (...args) => globalThis.fetch(...args),
-      // Retry policy is owned by the pipeline (see runPipeline), not the SDK —
-      // matching interpreter.js and evaluator.js. Leaving the SDK default (2)
-      // would stack with the pipeline's manual retry inside the same timeout
-      // budget and burn it on exponential backoff.
-      maxRetries: 0,
-    });
+    anthropic = new Anthropic(anthropicClientOptions());
   }
   return anthropic;
 }
@@ -48,7 +40,7 @@ async function callClaude({ systemPrompt, userContent, signal: externalSignal, s
 
   try {
     const response = await getAnthropicClient().messages.create({
-      model: MODEL,
+      model: answerModel(),
       max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],

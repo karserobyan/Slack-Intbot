@@ -7,8 +7,9 @@
  */
 import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
+import { anthropicClientOptions, answerModel } from '../src/claude/anthropic-config.js';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic(anthropicClientOptions());
 
 const slackToken = process.env.SLACK_USER_TOKEN;
 
@@ -34,7 +35,7 @@ console.log('\n─── Sending test request … ──────────
 
 try {
   const response = await anthropic.beta.messages.create({
-    model: process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6',
+    model: answerModel(),
     max_tokens: 1024,
     system: 'You are a test assistant. When asked to search, use your available MCP tools to do so. List the tool names you have available before searching.',
     messages: [{ role: 'user', content: 'List the tools available to you, then search Slack for "Zapier integration" and report what you find.' }],
